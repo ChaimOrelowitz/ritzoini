@@ -10,18 +10,18 @@ function deriveDayName(dateStr) {
   return DAY_NAMES[new Date(year, month - 1, day).getDay()];
 }
 
-export default function EditGroupModal({ group, onClose, onSaved }) {
-  const { isAdmin } = useAuth();
+export default function CreateGroupModal({ onClose, onCreated }) {
+  const { profile, isAdmin } = useAuth();
   const [supervisors, setSupervisors] = useState([]);
   const [form, setForm] = useState({
-    internal_name: group.internal_name || group.name || '',
-    group_name:    group.group_name    || group.name || '',
-    supervisor_id: group.supervisor_id || '',
-    start_date:    group.start_date    || '',
-    start_time:    (group.start_time   || group.session_time || '09:00').slice(0, 5),
-    end_time:      (group.end_time     || '09:45').slice(0, 5),
-    ecw_time:      (group.ecw_time     || '').slice(0, 5),
-    total_sessions: group.total_sessions || 8,
+    internal_name: '',
+    group_name: '',
+    supervisor_id: '',
+    start_date: '',
+    start_time: '09:00',
+    end_time: '09:45',
+    ecw_time: '',
+    total_sessions: 8,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -31,6 +31,13 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
       api.getUsers().then(users => setSupervisors(users.filter(u => u.role === 'supervisor')));
     }
   }, [isAdmin]);
+
+  // Pre-fill supervisor_id for supervisors — wait until profile is loaded
+  useEffect(() => {
+    if (profile?.role === 'supervisor' && profile?.id) {
+      setForm(f => ({ ...f, supervisor_id: profile.id }));
+    }
+  }, [profile]);
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }));
@@ -43,12 +50,13 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
     setLoading(true);
     setError('');
     try {
-      await api.updateGroup(group.id, {
+      await api.createGroup({
         ...form,
         total_sessions: parseInt(form.total_sessions),
+        supervisor_id: form.supervisor_id || null,
         ecw_time: form.ecw_time || null,
       });
-      onSaved();
+      onCreated();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -60,7 +68,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <div className="modal">
         <div className="modal-header">
-          <h3>Edit Group</h3>
+          <h3>Create New Group</h3>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <form onSubmit={handleSubmit}>
@@ -70,11 +78,23 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Group Name *</label>
-                <input className="form-input" value={form.group_name} onChange={e => set('group_name', e.target.value)} required />
+                <input
+                  className="form-input"
+                  value={form.group_name}
+                  onChange={e => set('group_name', e.target.value)}
+                  placeholder="Public-facing name"
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="form-label">Internal Name *</label>
-                <input className="form-input" value={form.internal_name} onChange={e => set('internal_name', e.target.value)} required />
+                <input
+                  className="form-input"
+                  value={form.internal_name}
+                  onChange={e => set('internal_name', e.target.value)}
+                  placeholder="Staff-only label"
+                  required
+                />
               </div>
             </div>
 
@@ -82,7 +102,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
               <div className="form-group">
                 <label className="form-label">Supervisor</label>
                 <select className="form-select" value={form.supervisor_id} onChange={e => set('supervisor_id', e.target.value)}>
-                  <option value="">— Unassigned —</option>
+                  <option value="">— Assign later —</option>
                   {supervisors.map(s => (
                     <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>
                   ))}
@@ -93,13 +113,19 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Start Date *</label>
-                <input className="form-input" type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} required />
+                <input
+                  className="form-input"
+                  type="date"
+                  value={form.start_date}
+                  onChange={e => set('start_date', e.target.value)}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="form-label">Day of Week</label>
                 <input
                   className="form-input"
-                  value={dayName || '—'}
+                  value={dayName || '— pick a date —'}
                   readOnly
                   style={{ background: 'var(--gray-50)', color: 'var(--gray-600)', cursor: 'default' }}
                 />
@@ -109,29 +135,56 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Start Time *</label>
-                <input className="form-input" type="time" value={form.start_time} onChange={e => set('start_time', e.target.value)} required />
+                <input
+                  className="form-input"
+                  type="time"
+                  value={form.start_time}
+                  onChange={e => set('start_time', e.target.value)}
+                  required
+                />
               </div>
               <div className="form-group">
                 <label className="form-label">End Time *</label>
-                <input className="form-input" type="time" value={form.end_time} onChange={e => set('end_time', e.target.value)} required />
+                <input
+                  className="form-input"
+                  type="time"
+                  value={form.end_time}
+                  onChange={e => set('end_time', e.target.value)}
+                  required
+                />
               </div>
             </div>
 
             <div className="form-row">
               <div className="form-group">
-                <label className="form-label">ECW Time <span style={{ fontWeight: 400, color: 'var(--gray-400)' }}>(defaults to start time)</span></label>
-                <input className="form-input" type="time" value={form.ecw_time} onChange={e => set('ecw_time', e.target.value)} />
+                <label className="form-label">
+                  ECW Time <span style={{ fontWeight: 400, color: 'var(--gray-400)' }}>(defaults to start time)</span>
+                </label>
+                <input
+                  className="form-input"
+                  type="time"
+                  value={form.ecw_time}
+                  onChange={e => set('ecw_time', e.target.value)}
+                />
               </div>
               <div className="form-group">
                 <label className="form-label">Total Sessions</label>
-                <input className="form-input" type="number" min="1" max="52" value={form.total_sessions} onChange={e => set('total_sessions', e.target.value)} required />
+                <input
+                  className="form-input"
+                  type="number"
+                  min="1"
+                  max="52"
+                  value={form.total_sessions}
+                  onChange={e => set('total_sessions', e.target.value)}
+                  required
+                />
               </div>
             </div>
           </div>
           <div className="modal-footer">
             <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
             <button type="submit" className="btn btn-gold" disabled={loading}>
-              {loading ? 'Saving…' : 'Save Changes'}
+              {loading ? 'Creating…' : 'Create Group'}
             </button>
           </div>
         </form>
