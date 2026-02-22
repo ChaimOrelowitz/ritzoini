@@ -21,23 +21,25 @@ async function authFetch(path, options = {}) {
 }
 
 export const api = {
-  getGroups: () => authFetch('/api/groups'),
-  getGroup: (id) => authFetch(`/api/groups/${id}`),
+  // Groups
+  getGroups: (archived = false) => authFetch(`/api/groups?archived=${archived}`),
+  getGroup:  (id) => authFetch(`/api/groups/${id}`),
   createGroup: (body) => authFetch('/api/groups', { method: 'POST', body: JSON.stringify(body) }),
   updateGroup: (id, body) => authFetch(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deleteGroup: (id) => authFetch(`/api/groups/${id}`, { method: 'DELETE' }),
+  archiveGroup:   (id) => authFetch(`/api/groups/${id}/archive`,   { method: 'POST' }),
+  unarchiveGroup: (id) => authFetch(`/api/groups/${id}/unarchive`, { method: 'POST' }),
 
-  getSessions: (groupId) => authFetch(`/api/sessions${groupId ? `?group_id=${groupId}` : ''}`),
+  // Sessions
+  getSessions:   (groupId) => authFetch(`/api/sessions?group_id=${groupId}`),
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  submitNotes: (id, notes) => authFetch(`/api/sessions/${id}/submit-notes`, { method: 'POST', body: JSON.stringify({ notes }) }),
-  lockSession: (id) => authFetch(`/api/sessions/${id}/lock`, { method: 'POST' }),
   cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`, { method: 'POST' }),
+  returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
+  submitNotes:   (id, notes) => authFetch(`/api/sessions/${id}/submit-notes`, { method: 'POST', body: JSON.stringify({ soap_note: notes }) }),
+  lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`, { method: 'POST' }),
 
+  // Users
   getUsers: () => authFetch('/api/users'),
   inviteUser: (email, first_name, last_name, phone) =>
-    authFetch('/api/users/invite', {
-      method: 'POST',
-      body: JSON.stringify({ email, first_name, last_name, phone }),
-    }),
+    authFetch('/api/users/invite', { method: 'POST', body: JSON.stringify({ email, first_name, last_name, phone }) }),
   updateUser: (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 };
