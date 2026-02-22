@@ -10,12 +10,22 @@ function deriveDayOfWeek(dateStr) {
   return new Date(year, month - 1, day).getDay();
 }
 
-const GROUP_SELECT = `
-  id, internal_name, group_name, supervisor_id, status,
-  start_date, day_of_week_int, start_time, end_time, ecw_time,
+// Used for list view (sessions summary only)
+const GROUP_LIST_SELECT = `
+  id, internal_name, group_name, name, supervisor_id, status,
+  start_date, day_of_week_int, day_of_week, start_time, session_time, end_time, ecw_time,
   total_sessions, created_at,
   supervisor:profiles!supervisor_id(id, first_name, last_name, email),
   sessions(id, status, locked_at)
+`;
+
+// Used for detail view (full session data)
+const GROUP_DETAIL_SELECT = `
+  id, internal_name, group_name, name, supervisor_id, status,
+  start_date, day_of_week_int, day_of_week, start_time, session_time, end_time, ecw_time,
+  total_sessions, created_at,
+  supervisor:profiles!supervisor_id(id, first_name, last_name, email),
+  sessions(*)
 `;
 
 // GET /api/groups
@@ -23,7 +33,7 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     let query = supabase
       .from('groups')
-      .select(GROUP_SELECT)
+      .select(GROUP_LIST_SELECT)
       .order('day_of_week_int', { ascending: true })
       .order('ecw_time', { ascending: true });
 
@@ -44,7 +54,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('groups')
-      .select(`${GROUP_SELECT}, sessions(*)`)
+      .select(GROUP_DETAIL_SELECT)
       .eq('id', req.params.id)
       .single();
 
@@ -78,7 +88,7 @@ router.post('/', requireAuth, async (req, res) => {
 
     const effectiveSupervisorId = req.user.role === 'supervisor'
       ? req.user.id
-      : (supervisor_id || req.user.id);
+      : (supervisor_id || null);
 
     const day_of_week_int = deriveDayOfWeek(start_date);
     const effective_ecw_time = ecw_time || start_time;
@@ -155,7 +165,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .from('groups')
       .update(updates)
       .eq('id', req.params.id)
-      .select(GROUP_SELECT)
+      .select(GROUP_DETAIL_SELECT)
       .single();
 
     if (error) throw error;
