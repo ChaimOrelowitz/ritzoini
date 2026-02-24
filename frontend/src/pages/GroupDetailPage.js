@@ -1,315 +1,222 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
-import { api } from '../utils/api';
-import EditGroupModal from '../components/admin/EditGroupModal';
+import { useState, useEffect } from 'react';
+import { api } from '../../utils/api';
+import { useAuth } from '../../context/AuthContext';
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-function fmt12(t) {
-  if (!t) return '';
-  const [h, m] = t.split(':').map(Number);
-  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
+function deriveDayName(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return DAY_NAMES[new Date(y, m - 1, d).getDay()];
 }
 
-function fmtDate(d) {
-  if (!d) return '';
-  const dt = new Date(d + 'T00:00:00');
-  return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+function addMinutesToTime(timeStr, mins) {
+  if (!timeStr) return '';
+  const [h, m] = timeStr.split(':').map(Number);
+  const total = h * 60 + m + parseInt(mins || 0);
+  return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`;
 }
 
-const STATUS_COLORS = {
-  scheduled: 'badge-scheduled',
-  completed: 'badge-completed',
-  cancelled: 'badge-cancelled',
-};
-
-// ── Single Session Row ─────────────────────────────────────────
-function SessionRow({ session, onUpdate }) {
-  const [saving, setSaving] = useState(false);
-  const [soapNote, setSoapNote] = useState(session.soap_note || session.notes || '');
-  const saveTimer = useRef(null);
-
-  // Auto-save soap note with 1s debounce
-  function handleNoteChange(val) {
-    setSoapNote(val);
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      setSaving(true);
-      try {
-        const updated = await api.updateSession(session.id, { soap_note: val });
-        onUpdate(updated);
-      } finally {
-        setSaving(false);
-      }
-    }, 1000);
-  }
-
-  async function handleStatusChange(newStatus) {
-    const updated = await api.updateSession(session.id, { status: newStatus, status_manual_override: true });
-    onUpdate(updated);
-  }
-
-  async function handleCheckbox(field, value) {
-    const updated = await api.updateSession(session.id, { [field]: value });
-    onUpdate(updated);
-  }
-
-  async function handleCancel() {
-    if (!window.confirm('Cancel this session?')) return;
-    const updated = await api.cancelSession(session.id);
-    onUpdate(updated);
-  }
-
-  async function handleReturnToAuto() {
-    const updated = await api.returnToAuto(session.id);
-    onUpdate(updated);
-  }
-
-  const isCancelled = session.status === 'cancelled';
-
-  return (
-    <div style={{
-      background: isCancelled ? 'var(--gray-50)' : 'white',
-      border: '1px solid var(--gray-100)',
-      borderRadius: 'var(--radius)',
-      padding: '16px 20px',
-      opacity: isCancelled ? 0.65 : 1,
-      marginBottom: 12,
-    }}>
-      {/* Top row: session info + status */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16, marginBottom: 12, flexWrap: 'wrap' }}>
-
-        {/* Session number + date */}
-        <div style={{ minWidth: 100 }}>
-          <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.95rem' }}>
-            Session #{session.session_number}
-          </div>
-          <div style={{ fontSize: '0.8rem', color: 'var(--gray-600)', marginTop: 2 }}>
-            {fmtDate(session.session_date || session.scheduled_date)}
-          </div>
-          <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>
-            {fmt12(session.start_time || session.scheduled_time)}
-            {session.end_time && ` – ${fmt12(session.end_time)}`}
-          </div>
-        </div>
-
-        {/* Status dropdown */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</label>
-          <select
-            className="form-select"
-            style={{ padding: '5px 10px', fontSize: '0.82rem', width: 130 }}
-            value={session.status}
-            disabled={isCancelled}
-            onChange={e => handleStatusChange(e.target.value)}
-          >
-            <option value="scheduled">Scheduled</option>
-            <option value="completed">Completed</option>
-            <option value="cancelled">Cancelled</option>
-          </select>
-          {session.status_manual_override && !isCancelled && (
-            <button
-              onClick={handleReturnToAuto}
-              style={{
-                fontSize: '0.7rem', color: 'var(--gold)', background: 'none',
-                border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left',
-                fontWeight: 600,
-              }}
-            >
-              ↺ Return to Auto
-            </button>
-          )}
-        </div>
-
-        {/* Checkboxes */}
-        <div style={{ display: 'flex', gap: 20, alignItems: 'center', marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {[
-            { field: 'email_sent',    label: 'Email Sent' },
-            { field: 'ready_to_lock', label: 'Ready to Lock' },
-            { field: 'locked',        label: 'Locked (ECW)' },
-          ].map(({ field, label }) => (
-            <label key={field} style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              fontSize: '0.8rem', color: 'var(--gray-700)', cursor: 'pointer',
-              fontWeight: 500,
-            }}>
-              <input
-                type="checkbox"
-                checked={!!session[field]}
-                onChange={e => handleCheckbox(field, e.target.checked)}
-                style={{ width: 15, height: 15, cursor: 'pointer', accentColor: 'var(--navy)' }}
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-
-        {/* Cancel button */}
-        {!isCancelled && (
-          <button
-            className="btn btn-danger btn-xs"
-            onClick={handleCancel}
-            style={{ alignSelf: 'flex-start', marginLeft: 8 }}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-
-      {/* SOAP Note */}
-      <div>
-        <div style={{
-          fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)',
-          textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6,
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          SOAP Note
-          {saving && <span style={{ color: 'var(--gold)', fontWeight: 500 }}>Saving…</span>}
-          {!saving && soapNote && <span style={{ color: '#10b981', fontWeight: 500 }}>✓ Saved</span>}
-        </div>
-        <textarea
-          className="form-textarea"
-          value={soapNote}
-          onChange={e => handleNoteChange(e.target.value)}
-          placeholder="Subjective, Objective, Assessment, Plan…"
-          disabled={isCancelled}
-          style={{
-            minHeight: 80,
-            fontSize: '0.875rem',
-            background: isCancelled ? 'var(--gray-50)' : 'white',
-          }}
-        />
-      </div>
-    </div>
-  );
+function computeEndDate(startDate, dowInt, numSessions) {
+  if (!startDate || !numSessions) return '';
+  const [y, m, d] = startDate.split('-').map(Number);
+  const start = new Date(y, m - 1, d);
+  const daysAhead = (dowInt - start.getDay() + 7) % 7;
+  const first = new Date(start);
+  first.setDate(first.getDate() + daysAhead);
+  const last = new Date(first);
+  last.setDate(last.getDate() + (parseInt(numSessions) - 1) * 7);
+  return last.toISOString().split('T')[0];
 }
 
-// ── Group Detail Page ──────────────────────────────────────────
-export default function GroupDetailPage() {
-  const { id } = useParams();
-  const navigate = useNavigate();
+function computeNumSessions(startDate, endDate, dowInt) {
+  if (!startDate || !endDate) return '';
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const start = new Date(sy, sm - 1, sd);
+  const end   = new Date(ey, em - 1, ed);
+  const daysAhead = (dowInt - start.getDay() + 7) % 7;
+  const first = new Date(start);
+  first.setDate(first.getDate() + daysAhead);
+  if (first > end) return 0;
+  return Math.floor((end - first) / (7 * 24 * 60 * 60 * 1000)) + 1;
+}
+
+export default function EditGroupModal({ group, onClose, onSaved }) {
   const { isAdmin } = useAuth();
-  const [group, setGroup] = useState(null);
-  const [sessions, setSessions] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [showEditGroup, setShowEditGroup] = useState(false);
+  const [supervisors, setSupervisors] = useState([]);
+  const [form, setForm] = useState({
+    internal_name:    group.internal_name  || group.name || '',
+    group_name:       group.group_name     || group.name || '',
+    supervisor_id:    group.supervisor_id  || '',
+    start_date:       group.start_date     || '',
+    end_date:         group.end_date       || '',
+    start_time:       (group.start_time    || group.session_time || '09:00').slice(0,5),
+    ecw_time:         (group.ecw_time      || '').slice(0,5),
+    total_sessions:   String(group.total_sessions || 8),
+    default_duration: String(group.default_duration || 45),
+    group_soap_notes: group.group_soap_notes || '',
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState('');
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    if (isAdmin) {
+      api.getUsers().then(users => setSupervisors(users.filter(u => u.role === 'supervisor')));
+    }
+  }, [isAdmin]);
+
+  const dowInt = form.start_date
+    ? (() => { const [y,m,d] = form.start_date.split('-').map(Number); return new Date(y,m-1,d).getDay(); })()
+    : (group.day_of_week_int ?? 0);
+
+  function set(field, value) {
+    setForm(f => {
+      const next = { ...f, [field]: value };
+      const dow = next.start_date
+        ? (() => { const [y,m,d] = next.start_date.split('-').map(Number); return new Date(y,m-1,d).getDay(); })()
+        : dowInt;
+
+      if (field === 'total_sessions' && next.start_date) {
+        next.end_date = computeEndDate(next.start_date, dow, value);
+      } else if (field === 'end_date' && next.start_date) {
+        next.total_sessions = String(computeNumSessions(next.start_date, value, dow));
+      } else if (field === 'start_date') {
+        if (next.total_sessions) next.end_date = computeEndDate(value, dow, next.total_sessions);
+      }
+      return next;
+    });
+  }
+
+  const dayName  = deriveDayName(form.start_date);
+  const end_time = addMinutesToTime(form.start_time, form.default_duration);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
     try {
-      const [g, s] = await Promise.all([api.getGroup(id), api.getSessions(id)]);
-      setGroup(g);
-      setSessions(s);
+      await api.updateGroup(group.id, {
+        ...(isAdmin ? { internal_name: form.internal_name, supervisor_id: form.supervisor_id || null } : {}),
+        group_name: form.group_name,
+        start_date: form.start_date,
+        end_date: form.end_date || null,
+        start_time: form.start_time,
+        ecw_time: form.ecw_time || null,
+        total_sessions: parseInt(form.total_sessions) || 8,
+        default_duration: parseInt(form.default_duration) || 45,
+        group_soap_notes: form.group_soap_notes,
+      });
+      onSaved();
     } catch (err) {
       setError(err.message);
     } finally {
       setLoading(false);
     }
-  }, [id]);
-
-  useEffect(() => { load(); }, [load]);
-
-  function handleSessionUpdate(updated) {
-    setSessions(prev => prev.map(s => s.id === updated.id ? updated : s));
   }
-
-  async function handleArchive() {
-    if (!window.confirm('Archive this group? It will be hidden from the dashboard.')) return;
-    try {
-      await api.archiveGroup(id);
-      navigate('/');
-    } catch (err) { setError(err.message); }
-  }
-
-  if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
-  if (!group)  return <div className="alert alert-error" style={{ margin: 24 }}>Group not found.</div>;
-
-  const supervisorName = group.supervisor
-    ? `${group.supervisor.first_name} ${group.supervisor.last_name}`.trim()
-    : 'Unassigned';
-
-  const dow = group.day_of_week_int ?? DAY_NAMES.indexOf(group.day_of_week);
-  const dayName = DAY_NAMES[dow] || group.day_of_week || '';
-
-  const completedCount = sessions.filter(s => s.status === 'completed').length;
-  const cancelledCount = sessions.filter(s => s.status === 'cancelled').length;
-  const lockedCount    = sessions.filter(s => s.locked).length;
 
   return (
-    <div>
-      <button className="back-link" onClick={() => navigate('/')}>← Back to Dashboard</button>
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 580 }}>
+        <div className="modal-header">
+          <h3>Edit Group</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            {error && <div className="alert alert-error">{error}</div>}
 
-      {/* Header */}
-      <div className="page-header">
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-            <h2>{group.group_name || group.name}</h2>
-            <span className={`badge badge-${group.status}`}>{group.status}</span>
-            {group.archived && <span className="badge badge-cancelled">Archived</span>}
-          </div>
-          {group.internal_name && group.internal_name !== (group.group_name || group.name) && (
-            <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)', marginBottom: 4 }}>
-              Internal: {group.internal_name}
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">
+                  Internal Name
+                  {!isAdmin && <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginLeft: 6 }}>(Admin only)</span>}
+                </label>
+                <input className="form-input" value={form.internal_name}
+                  onChange={e => set('internal_name', e.target.value)}
+                  readOnly={!isAdmin}
+                  style={!isAdmin ? { background: 'var(--gray-50)', color: 'var(--gray-500)', cursor: 'not-allowed' } : {}}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Group Name</label>
+                <input className="form-input" value={form.group_name} onChange={e => set('group_name', e.target.value)} />
+              </div>
             </div>
-          )}
-          <p style={{ color: 'var(--gray-600)', fontSize: '0.875rem' }}>
-            {dayName}s · {fmt12(group.start_time || group.session_time)} – {fmt12(group.end_time)}
-            {group.ecw_time && <> · ECW {fmt12(group.ecw_time)}</>}
-            {' '}· {supervisorName} · {group.total_sessions} sessions
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button className="btn btn-outline btn-sm" onClick={() => setShowEditGroup(true)}>Edit Group</button>
-          {!group.archived && (
-            <button className="btn btn-danger btn-sm" onClick={handleArchive}>Archive Group</button>
-          )}
-        </div>
+
+            {isAdmin && (
+              <div className="form-group">
+                <label className="form-label">Supervisor</label>
+                <select className="form-select" value={form.supervisor_id} onChange={e => set('supervisor_id', e.target.value)}>
+                  <option value="">— Unassigned —</option>
+                  {supervisors.map(s => (
+                    <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Start Date</label>
+                <input className="form-input" type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Day of Week</label>
+                <input className="form-input" value={dayName || '—'} readOnly
+                  style={{ background: 'var(--gray-50)', color: 'var(--gray-600)', cursor: 'default' }} />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label"># of Sessions</label>
+                <input className="form-input" type="number" min="1" value={form.total_sessions} onChange={e => set('total_sessions', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">End Date</label>
+                <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Start Time</label>
+                <input className="form-input" type="time" value={form.start_time} onChange={e => set('start_time', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">ECW Start Time</label>
+                <input className="form-input" type="time" value={form.ecw_time} onChange={e => set('ecw_time', e.target.value)} />
+              </div>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Duration (minutes)</label>
+                <input className="form-input" type="number" min="1" value={form.default_duration} onChange={e => set('default_duration', e.target.value)} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">End Time (computed)</label>
+                <input className="form-input" value={end_time || '—'} readOnly
+                  style={{ background: 'var(--gray-50)', color: 'var(--gray-600)', cursor: 'default' }} />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Group SOAP Notes</label>
+              <textarea className="form-textarea" value={form.group_soap_notes}
+                onChange={e => set('group_soap_notes', e.target.value)}
+                placeholder="Group-level clinical notes…" style={{ minHeight: 80 }} />
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-gold" disabled={loading}>
+              {loading ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
       </div>
-
-      {error   && <div className="alert alert-error">{error}</div>}
-      {success && <div className="alert alert-success">{success}</div>}
-
-      {/* Stats */}
-      <div className="stats-row" style={{ marginBottom: 28 }}>
-        <div className="stat-card"><div className="stat-value">{sessions.length}</div><div className="stat-label">Total</div></div>
-        <div className="stat-card"><div className="stat-value">{sessions.filter(s => s.status === 'scheduled').length}</div><div className="stat-label">Scheduled</div></div>
-        <div className="stat-card"><div className="stat-value">{completedCount}</div><div className="stat-label">Completed</div></div>
-        <div className="stat-card"><div className="stat-value">{lockedCount}</div><div className="stat-label">Locked (ECW)</div></div>
-        <div className="stat-card"><div className="stat-value">{cancelledCount}</div><div className="stat-label">Cancelled</div></div>
-      </div>
-
-      {/* Sessions */}
-      <div className="card">
-        <div className="card-header">
-          <h3 style={{ fontSize: '1.1rem', color: 'var(--navy)' }}>Sessions</h3>
-          <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>
-            SOAP notes auto-save as you type
-          </span>
-        </div>
-        <div style={{ padding: '16px 24px' }}>
-          {sessions.length === 0 ? (
-            <div className="empty-state"><div className="empty-icon">📅</div><p>No sessions yet.</p></div>
-          ) : (
-            sessions.map(session => (
-              <SessionRow
-                key={session.id}
-                session={session}
-                onUpdate={handleSessionUpdate}
-              />
-            ))
-          )}
-        </div>
-      </div>
-
-      {showEditGroup && (
-        <EditGroupModal
-          group={group}
-          onClose={() => setShowEditGroup(false)}
-          onSaved={() => { setShowEditGroup(false); setSuccess('Group updated.'); load(); }}
-        />
-      )}
     </div>
   );
 }
