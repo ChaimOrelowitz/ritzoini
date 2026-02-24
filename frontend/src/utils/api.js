@@ -32,9 +32,10 @@ export const api = {
   // Sessions
   getSessions:   (groupId) => authFetch(`/api/sessions?group_id=${groupId}`),
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,        { method: 'POST' }),
-  returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`,{ method: 'POST' }),
-  lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`,          { method: 'POST' }),
+  cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
+  uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
+  returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
+  lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`,           { method: 'POST' }),
   bulkNotes:     (groupId, notes_text) => authFetch(`/api/sessions/bulk-notes/${groupId}`, {
     method: 'POST', body: JSON.stringify({ notes_text }),
   }),
@@ -46,8 +47,8 @@ export const api = {
   updateUser: (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
   // Instructors
-  getInstructors:    () => authFetch('/api/instructors'),
-  createInstructor:  (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),
-  updateInstructor:  (id, body) => authFetch(`/api/instructors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  deleteInstructor:  (id) => authFetch(`/api/instructors/${id}`, { method: 'DELETE' }),
+  getInstructors:   () => authFetch('/api/instructors'),
+  createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),
+  updateInstructor: (id, body) => authFetch(`/api/instructors/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deleteInstructor: (id) => authFetch(`/api/instructors/${id}`, { method: 'DELETE' }),
 };
