@@ -16,7 +16,6 @@ function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-// Status colors
 const STATUS_STYLE = {
   scheduled:   { bg: '#dbeafe', color: '#1e40af', border: '#93c5fd' },
   completed:   { bg: '#dcfce7', color: '#166534', border: '#86efac' },
@@ -29,7 +28,7 @@ const STATUS_LABELS = {
 };
 
 // ── Session Row ───────────────────────────────────────────────
-function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
+function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) {
   const [soapNote, setSoapNote]   = useState(session.soap_note || session.notes || '');
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
@@ -39,15 +38,20 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
   const [localTime, setLocalTime] = useState((session.start_time || session.scheduled_time || '').slice(0,5));
   const [localDur,  setLocalDur]  = useState(String(session.duration || groupDuration || 45));
 
-  // Keep soap note in sync if parent refreshes
+  // Sync if parent data changes
   useEffect(() => {
     setSoapNote(session.soap_note || session.notes || '');
-  }, [session.soap_note, session.notes]);
+    setLocalDate(session.session_date || session.scheduled_date || '');
+    setLocalTime((session.start_time || session.scheduled_time || '').slice(0,5));
+    setLocalDur(String(session.duration || groupDuration || 45));
+  }, [session, groupDuration]);
 
   const isCancelled  = session.status === 'cancelled';
   const isGroupEnded = session.status === 'group_ended';
-  const isReadOnly   = isCancelled || isGroupEnded;
-  const style        = STATUS_STYLE[session.status] || STATUS_STYLE.scheduled;
+  // Cancelled sessions are fully read-only for content but have the uncancel button
+  // Group ended sessions can have status changed manually
+  const contentReadOnly = isCancelled;
+  const style = STATUS_STYLE[session.status] || STATUS_STYLE.scheduled;
 
   function handleNoteChange(val) {
     setSoapNote(val);
@@ -56,7 +60,6 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
     saveTimer.current = setTimeout(async () => {
       try {
         const updated = await api.updateSession(session.id, { soap_note: val });
-        // Update parent in place — no reload needed
         onUpdate(updated);
         setSaveState('saved');
         setTimeout(() => setSaveState('idle'), 2000);
@@ -101,9 +104,8 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
       borderRadius: 'var(--radius)',
       padding: '14px 18px',
       marginBottom: 10,
-      opacity: isReadOnly ? 0.75 : 1,
+      opacity: isCancelled ? 0.72 : 1,
     }}>
-      {/* Top row */}
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
         {/* # + date + time */}
@@ -116,7 +118,6 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
               </span>
             )}
           </div>
-
           {/* Date */}
           {editDate ? (
             <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
@@ -126,15 +127,14 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
               <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditDate(false)}>✕</button>
             </div>
           ) : (
-            <div style={{ fontSize: '0.8rem', color: 'var(--gray-600)', cursor: isReadOnly ? 'default' : 'pointer' }}
-              onClick={() => !isReadOnly && setEditDate(true)}
-              title={isReadOnly ? '' : 'Click to change date'}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--gray-600)', cursor: contentReadOnly ? 'default' : 'pointer' }}
+              onClick={() => !contentReadOnly && setEditDate(true)}
+              title={contentReadOnly ? '' : 'Click to change date'}>
               {fmtDate(session.session_date || session.scheduled_date)}
-              {!isReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+              {!contentReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
-
-          {/* Time + duration */}
+          {/* Time */}
           {editTime ? (
             <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
               <input type="time" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 100 }}
@@ -145,39 +145,37 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
               <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditTime(false)}>✕</button>
             </div>
           ) : (
-            <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)', cursor: isReadOnly ? 'default' : 'pointer', marginTop: 2 }}
-              onClick={() => !isReadOnly && setEditTime(true)}
-              title={isReadOnly ? '' : 'Click to change time/duration'}>
-              {fmt12(session.start_time || session.scheduled_time)}
-              {' · '}{session.duration || groupDuration || 45} min
-              {!isReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+            <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)', cursor: contentReadOnly ? 'default' : 'pointer', marginTop: 2 }}
+              onClick={() => !contentReadOnly && setEditTime(true)}
+              title={contentReadOnly ? '' : 'Click to change time/duration'}>
+              {fmt12(session.start_time || session.scheduled_time)} · {session.duration || groupDuration || 45} min
+              {!contentReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
         </div>
 
-        {/* Status dropdown — colored */}
+        {/* Status dropdown — colored; group_ended IS changeable */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
           <select
             value={session.status}
-            disabled={isReadOnly}
+            disabled={isCancelled} // cancelled handled by uncancel button instead
             onChange={e => handleStatusChange(e.target.value)}
             style={{
               padding: '5px 10px', fontSize: '0.82rem', width: 138, borderRadius: 'var(--radius)',
               border: `1.5px solid ${style.border}`,
-              background: style.bg, color: style.color,
-              fontWeight: 600, cursor: isReadOnly ? 'default' : 'pointer',
+              background: style.bg, color: style.color, fontWeight: 600,
+              cursor: isCancelled ? 'default' : 'pointer',
               appearance: 'none', WebkitAppearance: 'none',
               backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='${encodeURIComponent(style.color)}' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
-              backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center',
-              paddingRight: 28,
+              backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', paddingRight: 28,
             }}
           >
             {Object.entries(STATUS_LABELS).map(([val, label]) => (
               <option key={val} value={val}>{label}</option>
             ))}
           </select>
-          {session.status_manual_override && !isReadOnly && (
+          {session.status_manual_override && !isCancelled && (
             <button type="button" onClick={handleReturnToAuto}
               style={{ fontSize: '0.7rem', color: 'var(--gold)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 600, textAlign: 'left' }}>
               ↺ Return to Auto
@@ -201,16 +199,23 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
           ))}
         </div>
 
-        {/* Cancel */}
-        {!isReadOnly && (
-          <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session.id)}
-            style={{ alignSelf: 'flex-start' }}>
-            Cancel
-          </button>
-        )}
+        {/* Action buttons */}
+        <div style={{ display: 'flex', gap: 6, alignSelf: 'flex-start' }}>
+          {isCancelled ? (
+            <button type="button" className="btn btn-outline btn-xs"
+              onClick={() => onUncancel(session.id)}
+              style={{ borderColor: '#10b981', color: '#10b981' }}>
+              Restore
+            </button>
+          ) : (
+            <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session.id)}>
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* SOAP Note */}
+      {/* SOAP Note — always editable even when group_ended, read-only only when cancelled */}
       <div style={{ marginTop: 10 }}>
         <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 5, display: 'flex', gap: 8, alignItems: 'center' }}>
           SOAP Note
@@ -221,7 +226,8 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
           value={soapNote}
           onChange={e => handleNoteChange(e.target.value)}
           placeholder="Subjective · Objective · Assessment · Plan…"
-          style={{ minHeight: 72, fontSize: '0.875rem', background: isReadOnly ? '#fafafa' : 'white' }}
+          disabled={isCancelled}
+          style={{ minHeight: 72, fontSize: '0.875rem', background: isCancelled ? '#fafafa' : 'white' }}
         />
       </div>
     </div>
@@ -230,18 +236,16 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel }) {
 
 // ── Bulk Notes Modal ──────────────────────────────────────────
 function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
-  const [text, setText]     = useState('');
+  const [text, setText] = useState('');
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState('');
+  const [error, setError] = useState('');
 
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true); setError('');
-    try {
-      const res = await api.bulkNotes(groupId, text);
-      setResult(res);
-    } catch (err) { setError(err.message); }
+    try { const res = await api.bulkNotes(groupId, text); setResult(res); }
+    catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }
 
@@ -254,11 +258,8 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
         </div>
         {result ? (
           <div className="modal-body">
-            <div className="alert alert-success">
-              ✅ Updated {result.updated} of {result.total_sessions} sessions
-            </div>
-            <button className="btn btn-gold" style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}
-              onClick={onDone}>Done</button>
+            <div className="alert alert-success">✅ Updated {result.updated} of {result.total_sessions} sessions</div>
+            <button className="btn btn-gold" style={{ width: '100%', justifyContent: 'center', marginTop: 12 }} onClick={onDone}>Done</button>
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
@@ -266,7 +267,7 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
               {error && <div className="alert alert-error">{error}</div>}
               <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 12 }}>
                 Paste notes separated by <code style={{ background: 'var(--gray-100)', padding: '1px 6px', borderRadius: 3 }}>---</code> on its own line.
-                Assigned in session order, cancelled sessions skipped. <strong>{sessionCount}</strong> active sessions.
+                Assigned in order, cancelled sessions skipped. <strong>{sessionCount}</strong> active sessions.
               </p>
               <textarea className="form-textarea" value={text} onChange={e => setText(e.target.value)}
                 placeholder={"Session 1 notes...\n---\nSession 2 notes...\n---\nSession 3 notes..."}
@@ -274,9 +275,7 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
             </div>
             <div className="modal-footer">
               <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
-              <button type="submit" className="btn btn-gold" disabled={loading}>
-                {loading ? 'Uploading…' : 'Upload Notes'}
-              </button>
+              <button type="submit" className="btn btn-gold" disabled={loading}>{loading ? 'Uploading…' : 'Upload Notes'}</button>
             </div>
           </form>
         )}
@@ -301,25 +300,29 @@ export default function GroupDetailPage() {
   const load = useCallback(async () => {
     try {
       const [g, s] = await Promise.all([api.getGroup(id), api.getSessions(id)]);
-      setGroup(g);
-      setSessions(s);
+      setGroup(g); setSessions(s);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Update a single session in state without reloading everything
   function handleSessionUpdate(updated) {
     setSessions(prev => prev.map(s => s.id === updated.id ? { ...s, ...updated } : s));
   }
 
   async function handleCancel(sessionId) {
     if (!window.confirm('Cancel this session? A replacement will be added at the end.')) return;
+    try { await api.cancelSession(sessionId); setSuccess('Session cancelled — replacement added at end.'); load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function handleUncancel(sessionId) {
+    if (!window.confirm('Restore this session? The replacement that was added will be removed if it hasn\'t been used.')) return;
     try {
-      await api.cancelSession(sessionId);
-      setSuccess('Session cancelled — replacement added at end.');
-      load(); // reload to get new session
+      const updated = await api.uncancelSession(sessionId);
+      setSuccess('Session restored.');
+      load(); // reload to reflect removed replacement
     } catch (err) { setError(err.message); }
   }
 
@@ -344,9 +347,9 @@ export default function GroupDetailPage() {
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!group)  return <div className="alert alert-error" style={{ margin: 24 }}>Group not found.</div>;
 
-  const supervisorName  = group.supervisor
+  const supervisorName = group.supervisor
     ? `${group.supervisor.first_name} ${group.supervisor.last_name}`.trim() : 'Unassigned';
-  const instructorName  = group.instructor
+  const instructorName = group.instructor
     ? `${group.instructor.first_name} ${group.instructor.last_name}`.trim() : null;
   const dow     = group.day_of_week_int ?? DAY_NAMES.indexOf(group.day_of_week);
   const dayName = DAY_NAMES[dow] || group.day_of_week || '';
@@ -364,9 +367,8 @@ export default function GroupDetailPage() {
 
   return (
     <div>
-      <button className="back-link" onClick={() => navigate('/')}>← Back to Dashboard</button>
+      <button className="back-link" onClick={() => navigate('/')}>← Back to Groups</button>
 
-      {/* Header */}
       <div className="page-header">
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
@@ -374,22 +376,16 @@ export default function GroupDetailPage() {
             <span className={`badge badge-${group.status}`}>{group.status}</span>
             {group.archived && <span className="badge badge-cancelled">Archived</span>}
           </div>
-
-          {/* Internal name */}
           {group.internal_name && group.internal_name !== (group.group_name || group.name) && (
-            <div style={{ fontSize: '0.8rem', color: 'var(--gray-400)', marginBottom: 6 }}>
+            <div style={{ fontSize: '0.8rem', color: 'var(--gray-400)', marginBottom: 5 }}>
               Internal: <strong>{group.internal_name}</strong>
             </div>
           )}
-
-          {/* Description */}
           {group.description && (
             <div style={{ fontSize: '0.875rem', color: 'var(--gray-600)', marginBottom: 8, maxWidth: 600 }}>
               {group.description}
             </div>
           )}
-
-          {/* Schedule meta */}
           <div style={{ fontSize: '0.85rem', color: 'var(--gray-600)', display: 'flex', flexWrap: 'wrap', gap: '6px 16px' }}>
             <span>📅 {dayName}s</span>
             <span>🕐 {fmt12(group.start_time || group.session_time)} – {fmt12(group.end_time)}</span>
@@ -403,15 +399,11 @@ export default function GroupDetailPage() {
             )}
             {group.total_sessions && <span>{group.total_sessions} sessions</span>}
           </div>
-
-          {/* People */}
-          <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', marginTop: 6, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-            <span>👤 Supervisor: {supervisorName}</span>
-            {instructorName && <span>🎓 Instructor: {instructorName}</span>}
+          <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', marginTop: 5, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <span>👤 {supervisorName}</span>
+            {instructorName && <span>🎓 {instructorName}</span>}
           </div>
         </div>
-
-        {/* Actions */}
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>📋 Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
@@ -420,9 +412,7 @@ export default function GroupDetailPage() {
           )}
           {isAdmin && isEnded && (
             <button className="btn btn-outline btn-sm" onClick={handleUnendGroup}
-              style={{ borderColor: '#10b981', color: '#10b981' }}>
-              Re-open Group
-            </button>
+              style={{ borderColor: '#10b981', color: '#10b981' }}>Re-open Group</button>
           )}
           {!group.archived && (
             <button className="btn btn-outline btn-sm" onClick={handleArchive}
@@ -434,7 +424,6 @@ export default function GroupDetailPage() {
       {error   && <div className="alert alert-error">{error}</div>}
       {success && <div className="alert alert-success">{success}</div>}
 
-      {/* Stats */}
       <div className="stats-row" style={{ marginBottom: 24 }}>
         <div className="stat-card"><div className="stat-value">{stats.total}</div><div className="stat-label">Total</div></div>
         <div className="stat-card"><div className="stat-value" style={{ color: STATUS_STYLE.scheduled.color }}>{stats.scheduled}</div><div className="stat-label">Scheduled</div></div>
@@ -446,11 +435,12 @@ export default function GroupDetailPage() {
         )}
       </div>
 
-      {/* Sessions */}
       <div className="card">
         <div className="card-header">
           <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
-          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>SOAP notes auto-save · Click date or time to edit</span>
+          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>
+            SOAP notes auto-save · Click date or time to edit · Status dropdown changes group_ended manually
+          </span>
         </div>
         <div style={{ padding: '16px 20px' }}>
           {sessions.length === 0 ? (
@@ -462,6 +452,7 @@ export default function GroupDetailPage() {
               groupDuration={group.default_duration || 45}
               onUpdate={handleSessionUpdate}
               onCancel={handleCancel}
+              onUncancel={handleUncancel}
             />
           ))}
         </div>
