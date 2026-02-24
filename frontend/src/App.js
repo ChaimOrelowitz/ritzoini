@@ -1,42 +1,40 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { useAuth } from './context/AuthContext';
+import Layout from './components/layout/Layout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import GroupDetailPage from './pages/GroupDetailPage';
-import AdminUsersPage from './pages/AdminUsersPage';
-import Layout from './components/shared/Layout';
+import SupervisorsPage from './pages/SupervisorsPage';
+import InstructorsPage from './pages/InstructorsPage';
 
-function PrivateRoute({ children }) {
-  const { user, loading } = useAuth();
+function PrivateRoute({ children, adminOnly = false }) {
+  const { user, profile, loading } = useAuth();
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
-  return user ? children : <Navigate to="/login" replace />;
-}
-
-function PublicRoute({ children }) {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
-  return !user ? children : <Navigate to="/" replace />;
-}
-
-function AppRoutes() {
-  return (
-    <Routes>
-      <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
-      <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
-        <Route index element={<DashboardPage />} />
-        <Route path="groups/:id" element={<GroupDetailPage />} />
-        <Route path="users" element={<AdminUsersPage />} />
-      </Route>
-    </Routes>
-  );
+  if (!user) return <Navigate to="/login" replace />;
+  if (adminOnly && profile?.role !== 'admin') return <Navigate to="/" replace />;
+  return children;
 }
 
 export default function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
-    </AuthProvider>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/" element={
+          <PrivateRoute><Layout /></PrivateRoute>
+        }>
+          <Route index element={<DashboardPage />} />
+          <Route path="groups/:id" element={<GroupDetailPage />} />
+          <Route path="supervisors" element={
+            <PrivateRoute adminOnly><SupervisorsPage /></PrivateRoute>
+          } />
+          <Route path="instructors" element={
+            <PrivateRoute adminOnly><InstructorsPage /></PrivateRoute>
+          } />
+          {/* Legacy redirect */}
+          <Route path="users" element={<Navigate to="/supervisors" replace />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
   );
 }
