@@ -12,16 +12,11 @@ function fmt12(t) {
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
-function getSessionStats(sessions = []) {
-  return {
-    total: sessions.length,
-    completed: sessions.filter(s => s.status === 'completed').length,
-  };
-}
-
 function GroupCard({ group, onClick }) {
-  const stats = getSessionStats(group.sessions);
-  const progress = stats.total > 0 ? Math.round((stats.completed / stats.total) * 100) : 0;
+  const sessions = group.sessions || [];
+  const total     = sessions.length;
+  const completed = sessions.filter(s => s.status === 'completed').length;
+  const progress  = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return (
     <div className="group-card" onClick={onClick}>
@@ -41,16 +36,20 @@ function GroupCard({ group, onClick }) {
               {group.internal_name}
             </div>
           )}
+          {group.total_sessions && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>
+              {group.total_sessions} sessions · {group.default_duration || 45} min
+            </div>
+          )}
         </div>
         <span className={`badge badge-${group.status}`}>{group.status}</span>
       </div>
-
-      <div className="group-progress" style={{ marginTop: 12 }}>
+      <div className="group-progress" style={{ marginTop: 10 }}>
         <div className="progress-bar">
           <div className="progress-fill" style={{ width: `${progress}%` }} />
         </div>
         <div className="progress-labels">
-          <span>{stats.completed} of {stats.total} sessions</span>
+          <span>{completed} of {total} sessions</span>
           <span>{progress}%</span>
         </div>
       </div>
@@ -65,38 +64,33 @@ function AdminDaySection({ dayName, groups, navigate }) {
     if (!bySupervisor[supId]) bySupervisor[supId] = { supervisor: g.supervisor, groups: [] };
     bySupervisor[supId].groups.push(g);
   }
-
   return (
     <div style={{ marginBottom: 32 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-        <h3 style={{ fontFamily: "'DM Serif Display', serif", fontSize: '1.3rem', color: 'var(--navy)' }}>{dayName}</h3>
+        <h3 style={{ fontFamily: "'DM Serif Display', serif", fontSize: '1.25rem', color: 'var(--navy)' }}>{dayName}</h3>
         <div style={{ flex: 1, height: 1, background: 'var(--gray-200)' }} />
-        <span style={{ fontSize: '0.78rem', color: 'var(--gray-400)', fontWeight: 600 }}>
+        <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)', fontWeight: 600 }}>
           {groups.length} group{groups.length !== 1 ? 's' : ''}
         </span>
       </div>
-      {Object.entries(bySupervisor).map(([supId, { supervisor, groups: supGroups }]) => {
-        const supName = supervisor ? `${supervisor.first_name} ${supervisor.last_name}`.trim() : 'Unassigned';
+      {Object.entries(bySupervisor).map(([supId, { supervisor, groups: sg }]) => {
+        const name = supervisor ? `${supervisor.first_name} ${supervisor.last_name}`.trim() : 'Unassigned';
         return (
-          <div key={supId} style={{ marginBottom: 20 }}>
-            <div style={{
-              fontSize: '0.78rem', fontWeight: 700, color: 'var(--gray-600)',
-              textTransform: 'uppercase', letterSpacing: '0.08em',
-              marginBottom: 10, paddingLeft: 4,
-              display: 'flex', alignItems: 'center', gap: 8,
-            }}>
+          <div key={supId} style={{ marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, paddingLeft: 4 }}>
               <span style={{
-                width: 24, height: 24, borderRadius: '50%',
-                background: 'var(--navy)', color: 'white',
+                width: 24, height: 24, borderRadius: '50%', background: 'var(--navy)', color: 'white',
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: '0.65rem', fontWeight: 700, flexShrink: 0,
               }}>
-                {supName.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2)}
+                {name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2)}
               </span>
-              {supName}
+              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                {name}
+              </span>
             </div>
             <div className="groups-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
-              {supGroups.map(g => <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} />)}
+              {sg.map(g => <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} />)}
             </div>
           </div>
         );
@@ -109,7 +103,7 @@ function SupervisorDaySection({ dayName, groups, navigate }) {
   return (
     <div style={{ marginBottom: 32 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-        <h3 style={{ fontFamily: "'DM Serif Display', serif", fontSize: '1.3rem', color: 'var(--navy)' }}>{dayName}</h3>
+        <h3 style={{ fontFamily: "'DM Serif Display', serif", fontSize: '1.25rem', color: 'var(--navy)' }}>{dayName}</h3>
         <div style={{ flex: 1, height: 1, background: 'var(--gray-200)' }} />
       </div>
       <div className="groups-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
@@ -122,13 +116,13 @@ function SupervisorDaySection({ dayName, groups, navigate }) {
 export default function DashboardPage() {
   const { profile, isAdmin } = useAuth();
   const navigate = useNavigate();
-  const [groups, setGroups] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [groups, setGroups]           = useState([]);
+  const [loading, setLoading]         = useState(true);
   const [showArchived, setShowArchived] = useState(false);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [error, setError] = useState('');
+  const [showCreate, setShowCreate]   = useState(false);
+  const [error, setError]             = useState('');
 
-  const loadGroups = useCallback(async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const data = await api.getGroups(showArchived);
@@ -140,7 +134,7 @@ export default function DashboardPage() {
     }
   }, [showArchived]);
 
-  useEffect(() => { loadGroups(); }, [loadGroups]);
+  useEffect(() => { load(); }, [load]);
 
   const byDay = {};
   for (const g of groups) {
@@ -149,10 +143,10 @@ export default function DashboardPage() {
     byDay[dow].push(g);
   }
 
-  const allStats = {
-    groups: groups.length,
-    active: groups.filter(g => g.status === 'active').length,
-    sessions: groups.reduce((a, g) => a + (g.sessions?.length || 0), 0),
+  const stats = {
+    groups:    groups.length,
+    active:    groups.filter(g => !g.archived && g.status !== 'completed').length,
+    sessions:  groups.reduce((a, g) => a + (g.sessions?.length || 0), 0),
     completed: groups.reduce((a, g) => a + (g.sessions?.filter(s => s.status === 'completed').length || 0), 0),
   };
 
@@ -163,24 +157,23 @@ export default function DashboardPage() {
       <div className="page-header">
         <div>
           <h2>Welcome back, {profile?.first_name || profile?.email}</h2>
-          <p>{isAdmin ? 'All groups across the platform' : 'Your assigned groups'}</p>
+          <p style={{ color: 'var(--gray-500)', fontSize: '0.875rem' }}>
+            {showArchived ? 'Archived groups' : isAdmin ? 'All active groups' : 'Your assigned groups'}
+          </p>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <button
-            className="btn btn-outline btn-sm"
-            onClick={() => setShowArchived(a => !a)}
-          >
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button className="btn btn-outline btn-sm" onClick={() => setShowArchived(a => !a)}>
             {showArchived ? '← Active Groups' : 'View Archived'}
           </button>
-          <button className="btn btn-gold" onClick={() => setShowCreateModal(true)}>
-            + New Group
-          </button>
+          {isAdmin && (
+            <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
+          )}
         </div>
       </div>
 
       {showArchived && (
-        <div className="alert alert-info" style={{ marginBottom: 24 }}>
-          Showing archived groups
+        <div className="alert" style={{ background: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d', borderRadius: 'var(--radius)', padding: '10px 16px', marginBottom: 20, fontSize: '0.85rem' }}>
+          📦 Showing archived groups
         </div>
       )}
 
@@ -188,31 +181,29 @@ export default function DashboardPage() {
 
       {isAdmin && !showArchived && (
         <div className="stats-row">
-          <div className="stat-card"><div className="stat-value">{allStats.groups}</div><div className="stat-label">Total Groups</div></div>
-          <div className="stat-card"><div className="stat-value">{allStats.active}</div><div className="stat-label">Active</div></div>
-          <div className="stat-card"><div className="stat-value">{allStats.sessions}</div><div className="stat-label">Sessions</div></div>
-          <div className="stat-card"><div className="stat-value">{allStats.completed}</div><div className="stat-label">Completed</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.groups}</div><div className="stat-label">Groups</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.active}</div><div className="stat-label">Active</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.sessions}</div><div className="stat-label">Sessions</div></div>
+          <div className="stat-card"><div className="stat-value">{stats.completed}</div><div className="stat-label">Completed</div></div>
         </div>
       )}
 
       {groups.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">{showArchived ? '📦' : '📋'}</div>
-          <p>{showArchived ? 'No archived groups.' : isAdmin ? 'No groups yet. Create one to get started.' : 'You have no groups assigned to you.'}</p>
+          <p>{showArchived ? 'No archived groups.' : isAdmin ? 'No groups yet. Create one to get started.' : 'No groups assigned to you.'}</p>
         </div>
       ) : (
-        [0,1,2,3,4,5,6].filter(d => byDay[d]?.length > 0).map(dow => (
-          isAdmin
+        [0,1,2,3,4,5,6]
+          .filter(d => byDay[d]?.length > 0)
+          .map(dow => isAdmin
             ? <AdminDaySection key={dow} dayName={DAY_NAMES[dow]} groups={byDay[dow]} navigate={navigate} />
             : <SupervisorDaySection key={dow} dayName={DAY_NAMES[dow]} groups={byDay[dow]} navigate={navigate} />
-        ))
+          )
       )}
 
-      {showCreateModal && (
-        <CreateGroupModal
-          onClose={() => setShowCreateModal(false)}
-          onCreated={() => { setShowCreateModal(false); loadGroups(); }}
-        />
+      {showCreate && (
+        <CreateGroupModal onClose={() => setShowCreate(false)} onCreated={() => { setShowCreate(false); load(); }} />
       )}
     </div>
   );
