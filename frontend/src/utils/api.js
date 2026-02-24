@@ -5,7 +5,6 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 async function authFetch(path, options = {}) {
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
-
   const res = await fetch(`${API}${path}`, {
     ...options,
     headers: {
@@ -14,7 +13,6 @@ async function authFetch(path, options = {}) {
       ...options.headers,
     },
   });
-
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Request failed');
   return json;
@@ -22,11 +20,12 @@ async function authFetch(path, options = {}) {
 
 export const api = {
   // Groups
-  getGroups: (archived = false) => authFetch(`/api/groups?archived=${archived}`),
-  getGroup:  (id) => authFetch(`/api/groups/${id}`),
-  createGroup: (body) => authFetch('/api/groups', { method: 'POST', body: JSON.stringify(body) }),
-  updateGroup: (id, body) => authFetch(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  archiveGroup:   (id) => authFetch(`/api/groups/${id}/archive`,   { method: 'POST' }),
+  getGroups:      (archived = false) => authFetch(`/api/groups?archived=${archived}`),
+  getGroup:       (id) => authFetch(`/api/groups/${id}`),
+  createGroup:    (body) => authFetch('/api/groups', { method: 'POST', body: JSON.stringify(body) }),
+  updateGroup:    (id, body) => authFetch(`/api/groups/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  endGroup:       (id) => authFetch(`/api/groups/${id}/end`, { method: 'POST' }),
+  archiveGroup:   (id) => authFetch(`/api/groups/${id}/archive`, { method: 'POST' }),
   unarchiveGroup: (id) => authFetch(`/api/groups/${id}/unarchive`, { method: 'POST' }),
 
   // Sessions
@@ -34,12 +33,14 @@ export const api = {
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`, { method: 'POST' }),
   returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
-  submitNotes:   (id, notes) => authFetch(`/api/sessions/${id}/submit-notes`, { method: 'POST', body: JSON.stringify({ soap_note: notes }) }),
   lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`, { method: 'POST' }),
+  bulkNotes:     (groupId, notes_text) => authFetch(`/api/sessions/bulk-notes/${groupId}`, {
+    method: 'POST', body: JSON.stringify({ notes_text }),
+  }),
 
   // Users
-  getUsers: () => authFetch('/api/users'),
-  inviteUser: (email, first_name, last_name, phone) =>
+  getUsers:    () => authFetch('/api/users'),
+  inviteUser:  (email, first_name, last_name, phone) =>
     authFetch('/api/users/invite', { method: 'POST', body: JSON.stringify({ email, first_name, last_name, phone }) }),
-  updateUser: (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  updateUser:  (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 };
