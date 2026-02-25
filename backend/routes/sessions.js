@@ -183,14 +183,15 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     const ecwTime = (g.ecw_time || sTime).slice(0, 5);
     const ecwEnd  = g.ecw_end_time || computeEcwEnd(ecwTime, dur);
 
+    // Fetch all sessions ascending, including notes and locked status
     const { data: allSessions, error: allErr } = await supabase
       .from('sessions')
-      .select('id, session_number, session_date, scheduled_date')
+      .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked')
       .eq('group_id', session.group_id)
-      .order('session_number', { ascending: false });
+      .order('session_number', { ascending: true });
     if (allErr) throw allErr;
 
-    const lastSess    = allSessions[0];
+    const lastSess    = allSessions[allSessions.length - 1];
     const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
     if (!lastDateStr) throw new Error('Last session has no date');
 
@@ -200,6 +201,7 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     const nextDateStr = nextDate.toISOString().split('T')[0];
     const newNum      = lastSess.session_number + 1;
 
+    // Create new blank session at the end
     const { data: newSess, error: insertErr } = await supabase
       .from('sessions')
       .insert({
@@ -212,6 +214,27 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       })
       .select().single();
     if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
+
+    // Shift notes forward: starting from the session AFTER the cancelled one,
+    // copy each session's notes to the next session (working backwards to avoid overwriting).
+    // Locked sessions are skipped — their notes stay put.
+    const cancelledIdx = allSessions.findIndex(s => s.id === session.id);
+    const toShift = allSessions.slice(cancelledIdx + 1); // sessions after the cancelled one
+
+    for (let i = toShift.length - 1; i >= 0; i--) {
+      const current = toShift[i];
+      const next    = i < toShift.length - 1 ? toShift[i + 1] : newSess;
+      if (current.locked) continue; // don't touch locked sessions
+      const note = current.soap_note || current.notes || null;
+      // Copy note to next session
+      await supabase.from('sessions')
+        .update({ soap_note: note, notes: note })
+        .eq('id', next.id);
+      // Clear note from current session (it has moved forward)
+      await supabase.from('sessions')
+        .update({ soap_note: null, notes: null })
+        .eq('id', current.id);
+    }
 
     // Cancel original + store replacement ref
     await supabase.from('sessions')
