@@ -16,7 +16,6 @@ function computeEcwEnd(ecwTime, duration) {
 }
 
 // Auto-complete sessions whose ECW end time has passed (5 min buffer)
-// Uses ecw_end_time (not start_time) as the trigger
 async function autoCompleteSessions(groupId) {
   const now = new Date();
 
@@ -30,15 +29,12 @@ async function autoCompleteSessions(groupId) {
   if (!data?.length) return;
 
   const toComplete = data.filter(s => {
-    const dateStr  = s.session_date || s.scheduled_date;
-    // Use ecw_end_time if available, otherwise compute from ecw_time + duration
-    const ecwEnd   = s.ecw_end_time || computeEcwEnd(s.ecw_time, s.duration);
+    const dateStr = s.session_date || s.scheduled_date;
+    const ecwEnd  = s.ecw_end_time || computeEcwEnd(s.ecw_time, s.duration);
     if (!dateStr || !ecwEnd) return false;
-
     const [h, m] = ecwEnd.slice(0,5).split(':').map(Number);
     const endDT = new Date(dateStr + 'T00:00:00');
     endDT.setHours(h, m, 0, 0);
-    // 5 minutes after ECW end
     return now > new Date(endDT.getTime() + 5 * 60 * 1000);
   });
 
@@ -48,7 +44,6 @@ async function autoCompleteSessions(groupId) {
     .update({ status: 'completed' })
     .in('id', toComplete.map(s => s.id));
 
-  // After completing, check if group should auto-complete
   await checkGroupAutoComplete(groupId);
 }
 
@@ -61,21 +56,16 @@ async function checkGroupAutoComplete(groupId) {
 
   if (!sessions?.length) return;
 
-  // Only count non-cancelled, non-group_ended sessions
   const active = sessions.filter(s => s.status !== 'cancelled' && s.status !== 'group_ended');
   if (!active.length) return;
 
   const allLocked = active.every(s => s.locked === true);
   if (!allLocked) return;
 
-  // Check none are still scheduled or completed-but-not-locked
-  const allDone = active.every(s => s.locked === true);
-  if (allDone) {
-    await supabase.from('groups')
-      .update({ status: 'completed' })
-      .eq('id', groupId)
-      .neq('status', 'completed'); // don't double-update
-  }
+  await supabase.from('groups')
+    .update({ status: 'completed' })
+    .eq('id', groupId)
+    .neq('status', 'completed');
 }
 
 // GET /api/sessions?group_id=xxx
@@ -125,12 +115,10 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
     const effDuration = parseInt(updates.duration || session.duration || session.group.default_duration || 45);
 
-    // Recompute end_time from start_time
     const effStartTime = updates.start_time || session.start_time || session.scheduled_time;
     if (updates.start_time || updates.duration)
       updates.end_time = addMinutesToTime(effStartTime, effDuration);
 
-    // Recompute ecw_end_time from ecw_time
     const effEcwTime = updates.ecw_time || session.ecw_time || session.group.ecw_time;
     if (updates.ecw_time || updates.duration)
       updates.ecw_end_time = computeEcwEnd(effEcwTime, effDuration);
@@ -141,9 +129,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
       updates.scheduled_date = updates.session_date;
     }
 
-    if (updates.locked === true  && !session.locked) {
-      updates.locked_at  = new Date().toISOString();
-      updates.locked_by  = req.user.id;
+    if (updates.locked === true && !session.locked) {
+      updates.locked_at = new Date().toISOString();
+      updates.locked_by = req.user.id;
     }
     if (updates.locked === false) {
       updates.locked_at = null;
@@ -154,7 +142,6 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .from('sessions').update(updates).eq('id', req.params.id).select().single();
     if (error) throw error;
 
-    // If just locked, check if group should auto-complete
     if (updates.locked === true) {
       await checkGroupAutoComplete(session.group_id);
     }
@@ -215,25 +202,25 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       .select().single();
     if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
 
-    // Shift notes forward: starting from the session AFTER the cancelled one,
-    // copy each session's notes to the next session (working backwards to avoid overwriting).
-    // Locked sessions are skipped — their notes stay put.
+    // Shift notes forward: each session after the cancelled one passes its notes
+    // to the next session. The last existing session passes its notes to the new one.
+    // Work backwards to avoid overwriting notes before they've been copied.
+    // Locked sessions are skipped.
     const cancelledIdx = allSessions.findIndex(s => s.id === session.id);
-    const toShift = allSessions.slice(cancelledIdx + 1); // sessions after the cancelled one
+    const toShift = allSessions.slice(cancelledIdx + 1);
+    const shiftChain = [...toShift, newSess]; // full chain: existing sessions + new blank one at end
 
-    for (let i = toShift.length - 1; i >= 0; i--) {
-      const current = toShift[i];
-      const next    = i < toShift.length - 1 ? toShift[i + 1] : newSess;
-      if (current.locked) continue; // don't touch locked sessions
-      const note = current.soap_note || current.notes || null;
-      // Copy note to next session
+    for (let i = shiftChain.length - 2; i >= 0; i--) {
+      const from = shiftChain[i];
+      const to   = shiftChain[i + 1];
+      if (from.locked) continue;
+      const note = from.soap_note || from.notes || null;
       await supabase.from('sessions')
         .update({ soap_note: note, notes: note })
-        .eq('id', next.id);
-      // Clear note from current session (it has moved forward)
+        .eq('id', to.id);
       await supabase.from('sessions')
         .update({ soap_note: null, notes: null })
-        .eq('id', current.id);
+        .eq('id', from.id);
     }
 
     // Cancel original + store replacement ref
@@ -265,35 +252,65 @@ router.post('/:id/uncancel', requireAuth, async (req, res) => {
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
+    // Fetch all sessions ascending so we can shift notes back
+    const { data: allSessions } = await supabase
+      .from('sessions')
+      .select('id, session_number, status, soap_note, notes, locked')
+      .eq('group_id', session.group_id)
+      .order('session_number', { ascending: true });
+
     let replacementId = null, replacementNum = null;
 
+    // First try the stored replacement reference
     if (session.replacement_session_id) {
-      const { data: rep } = await supabase
-        .from('sessions').select('id, session_number, status, soap_note, notes')
-        .eq('id', session.replacement_session_id).single();
-      if (rep && rep.status === 'scheduled' && !rep.soap_note && !rep.notes) {
-        replacementId = rep.id; replacementNum = rep.session_number;
+      const rep = allSessions?.find(s => s.id === session.replacement_session_id);
+      if (rep && rep.status === 'scheduled') {
+        replacementId = rep.id;
+        replacementNum = rep.session_number;
       }
     }
 
-    if (!replacementId) {
-      const { data: last } = await supabase
-        .from('sessions').select('id, session_number, status, soap_note, notes')
-        .eq('group_id', session.group_id)
-        .order('session_number', { ascending: false }).limit(1).single();
-      if (last && last.id !== session.id && last.session_number > session.session_number
-        && last.status === 'scheduled' && !last.soap_note && !last.notes) {
-        replacementId = last.id; replacementNum = last.session_number;
+    // Fall back: last scheduled session after the cancelled one
+    if (!replacementId && allSessions?.length) {
+      const last = allSessions[allSessions.length - 1];
+      if (last.id !== session.id
+        && last.session_number > session.session_number
+        && last.status === 'scheduled') {
+        replacementId = last.id;
+        replacementNum = last.session_number;
       }
     }
 
-    if (replacementId) {
+    if (replacementId && allSessions) {
+      const cancelledIdx   = allSessions.findIndex(s => s.id === session.id);
+      const replacementIdx = allSessions.findIndex(s => s.id === replacementId);
+
+      // Sessions between the cancelled one (exclusive) and the replacement (inclusive)
+      const toShift = allSessions.slice(cancelledIdx + 1, replacementIdx + 1);
+
+      // Shift notes backwards: each session receives the notes of the one after it.
+      // Work forward so we don't overwrite notes before they've been read.
+      for (let i = 0; i < toShift.length - 1; i++) {
+        const from = toShift[i + 1]; // notes come FROM the next session
+        const to   = toShift[i];     // notes go TO the current session
+        if (to.locked) continue;
+        const note = from.soap_note || from.notes || null;
+        await supabase.from('sessions')
+          .update({ soap_note: note, notes: note })
+          .eq('id', to.id);
+        await supabase.from('sessions')
+          .update({ soap_note: null, notes: null })
+          .eq('id', from.id);
+      }
+
+      // Delete the replacement session
       await supabase.from('sessions').delete().eq('id', replacementId);
       await supabase.from('groups')
         .update({ total_sessions: replacementNum - 1 })
         .eq('id', session.group_id);
     }
 
+    // Restore the cancelled session to scheduled
     const { data, error } = await supabase
       .from('sessions')
       .update({ status: 'scheduled', status_manual_override: false, replacement_session_id: null })
@@ -316,9 +333,9 @@ router.post('/:id/return-to-auto', requireAuth, async (req, res) => {
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
-    const dateStr  = session.session_date || session.scheduled_date;
-    const ecwEnd   = session.ecw_end_time || computeEcwEnd(session.ecw_time, session.duration);
-    let newStatus  = 'scheduled';
+    const dateStr = session.session_date || session.scheduled_date;
+    const ecwEnd  = session.ecw_end_time || computeEcwEnd(session.ecw_time, session.duration);
+    let newStatus = 'scheduled';
     if (dateStr && ecwEnd) {
       const [h, m] = ecwEnd.slice(0,5).split(':').map(Number);
       const endDT  = new Date(dateStr + 'T00:00:00');
