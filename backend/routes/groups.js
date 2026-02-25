@@ -60,6 +60,22 @@ const GROUP_DETAIL_SELECT = `
   instructor:instructors!instructor_id(id, first_name, last_name, phone)
 `;
 
+// Mark sessions beyond newCount as group_ended (if they're still scheduled)
+async function truncateExcessSessions(groupId, newCount) {
+  const { data: excess } = await supabase
+    .from('sessions')
+    .select('id, session_number, status')
+    .eq('group_id', groupId)
+    .eq('status', 'scheduled')
+    .gt('session_number', newCount);
+
+  if (excess?.length) {
+    await supabase.from('sessions')
+      .update({ status: 'group_ended', status_manual_override: true })
+      .in('id', excess.map(s => s.id));
+  }
+}
+
 router.get('/', requireAuth, async (req, res) => {
   try {
     const showArchived = req.query.archived === 'true';
@@ -144,7 +160,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (req.user.role === 'supervisor' && existing.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
-    const adminOnly = ['internal_name', 'supervisor_id', 'instructor_id'];
+    const adminOnly      = ['internal_name', 'supervisor_id', 'instructor_id'];
     const supervisorAllowed = ['group_name','description','start_date','end_date','start_time',
                                'ecw_time','total_sessions','default_duration','status'];
     const allowed = req.user.role === 'admin' ? [...adminOnly, ...supervisorAllowed] : supervisorAllowed;
@@ -175,14 +191,23 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
 
-    if (updates.total_sessions || updates.start_date || updates.end_date)
+    // If total_sessions was reduced, mark excess sessions as group_ended
+    const newTotal = updates.total_sessions || existing.total_sessions;
+    const oldTotal = existing.total_sessions;
+    if (newTotal && oldTotal && parseInt(newTotal) < parseInt(oldTotal)) {
+      await truncateExcessSessions(req.params.id, parseInt(newTotal));
+    }
+
+    // Regenerate sessions if count or dates changed
+    if (updates.total_sessions || updates.start_date || updates.end_date) {
       await supabase.rpc('generate_sessions_for_group', { p_group_id: req.params.id });
+    }
 
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// End group → remaining scheduled → group_ended
+// End group
 router.post('/:id/end', requireAuth, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
@@ -197,7 +222,7 @@ router.post('/:id/end', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Un-end group → revert group_ended sessions → scheduled, group → active
+// Un-end group
 router.post('/:id/unend', requireAuth, async (req, res) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });

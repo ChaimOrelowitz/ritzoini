@@ -30,7 +30,8 @@ async function autoCompleteSessions(groupId) {
     return fiveMinAgo > endDT;
   });
   if (toComplete.length)
-    await supabase.from('sessions').update({ status: 'completed' }).in('id', toComplete.map(s => s.id));
+    await supabase.from('sessions').update({ status: 'completed' })
+      .in('id', toComplete.map(s => s.id));
 }
 
 // GET /api/sessions?group_id=xxx
@@ -38,7 +39,9 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const { group_id } = req.query;
     if (!group_id) return res.status(400).json({ error: 'group_id is required' });
-    const { data: group } = await supabase.from('groups').select('supervisor_id').eq('id', group_id).single();
+
+    const { data: group } = await supabase
+      .from('groups').select('supervisor_id').eq('id', group_id).single();
     if (!group) return res.status(404).json({ error: 'Group not found' });
     if (req.user.role === 'supervisor' && group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
@@ -54,11 +57,11 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // PATCH /api/sessions/:id
-// NOTE: group_ended status CAN be manually changed via status dropdown — just set status_manual_override=true
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const { data: session } = await supabase
-      .from('sessions').select('*, group:groups(supervisor_id, default_duration)')
+      .from('sessions')
+      .select('*, group:groups(supervisor_id, default_duration)')
       .eq('id', req.params.id).single();
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
@@ -69,9 +72,10 @@ router.patch('/:id', requireAuth, async (req, res) => {
       'email_sent', 'ready_to_lock', 'locked',
       'session_date', 'start_time', 'ecw_time', 'duration',
     ];
-    const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
 
-    // Any manual status change (including out of group_ended) → flag override
     if (updates.status !== undefined && updates.status_manual_override === undefined)
       updates.status_manual_override = true;
 
@@ -96,7 +100,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/sessions/:id/cancel
-// Cancels session and appends a replacement at end
+// Cancels the session and appends a new replacement at the end
 router.post('/:id/cancel', requireAuth, async (req, res) => {
   try {
     const { data: session } = await supabase
@@ -107,106 +111,124 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
+    // 1. Mark as cancelled
     await supabase.from('sessions')
       .update({ status: 'cancelled', status_manual_override: true })
       .eq('id', req.params.id);
 
-    // Find last session to compute next date
-    const { data: lastSession } = await supabase
+    // 2. Find the LAST session (by session_number) to compute next date
+    const { data: allSessions } = await supabase
       .from('sessions')
       .select('id, session_date, scheduled_date, session_number')
       .eq('group_id', session.group_id)
-      .order('session_number', { ascending: false })
-      .limit(1).single();
+      .order('session_number', { ascending: false });
 
-    let newSessionId = null;
-    if (lastSession) {
-      const lastDate = lastSession.session_date || lastSession.scheduled_date;
-      const [y, m, d] = lastDate.split('-').map(Number);
-      const next = new Date(y, m - 1, d);
-      next.setDate(next.getDate() + 7);
-      const nextDateStr = next.toISOString().split('T')[0];
+    if (!allSessions?.length) return res.json({ success: true });
 
-      const g = session.group;
-      const sTime = g.start_time || g.session_time || '09:00';
-      const dur   = g.default_duration || 45;
-      const eTime = addMinutesToTime(sTime, dur);
-      const newNum = lastSession.session_number + 1;
+    // Use the last session for the +7 day calculation
+    const lastSess = allSessions[0];
+    const lastDate = lastSess.session_date || lastSess.scheduled_date;
 
-      const { data: newSess } = await supabase.from('sessions').insert({
-        group_id: session.group_id, session_number: newNum,
-        session_date: nextDateStr, scheduled_date: nextDateStr,
-        start_time: sTime, scheduled_time: sTime, end_time: eTime,
-        ecw_time: g.ecw_time || sTime, duration: dur,
-        session_day_of_week: new Date(next).getDay(),
-        status: 'scheduled', status_manual_override: false,
-        // Track which session this replaces
+    if (!lastDate) return res.json({ success: true, warning: 'No date on last session' });
+
+    const [y, m, d] = lastDate.split('-').map(Number);
+    const nextDate = new Date(y, m - 1, d);
+    nextDate.setDate(nextDate.getDate() + 7);
+    const nextDateStr = nextDate.toISOString().split('T')[0];
+
+    const g = session.group;
+    const sTime = (g.start_time || g.session_time || '09:00').slice(0, 5);
+    const dur   = parseInt(g.default_duration) || 45;
+    const eTime = addMinutesToTime(sTime, dur);
+    const newNum = lastSess.session_number + 1;
+    const newDow = nextDate.getDay();
+
+    // 3. Insert the replacement session
+    const { data: newSess, error: insertErr } = await supabase
+      .from('sessions')
+      .insert({
+        group_id:           session.group_id,
+        session_number:     newNum,
+        session_date:       nextDateStr,
+        scheduled_date:     nextDateStr,
+        start_time:         sTime,
+        scheduled_time:     sTime,
+        end_time:           eTime,
+        ecw_time:           (g.ecw_time || sTime).slice(0, 5),
+        duration:           dur,
+        session_day_of_week: newDow,
+        status:             'scheduled',
+        status_manual_override: false,
         replaced_session_id: req.params.id,
-      }).select().single();
+      })
+      .select()
+      .single();
 
-      newSessionId = newSess?.id;
-
-      await supabase.from('groups').update({ total_sessions: newNum }).eq('id', session.group_id);
+    if (insertErr) {
+      console.error('Insert replacement session error:', insertErr);
+      return res.status(500).json({ error: insertErr.message });
     }
 
-    res.json({ success: true, new_session_id: newSessionId });
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    // 4. Update group total_sessions
+    await supabase.from('groups')
+      .update({ total_sessions: newNum })
+      .eq('id', session.group_id);
+
+    res.json({ success: true, new_session: newSess });
+  } catch (err) {
+    console.error('Cancel session error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/sessions/:id/uncancel
-// Restores a cancelled session:
-// 1. Finds the replacement session (the one added at the end when this was cancelled)
-// 2. If the replacement is still unused (scheduled, no soap_note), removes it
-// 3. Restores this session to scheduled
+// Restores a cancelled session; removes unused replacement if possible
 router.post('/:id/uncancel', requireAuth, async (req, res) => {
   try {
     const { data: session } = await supabase
-      .from('sessions').select('*, group:groups(supervisor_id, total_sessions)')
+      .from('sessions')
+      .select('*, group:groups(supervisor_id)')
       .eq('id', req.params.id).single();
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (session.status !== 'cancelled') return res.status(400).json({ error: 'Session is not cancelled' });
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
-    // Try to find the replacement: either tracked by replaced_session_id, or last session in group
+    // Find replacement: first try tracked link, then last unused scheduled session
     let replacementId = null;
+    let replacementNum = null;
 
-    // First: look for a session that explicitly replaced this one
     const { data: tracked } = await supabase
       .from('sessions')
       .select('id, session_number, status, soap_note, notes')
       .eq('group_id', session.group_id)
       .eq('replaced_session_id', req.params.id)
-      .single();
+      .maybeSingle();
 
-    if (tracked) {
-      replacementId = tracked.id;
+    if (tracked && tracked.status === 'scheduled' && !tracked.soap_note && !tracked.notes) {
+      replacementId  = tracked.id;
+      replacementNum = tracked.session_number;
     } else {
-      // Fallback: last session in group that's still scheduled and empty
       const { data: last } = await supabase
         .from('sessions')
         .select('id, session_number, status, soap_note, notes')
         .eq('group_id', session.group_id)
         .order('session_number', { ascending: false })
-        .limit(1).single();
-
+        .limit(1)
+        .single();
       if (last && last.id !== req.params.id && last.status === 'scheduled' && !last.soap_note && !last.notes) {
-        replacementId = last.id;
+        replacementId  = last.id;
+        replacementNum = last.session_number;
       }
     }
 
     if (replacementId) {
-      const { data: rep } = await supabase.from('sessions').select('session_number, soap_note, notes, status').eq('id', replacementId).single();
-      // Only remove if it's still unused
-      if (!rep.soap_note && !rep.notes && rep.status === 'scheduled') {
-        await supabase.from('sessions').delete().eq('id', replacementId);
-        await supabase.from('groups')
-          .update({ total_sessions: rep.session_number - 1 })
-          .eq('id', session.group_id);
-      }
+      await supabase.from('sessions').delete().eq('id', replacementId);
+      await supabase.from('groups')
+        .update({ total_sessions: replacementNum - 1 })
+        .eq('id', session.group_id);
     }
 
-    // Restore the original session
     const { data, error } = await supabase
       .from('sessions')
       .update({ status: 'scheduled', status_manual_override: false })
@@ -220,7 +242,8 @@ router.post('/:id/uncancel', requireAuth, async (req, res) => {
 router.post('/:id/return-to-auto', requireAuth, async (req, res) => {
   try {
     const { data: session } = await supabase
-      .from('sessions').select('*, group:groups(supervisor_id)').eq('id', req.params.id).single();
+      .from('sessions').select('*, group:groups(supervisor_id)')
+      .eq('id', req.params.id).single();
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
@@ -237,7 +260,8 @@ router.post('/:id/return-to-auto', requireAuth, async (req, res) => {
     }
 
     const { data, error } = await supabase
-      .from('sessions').update({ status: newStatus, status_manual_override: false })
+      .from('sessions')
+      .update({ status: newStatus, status_manual_override: false })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
     res.json(data);
@@ -251,7 +275,8 @@ router.post('/bulk-notes/:groupId', requireAuth, async (req, res) => {
     const { notes_text } = req.body;
     if (!notes_text?.trim()) return res.status(400).json({ error: 'notes_text is required' });
 
-    const { data: group } = await supabase.from('groups').select('supervisor_id').eq('id', groupId).single();
+    const { data: group } = await supabase
+      .from('groups').select('supervisor_id').eq('id', groupId).single();
     if (!group) return res.status(404).json({ error: 'Group not found' });
     if (req.user.role === 'supervisor' && group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
@@ -265,13 +290,14 @@ router.post('/bulk-notes/:groupId', requireAuth, async (req, res) => {
     if (!sessions?.length) return res.status(400).json({ error: 'No sessions found' });
     const count = Math.min(chunks.length, sessions.length);
     await Promise.all(Array.from({ length: count }, (_, i) =>
-      supabase.from('sessions').update({ soap_note: chunks[i], notes: chunks[i] }).eq('id', sessions[i].id)
+      supabase.from('sessions')
+        .update({ soap_note: chunks[i], notes: chunks[i] })
+        .eq('id', sessions[i].id)
     ));
     res.json({ success: true, updated: count, total_chunks: chunks.length, total_sessions: sessions.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// Legacy
 router.post('/:id/submit-notes', requireAuth, async (req, res) => {
   try {
     const { notes, soap_note } = req.body;
