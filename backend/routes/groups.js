@@ -36,35 +36,72 @@ function computeNumSessions(startDate, endDate, dowInt) {
 }
 
 function addMinutesToTime(timeStr, mins) {
-  const [h, m] = timeStr.split(':').map(Number);
-  const total = h * 60 + m + parseInt(mins);
+  if (!timeStr) return null;
+  const [h, m] = timeStr.slice(0,5).split(':').map(Number);
+  const total = h * 60 + m + parseInt(mins || 0);
   return `${String(Math.floor(total / 60)).padStart(2,'0')}:${String(total % 60).padStart(2,'0')}`;
 }
 
-const GROUP_LIST_SELECT = `
-  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
-  start_date, end_date, day_of_week_int, day_of_week,
-  start_time, session_time, end_time, ecw_time,
-  total_sessions, default_duration, created_at,
-  supervisor:profiles!supervisor_id(id, first_name, last_name, email),
-  instructor:instructors!instructor_id(id, first_name, last_name, phone),
-  sessions(id, status)
-`;
+function computeEcwEnd(ecwTime, duration) {
+  if (!ecwTime || !duration) return null;
+  return addMinutesToTime(ecwTime, duration);
+}
 
-const GROUP_DETAIL_SELECT = `
-  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
-  start_date, end_date, day_of_week_int, day_of_week,
-  start_time, session_time, end_time, ecw_time,
-  total_sessions, default_duration, created_at,
-  supervisor:profiles!supervisor_id(id, first_name, last_name, email),
-  instructor:instructors!instructor_id(id, first_name, last_name, phone)
-`;
+// Apply updated times to all future sessions (those whose ECW end hasn't passed yet)
+async function applyTimeToFutureSessions(groupId, newStartTime, newEcwTime, newDuration) {
+  const now = new Date();
+  const todayStr = now.toISOString().split('T')[0];
 
-// Mark sessions beyond newCount as group_ended (if they're still scheduled)
+  // Get all scheduled sessions
+  const { data: sessions } = await supabase
+    .from('sessions')
+    .select('id, session_date, scheduled_date, ecw_time, ecw_end_time, duration')
+    .eq('group_id', groupId)
+    .in('status', ['scheduled', 'group_ended'])
+    .order('session_date', { ascending: true });
+
+  if (!sessions?.length) return 0;
+
+  const dur    = parseInt(newDuration) || 45;
+  const eTime  = addMinutesToTime(newStartTime, dur);
+  const ecwEnd = computeEcwEnd(newEcwTime, dur);
+
+  // A session is "in the future" if its ECW end hasn't passed
+  const futureSessions = sessions.filter(s => {
+    const dateStr = s.session_date || s.scheduled_date;
+    if (!dateStr) return true; // no date = future by default
+
+    // Use the session's current ecw_end_time or compute it
+    const sessEcwEnd = s.ecw_end_time || computeEcwEnd(s.ecw_time, s.duration);
+    if (!sessEcwEnd) return dateStr >= todayStr;
+
+    const [h, m] = sessEcwEnd.slice(0,5).split(':').map(Number);
+    const endDT = new Date(dateStr + 'T00:00:00');
+    endDT.setHours(h, m, 0, 0);
+    return now <= endDT; // hasn't ended yet
+  });
+
+  if (!futureSessions.length) return 0;
+
+  await supabase.from('sessions')
+    .update({
+      start_time:     newStartTime.slice(0,5),
+      scheduled_time: newStartTime.slice(0,5),
+      end_time:       eTime,
+      ecw_time:       newEcwTime.slice(0,5),
+      ecw_end_time:   ecwEnd,
+      duration:       dur,
+    })
+    .in('id', futureSessions.map(s => s.id));
+
+  return futureSessions.length;
+}
+
+// Mark sessions beyond newCount as group_ended
 async function truncateExcessSessions(groupId, newCount) {
   const { data: excess } = await supabase
     .from('sessions')
-    .select('id, session_number, status')
+    .select('id')
     .eq('group_id', groupId)
     .eq('status', 'scheduled')
     .gt('session_number', newCount);
@@ -75,6 +112,25 @@ async function truncateExcessSessions(groupId, newCount) {
       .in('id', excess.map(s => s.id));
   }
 }
+
+const GROUP_LIST_SELECT = `
+  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
+  start_date, end_date, day_of_week_int, day_of_week,
+  start_time, session_time, end_time, ecw_time, ecw_end_time,
+  total_sessions, default_duration, created_at,
+  supervisor:profiles!supervisor_id(id, first_name, last_name, email),
+  instructor:instructors!instructor_id(id, first_name, last_name, phone),
+  sessions(id, status, locked)
+`;
+
+const GROUP_DETAIL_SELECT = `
+  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
+  start_date, end_date, day_of_week_int, day_of_week,
+  start_time, session_time, end_time, ecw_time, ecw_end_time,
+  total_sessions, default_duration, created_at,
+  supervisor:profiles!supervisor_id(id, first_name, last_name, email),
+  instructor:instructors!instructor_id(id, first_name, last_name, phone)
+`;
 
 router.get('/', requireAuth, async (req, res) => {
   try {
@@ -105,7 +161,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 router.post('/', requireAuth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Only admins can create groups' });
+    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
     const { internal_name, group_name, description, supervisor_id, instructor_id,
             start_date, end_date, start_time, ecw_time, total_sessions, default_duration } = req.body;
 
@@ -115,30 +171,37 @@ router.post('/', requireAuth, async (req, res) => {
 
     const dowInt   = deriveDayOfWeek(start_date);
     const duration = parseInt(default_duration) || 45;
-    const end_time = addMinutesToTime(start_time, duration);
+    const sTime    = start_time.slice(0,5);
+    const end_time = addMinutesToTime(sTime, duration);
+    const effEcw   = ecw_time ? ecw_time.slice(0,5) : sTime;
+    const ecwEnd   = computeEcwEnd(effEcw, duration);
 
     let resolvedSessions = total_sessions ? parseInt(total_sessions) : null;
     let resolvedEndDate  = end_date || null;
-    if (resolvedEndDate && !resolvedSessions) {
+    if (resolvedEndDate && !resolvedSessions)
       resolvedSessions = computeNumSessions(start_date, resolvedEndDate, dowInt);
-    } else if (resolvedSessions && !resolvedEndDate) {
+    else if (resolvedSessions && !resolvedEndDate)
       resolvedEndDate = computeEndDate(start_date, dowInt, resolvedSessions);
-    }
 
     const { data: group, error } = await supabase.from('groups').insert({
       internal_name,
-      group_name: group_name || internal_name,
-      name: group_name || internal_name,
-      description: description || null,
-      supervisor_id: supervisor_id || null,
-      instructor_id: instructor_id || null,
-      start_date, end_date: resolvedEndDate,
-      day_of_week_int: dowInt, day_of_week: DAY_NAMES[dowInt],
-      start_time, session_time: start_time, end_time,
-      ecw_time: ecw_time || start_time,
-      total_sessions: resolvedSessions,
+      group_name:      group_name || internal_name,
+      name:            group_name || internal_name,
+      description:     description || null,
+      supervisor_id:   supervisor_id || null,
+      instructor_id:   instructor_id || null,
+      start_date,
+      end_date:        resolvedEndDate,
+      day_of_week_int: dowInt,
+      day_of_week:     DAY_NAMES[dowInt],
+      start_time:      sTime,
+      session_time:    sTime,
+      end_time,
+      ecw_time:        effEcw,
+      ecw_end_time:    ecwEnd,
+      total_sessions:  resolvedSessions,
       default_duration: duration,
-      created_by: req.user.id,
+      created_by:      req.user.id,
     }).select().single();
 
     if (error) throw error;
@@ -153,54 +216,67 @@ router.patch('/:id', requireAuth, async (req, res) => {
   try {
     const { data: existing, error: fetchErr } = await supabase
       .from('groups')
-      .select('supervisor_id, start_date, day_of_week_int, default_duration, total_sessions, start_time, session_time')
+      .select('supervisor_id, start_date, day_of_week_int, default_duration, total_sessions, start_time, session_time, ecw_time, ecw_end_time')
       .eq('id', req.params.id).single();
 
     if (fetchErr || !existing) return res.status(404).json({ error: 'Group not found' });
     if (req.user.role === 'supervisor' && existing.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
-    const adminOnly      = ['internal_name', 'supervisor_id', 'instructor_id'];
-    const supervisorAllowed = ['group_name','description','start_date','end_date','start_time',
-                               'ecw_time','total_sessions','default_duration','status'];
+    const adminOnly = ['internal_name', 'supervisor_id', 'instructor_id'];
+    const supervisorAllowed = ['group_name','description','start_date','end_date',
+                               'start_time','ecw_time','total_sessions','default_duration','status'];
     const allowed = req.user.role === 'admin' ? [...adminOnly, ...supervisorAllowed] : supervisorAllowed;
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
 
     const effStartDate = updates.start_date || existing.start_date;
     const effDow       = updates.start_date ? deriveDayOfWeek(updates.start_date) : existing.day_of_week_int;
     const effDuration  = parseInt(updates.default_duration || existing.default_duration) || 45;
-    const effStartTime = updates.start_time || existing.start_time || existing.session_time;
+    const effStartTime = (updates.start_time || existing.start_time || existing.session_time || '09:00').slice(0,5);
+    const effEcwTime   = (updates.ecw_time || existing.ecw_time || effStartTime).slice(0,5);
 
     if (updates.start_date) {
       updates.day_of_week_int = effDow;
-      updates.day_of_week = DAY_NAMES[effDow];
+      updates.day_of_week     = DAY_NAMES[effDow];
     }
     if (updates.total_sessions && !updates.end_date)
       updates.end_date = computeEndDate(effStartDate, effDow, parseInt(updates.total_sessions));
     else if (updates.end_date && !updates.total_sessions)
       updates.total_sessions = computeNumSessions(effStartDate, updates.end_date, effDow);
 
-    if (updates.start_time || updates.default_duration)
-      updates.end_time = addMinutesToTime(effStartTime, effDuration);
-    if (updates.start_time && !updates.ecw_time) updates.ecw_time = updates.start_time;
+    // Recompute times
+    if (updates.start_time || updates.default_duration) {
+      updates.end_time     = addMinutesToTime(effStartTime, effDuration);
+      updates.session_time = effStartTime;
+    }
+    if (updates.ecw_time || updates.default_duration) {
+      updates.ecw_end_time = computeEcwEnd(effEcwTime, effDuration);
+    }
+    if (updates.start_time && !updates.ecw_time) {
+      updates.ecw_time     = effStartTime;
+      updates.ecw_end_time = computeEcwEnd(effStartTime, effDuration);
+    }
     if (updates.group_name) updates.name = updates.group_name;
-    if (updates.start_time) updates.session_time = updates.start_time;
 
     const { data, error } = await supabase
       .from('groups').update(updates).eq('id', req.params.id)
       .select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
 
-    // If total_sessions was reduced, mark excess sessions as group_ended
-    const newTotal = updates.total_sessions || existing.total_sessions;
-    const oldTotal = existing.total_sessions;
-    if (newTotal && oldTotal && parseInt(newTotal) < parseInt(oldTotal)) {
-      await truncateExcessSessions(req.params.id, parseInt(newTotal));
+    // If session count reduced, mark excess as group_ended
+    const newTotal = parseInt(updates.total_sessions || existing.total_sessions);
+    const oldTotal = parseInt(existing.total_sessions);
+    if (newTotal && oldTotal && newTotal < oldTotal) {
+      await truncateExcessSessions(req.params.id, newTotal);
     }
 
-    // Regenerate sessions if count or dates changed
-    if (updates.total_sessions || updates.start_date || updates.end_date) {
-      await supabase.rpc('generate_sessions_for_group', { p_group_id: req.params.id });
+    // If time/ecw/duration changed, update future sessions
+    const timeChanged = updates.start_time || updates.ecw_time || updates.default_duration;
+    if (timeChanged) {
+      const affected = await applyTimeToFutureSessions(
+        req.params.id, effStartTime, effEcwTime, effDuration
+      );
+      console.log(`[groups patch] updated ${affected} future sessions with new time`);
     }
 
     res.json(data);
