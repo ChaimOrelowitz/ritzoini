@@ -8,12 +8,15 @@ const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','
 
 function fmt12(t) {
   if (!t) return '';
-  const [h, m] = t.split(':').map(Number);
+  const [h, m] = t.slice(0,5).split(':').map(Number);
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
+
+// MM/DD/YYYY
 function fmtDate(d) {
   if (!d) return '';
-  return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const [y, mo, day] = d.split('-');
+  return `${mo}/${day}/${y}`;
 }
 
 const STATUS_STYLE = {
@@ -45,8 +48,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
     setLocalDur(String(session.duration || groupDuration || 45));
   }, [session, groupDuration]);
 
-  const isCancelled  = session.status === 'cancelled';
-  const contentReadOnly = isCancelled;
+  const isCancelled = session.status === 'cancelled';
   const style = STATUS_STYLE[session.status] || STATUS_STYLE.scheduled;
 
   function handleNoteChange(val) {
@@ -92,6 +94,9 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
     onUpdate(updated);
   }
 
+  const dateStr = session.session_date || session.scheduled_date;
+  const ecwEnd  = session.ecw_end_time;
+
   return (
     <div style={{
       background: 'white',
@@ -105,7 +110,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
         {/* # + date + time */}
-        <div style={{ minWidth: 130 }}>
+        <div style={{ minWidth: 150 }}>
           <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem', marginBottom: 3 }}>
             #{session.session_number}
             {session.session_day_of_week != null && (
@@ -115,6 +120,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
             )}
           </div>
 
+          {/* Date — MM/DD/YYYY */}
           {editDate ? (
             <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
               <input type="date" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 130 }}
@@ -123,14 +129,17 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
               <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditDate(false)}>✕</button>
             </div>
           ) : (
-            <div style={{ fontSize: '0.8rem', color: 'var(--gray-600)', cursor: contentReadOnly ? 'default' : 'pointer' }}
-              onClick={() => !contentReadOnly && setEditDate(true)}
-              title={contentReadOnly ? '' : 'Click to change date'}>
-              {fmtDate(session.session_date || session.scheduled_date)}
-              {!contentReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+            <div
+              style={{ fontSize: '0.82rem', color: 'var(--gray-700)', cursor: isCancelled ? 'default' : 'pointer', fontWeight: 500 }}
+              onClick={() => !isCancelled && setEditDate(true)}
+              title={isCancelled ? '' : 'Click to change date'}
+            >
+              {fmtDate(dateStr)}
+              {!isCancelled && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
 
+          {/* Time + ECW */}
           {editTime ? (
             <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
               <input type="time" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 100 }}
@@ -141,16 +150,21 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
               <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditTime(false)}>✕</button>
             </div>
           ) : (
-            <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)', cursor: contentReadOnly ? 'default' : 'pointer', marginTop: 2 }}
-              onClick={() => !contentReadOnly && setEditTime(true)}
-              title={contentReadOnly ? '' : 'Click to change time/duration'}>
-              {fmt12(session.start_time || session.scheduled_time)} · {session.duration || groupDuration || 45} min
-              {!contentReadOnly && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+            <div
+              style={{ fontSize: '0.75rem', color: 'var(--gray-400)', cursor: isCancelled ? 'default' : 'pointer', marginTop: 2 }}
+              onClick={() => !isCancelled && setEditTime(true)}
+              title={isCancelled ? '' : 'Click to change time/duration'}
+            >
+              {fmt12(session.start_time || session.scheduled_time)}
+              {session.ecw_time && ` · ECW ${fmt12(session.ecw_time)}`}
+              {ecwEnd && `–${fmt12(ecwEnd)}`}
+              {` · ${session.duration || groupDuration || 45} min`}
+              {!isCancelled && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
         </div>
 
-        {/* Status dropdown — group_ended is manually changeable */}
+        {/* Status dropdown */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
           <select
@@ -158,8 +172,8 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
             disabled={isCancelled}
             onChange={e => handleStatusChange(e.target.value)}
             style={{
-              padding: '5px 10px', fontSize: '0.82rem', width: 138, borderRadius: 'var(--radius)',
-              border: `1.5px solid ${style.border}`,
+              padding: '5px 10px', fontSize: '0.82rem', width: 138,
+              borderRadius: 'var(--radius)', border: `1.5px solid ${style.border}`,
               background: style.bg, color: style.color, fontWeight: 600,
               cursor: isCancelled ? 'default' : 'pointer',
               appearance: 'none', WebkitAppearance: 'none',
@@ -263,7 +277,7 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
               {error && <div className="alert alert-error">{error}</div>}
               <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 12 }}>
                 Paste notes separated by <code style={{ background: 'var(--gray-100)', padding: '1px 6px', borderRadius: 3 }}>---</code> on its own line.
-                Assigned in order, cancelled sessions skipped. <strong>{sessionCount}</strong> active sessions.
+                Cancelled sessions are skipped. <strong>{sessionCount}</strong> active sessions.
               </p>
               <textarea className="form-textarea" value={text} onChange={e => setText(e.target.value)}
                 placeholder={"Session 1 notes...\n---\nSession 2 notes...\n---\nSession 3 notes..."}
@@ -314,8 +328,8 @@ export default function GroupDetailPage() {
   }
 
   async function handleUncancel(sessionId) {
-    if (!window.confirm("Restore this session? The replacement added at the end will be removed if it hasn't been used.")) return;
-    try { const updated = await api.uncancelSession(sessionId); setSuccess('Session restored.'); load(); }
+    if (!window.confirm("Restore this session? The replacement added at the end will be removed if unused.")) return;
+    try { await api.uncancelSession(sessionId); setSuccess('Session restored.'); load(); }
     catch (err) { setError(err.message); }
   }
 
@@ -376,41 +390,33 @@ export default function GroupDetailPage() {
             </div>
           )}
 
-          {/* Schedule meta */}
           <div style={{ fontSize: '0.85rem', color: 'var(--gray-600)', display: 'flex', flexWrap: 'wrap', gap: '6px 16px', marginBottom: 6 }}>
             <span>📅 {dayName}s</span>
-            <span>🕐 {fmt12(group.start_time || group.session_time)} – {fmt12(group.end_time)}</span>
-            {group.ecw_time && <span>ECW {fmt12(group.ecw_time)}</span>}
+            <span>🕐 {fmt12(group.start_time || group.session_time)}</span>
+            <span>ECW {fmt12(group.ecw_time)}{group.ecw_end_time && ` – ${fmt12(group.ecw_end_time)}`}</span>
             <span>⏱ {group.default_duration || 45} min</span>
             {group.start_date && (
               <span>
-                {new Date(group.start_date+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
-                {group.end_date && ` → ${new Date(group.end_date+'T00:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`}
+                {fmtDate(group.start_date)}
+                {group.end_date && ` → ${fmtDate(group.end_date)}`}
               </span>
             )}
             {group.total_sessions && <span>{group.total_sessions} sessions</span>}
           </div>
 
-          {/* People */}
           <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: group.description ? 10 : 0 }}>
             <span>👤 {supervisorName}</span>
             {instructorName && <span>🎓 {instructorName}</span>}
           </div>
 
-          {/* Group Description — styled */}
           {group.description && (
             <div style={{ marginTop: 8 }}>
-              <div style={{
-                fontSize: '0.72rem', fontWeight: 700, color: 'var(--navy)',
-                textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4,
-              }}>
+              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>
                 Group Description / Information
               </div>
               <div style={{
-                fontSize: '0.925rem', color: 'var(--gray-700)', fontWeight: 450,
-                lineHeight: 1.6, maxWidth: 680,
-                padding: '8px 12px',
-                background: 'var(--gray-50)',
+                fontSize: '0.925rem', color: 'var(--gray-700)', lineHeight: 1.6, maxWidth: 680,
+                padding: '8px 12px', background: 'var(--gray-50)',
                 borderLeft: '3px solid var(--navy)',
                 borderRadius: '0 var(--radius) var(--radius) 0',
               }}>
