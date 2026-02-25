@@ -238,8 +238,11 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
     const cancelledIdx = allSessions.findIndex(s => s.id === session.id);
     if (cancelledIdx === -1) throw new Error('Cancelled session not found in group list');
 
-    const afterCancelled = allSessions.slice(cancelledIdx + 1);
-    const chain = [...afterCancelled, newSess];
+    const cancelledSess = allSessions[cancelledIdx];
+const afterCancelled = allSessions.slice(cancelledIdx + 1);
+
+// IMPORTANT: include the cancelled session first so its note shifts down
+const chain = [cancelledSess, ...afterCancelled, newSess];
 
     // Work backwards: move note from chain[i] -> chain[i+1] if BOTH are unlocked
     for (let i = chain.length - 2; i >= 0; i--) {
