@@ -1,6 +1,29 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
 
+function fmtPhone(raw) {
+  if (!raw) return '';
+  const d = raw.replace(/\D/g, '').slice(0, 10);
+  if (d.length <= 3)  return d.length ? `(${d}` : '';
+  if (d.length <= 6)  return `(${d.slice(0,3)}) ${d.slice(3)}`;
+  return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+}
+function displayPhone(raw) {
+  if (!raw) return null;
+  return fmtPhone(raw.replace(/\D/g, ''));
+}
+
+function PhoneInput({ value, onChange, placeholder = '(555) 000-0000', className, style }) {
+  function handleChange(e) {
+    const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
+    onChange(digits);
+  }
+  return (
+    <input type="tel" className={className} style={style}
+      value={fmtPhone(value)} onChange={handleChange} placeholder={placeholder} />
+  );
+}
+
 export default function InstructorsPage() {
   const [instructors, setInstructors] = useState([]);
   const [loading, setLoading]   = useState(true);
@@ -11,14 +34,9 @@ export default function InstructorsPage() {
   const [saving, setSaving]     = useState(false);
 
   const load = useCallback(async () => {
-    try {
-      const data = await api.getInstructors();
-      setInstructors(data);
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    } finally {
-      setLoading(false);
-    }
+    try { const data = await api.getInstructors(); setInstructors(data); }
+    catch (err) { setStatus({ type: 'error', message: err.message }); }
+    finally { setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -27,18 +45,14 @@ export default function InstructorsPage() {
 
   async function handleCreate(e) {
     e.preventDefault();
-    setSaving(true);
-    setStatus({ type: '', message: '' });
+    setSaving(true); setStatus({ type: '', message: '' });
     try {
       await api.createInstructor(form);
       setStatus({ type: 'success', message: `${form.first_name} ${form.last_name} added.` });
       setForm({ first_name: '', last_name: '', phone: '' });
       load();
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    } finally {
-      setSaving(false);
-    }
+    } catch (err) { setStatus({ type: 'error', message: err.message }); }
+    finally { setSaving(false); }
   }
 
   function startEdit(inst) {
@@ -47,32 +61,20 @@ export default function InstructorsPage() {
   }
 
   async function saveEdit(id) {
-    try {
-      await api.updateInstructor(id, editForm);
-      setEditingId(null);
-      load();
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    }
+    try { await api.updateInstructor(id, editForm); setEditingId(null); load(); }
+    catch (err) { setStatus({ type: 'error', message: err.message }); }
   }
 
   async function handleDelete(inst) {
     if (!window.confirm(`Remove ${inst.first_name} ${inst.last_name}? Groups assigned to them will have no instructor.`)) return;
-    try {
-      await api.deleteInstructor(inst.id);
-      load();
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    }
+    try { await api.deleteInstructor(inst.id); load(); }
+    catch (err) { setStatus({ type: 'error', message: err.message }); }
   }
 
   return (
     <div>
       <div className="page-header">
-        <div>
-          <h2>Instructors</h2>
-          <p>Manage instructors assigned to groups</p>
-        </div>
+        <div><h2>Instructors</h2><p>Manage instructors assigned to groups</p></div>
       </div>
 
       {status.message && (
@@ -98,41 +100,30 @@ export default function InstructorsPage() {
               </div>
               <div className="form-group">
                 <label className="form-label">Phone</label>
-                <input className="form-input" type="tel" value={form.phone} onChange={e => setF('phone', e.target.value)} placeholder="(555) 000-0000" />
+                <PhoneInput className="form-input" value={form.phone} onChange={v => setF('phone', v)} />
               </div>
               <button type="submit" className="btn btn-gold" style={{ width: '100%', justifyContent: 'center' }} disabled={saving}>
                 {saving ? 'Adding…' : '+ Add Instructor'}
               </button>
             </form>
             <p style={{ fontSize: '0.78rem', color: 'var(--gray-400)', marginTop: 10, lineHeight: 1.5 }}>
-              Instructors don't need a login. They appear in the group selector when creating or editing a group.
+              Instructors don't need a login — they appear in the group selector when creating or editing a group.
             </p>
           </div>
         </div>
 
-        {/* Instructors table */}
+        {/* Table */}
         <div className="card">
           <div className="card-header">
-            <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>
-              All Instructors ({instructors.length})
-            </h3>
+            <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>All Instructors ({instructors.length})</h3>
           </div>
           {loading ? (
             <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
           ) : instructors.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-icon">🎓</div>
-              <p>No instructors yet. Add one to get started.</p>
-            </div>
+            <div className="empty-state"><div className="empty-icon">🎓</div><p>No instructors yet. Add one above.</p></div>
           ) : (
             <table className="sessions-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Phone</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Name</th><th>Phone</th><th>Actions</th></tr></thead>
               <tbody>
                 {instructors.map(inst => (
                   <tr key={inst.id}>
@@ -147,8 +138,8 @@ export default function InstructorsPage() {
                           </div>
                         </td>
                         <td>
-                          <input className="form-input" style={{ padding: '4px 8px', fontSize: '0.82rem' }}
-                            value={editForm.phone} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value }))} />
+                          <PhoneInput className="form-input" style={{ padding: '4px 8px', fontSize: '0.82rem' }}
+                            value={editForm.phone} onChange={v => setEditForm(f => ({ ...f, phone: v }))} />
                         </td>
                         <td>
                           <div style={{ display: 'flex', gap: 6 }}>
@@ -173,7 +164,7 @@ export default function InstructorsPage() {
                           </div>
                         </td>
                         <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>
-                          {inst.phone || <span style={{ color: 'var(--gray-300)' }}>—</span>}
+                          {displayPhone(inst.phone) || <span style={{ color: 'var(--gray-300)' }}>—</span>}
                         </td>
                         <td>
                           <div style={{ display: 'flex', gap: 6 }}>

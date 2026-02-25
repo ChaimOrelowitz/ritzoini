@@ -1,24 +1,51 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
 
+// Format as (###) ###-#### while typing
+function fmtPhone(raw) {
+  if (!raw) return '';
+  const d = raw.replace(/\D/g, '').slice(0, 10);
+  if (d.length <= 3)  return d.length ? `(${d}` : '';
+  if (d.length <= 6)  return `(${d.slice(0,3)}) ${d.slice(3)}`;
+  return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+}
+// Show stored value (raw digits) nicely
+function displayPhone(raw) {
+  if (!raw) return null;
+  return fmtPhone(raw.replace(/\D/g, ''));
+}
+
+function PhoneInput({ value, onChange, placeholder = '(555) 000-0000', ...rest }) {
+  function handleChange(e) {
+    const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
+    onChange(digits); // store raw digits
+  }
+  return (
+    <input
+      type="tel"
+      value={fmtPhone(value)}
+      onChange={handleChange}
+      placeholder={placeholder}
+      {...rest}
+    />
+  );
+}
+
 export default function SupervisorsPage() {
-  const [users, setUsers]   = useState([]);
+  const [users, setUsers]     = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm]     = useState({ first_name: '', last_name: '', email: '', phone: '' });
+  const [form, setForm]       = useState({ first_name: '', last_name: '', email: '', phone: '' });
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm]   = useState({});
-  const [status, setStatus] = useState({ type: '', message: '' });
+  const [status, setStatus]   = useState({ type: '', message: '' });
   const [inviting, setInviting]   = useState(false);
 
   const load = useCallback(async () => {
     try {
       const data = await api.getUsers();
       setUsers(data);
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { setStatus({ type: 'error', message: err.message }); }
+    finally { setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -27,33 +54,26 @@ export default function SupervisorsPage() {
 
   async function handleInvite(e) {
     e.preventDefault();
-    setInviting(true);
-    setStatus({ type: '', message: '' });
+    setInviting(true); setStatus({ type: '', message: '' });
     try {
       const res = await api.inviteUser(form.email, form.first_name, form.last_name, form.phone);
       setStatus({ type: 'success', message: res.message });
       setForm({ first_name: '', last_name: '', email: '', phone: '' });
       load();
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    } finally {
-      setInviting(false);
-    }
+    } catch (err) { setStatus({ type: 'error', message: err.message }); }
+    finally { setInviting(false); }
   }
 
   function startEdit(user) {
     setEditingId(user.id);
-    setEditForm({ first_name: user.first_name, last_name: user.last_name, phone: user.phone || '', role: user.role });
+    setEditForm({ first_name: user.first_name, last_name: user.last_name, phone: user.phone || '' });
   }
 
   async function saveEdit(userId) {
     try {
       await api.updateUser(userId, editForm);
-      setEditingId(null);
-      load();
-    } catch (err) {
-      setStatus({ type: 'error', message: err.message });
-    }
+      setEditingId(null); load();
+    } catch (err) { setStatus({ type: 'error', message: err.message }); }
   }
 
   const supervisors = users.filter(u => u.role === 'supervisor');
@@ -62,16 +82,11 @@ export default function SupervisorsPage() {
   return (
     <div>
       <div className="page-header">
-        <div>
-          <h2>Supervisors</h2>
-          <p>Manage supervisor accounts and access</p>
-        </div>
+        <div><h2>Supervisors</h2><p>Manage supervisor accounts and access</p></div>
       </div>
 
       {status.message && (
-        <div className={`alert alert-${status.type}`} style={{ marginBottom: 20 }}>
-          {status.message}
-        </div>
+        <div className={`alert alert-${status.type}`} style={{ marginBottom: 20 }}>{status.message}</div>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 24, alignItems: 'start' }}>
@@ -99,7 +114,7 @@ export default function SupervisorsPage() {
               </div>
               <div className="form-group">
                 <label className="form-label">Phone</label>
-                <input className="form-input" type="tel" value={form.phone} onChange={e => set('phone', e.target.value)} placeholder="(555) 000-0000" />
+                <PhoneInput className="form-input" value={form.phone} onChange={v => set('phone', v)} />
               </div>
               <button type="submit" className="btn btn-gold" style={{ width: '100%', justifyContent: 'center' }} disabled={inviting}>
                 {inviting ? 'Sending…' : '✉️ Send Invitation'}
@@ -111,10 +126,9 @@ export default function SupervisorsPage() {
           </div>
         </div>
 
-        {/* User tables */}
+        {/* Tables */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-          {/* Supervisors */}
           <div className="card">
             <div className="card-header">
               <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Supervisors ({supervisors.length})</h3>
@@ -122,12 +136,10 @@ export default function SupervisorsPage() {
             {loading ? (
               <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
             ) : supervisors.length === 0 ? (
-              <div className="empty-state"><div className="empty-icon">👤</div><p>No supervisors yet. Invite one above.</p></div>
+              <div className="empty-state"><div className="empty-icon">👤</div><p>No supervisors yet.</p></div>
             ) : (
               <table className="sessions-table">
-                <thead>
-                  <tr><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th></tr>
-                </thead>
+                <thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th></tr></thead>
                 <tbody>
                   {supervisors.map(user => (
                     <tr key={user.id}>
@@ -143,8 +155,9 @@ export default function SupervisorsPage() {
                           </td>
                           <td style={{ color: 'var(--gray-500)', fontSize: '0.85rem' }}>{user.email}</td>
                           <td>
-                            <input className="form-input" style={{ padding: '4px 8px', fontSize: '0.82rem' }}
-                              value={editForm.phone} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value }))} />
+                            <PhoneInput className="form-input" style={{ padding: '4px 8px', fontSize: '0.82rem' }}
+                              value={editForm.phone}
+                              onChange={v => setEditForm(f => ({ ...f, phone: v }))} />
                           </td>
                           <td>
                             <div style={{ display: 'flex', gap: 6 }}>
@@ -157,10 +170,10 @@ export default function SupervisorsPage() {
                         <>
                           <td style={{ fontWeight: 500 }}>{user.first_name} {user.last_name}</td>
                           <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>{user.email}</td>
-                          <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>{user.phone || <span style={{ color: 'var(--gray-300)' }}>—</span>}</td>
-                          <td>
-                            <button className="btn btn-outline btn-xs" onClick={() => startEdit(user)}>Edit</button>
+                          <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>
+                            {displayPhone(user.phone) || <span style={{ color: 'var(--gray-300)' }}>—</span>}
                           </td>
+                          <td><button className="btn btn-outline btn-xs" onClick={() => startEdit(user)}>Edit</button></td>
                         </>
                       )}
                     </tr>
@@ -170,22 +183,21 @@ export default function SupervisorsPage() {
             )}
           </div>
 
-          {/* Admins (read-only view) */}
           {admins.length > 0 && (
             <div className="card">
               <div className="card-header">
                 <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Admins ({admins.length})</h3>
               </div>
               <table className="sessions-table">
-                <thead>
-                  <tr><th>Name</th><th>Email</th><th>Phone</th></tr>
-                </thead>
+                <thead><tr><th>Name</th><th>Email</th><th>Phone</th></tr></thead>
                 <tbody>
                   {admins.map(user => (
                     <tr key={user.id}>
                       <td style={{ fontWeight: 500 }}>{user.first_name} {user.last_name}</td>
                       <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>{user.email}</td>
-                      <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>{user.phone || <span style={{ color: 'var(--gray-300)' }}>—</span>}</td>
+                      <td style={{ color: 'var(--gray-600)', fontSize: '0.85rem' }}>
+                        {displayPhone(user.phone) || <span style={{ color: 'var(--gray-300)' }}>—</span>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
