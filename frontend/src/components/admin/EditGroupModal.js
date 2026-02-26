@@ -212,8 +212,17 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label"># of Sessions</label>
-                <input className="form-input" type="number" min="1" value={form.total_sessions} onChange={e => set('total_sessions', e.target.value)} placeholder="e.g. 12" />
-              </div>
+                <input
+  className="form-input"
+  type="text"
+  inputMode="numeric"
+  value={form.total_sessions}
+  onChange={e => {
+    const onlyDigits = e.target.value.replace(/\D/g, '');
+    set('total_sessions', onlyDigits);
+  }}
+  placeholder="e.g. 12"
+/>
               <div className="form-group">
                 <label className="form-label">End Date</label>
                 <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
