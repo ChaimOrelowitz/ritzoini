@@ -263,11 +263,18 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
 
-    // If session count reduced, mark excess as group_ended
+       // If session count changed, adjust sessions
     const newTotal = parseInt(updates.total_sessions || existing.total_sessions);
     const oldTotal = parseInt(existing.total_sessions);
-    if (newTotal && oldTotal && newTotal < oldTotal) {
-      await truncateExcessSessions(req.params.id, newTotal);
+
+    if (newTotal && oldTotal) {
+      if (newTotal < oldTotal) {
+        // Fewer sessions: mark sessions beyond newTotal as group_ended
+        await truncateExcessSessions(req.params.id, newTotal);
+      } else if (newTotal > oldTotal) {
+        // More sessions: generate missing future sessions
+        await supabase.rpc('generate_sessions_for_group', { p_group_id: req.params.id });
+      }
     }
 
     // If time/ecw/duration changed, update future sessions
