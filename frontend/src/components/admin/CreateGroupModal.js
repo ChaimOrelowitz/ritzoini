@@ -230,12 +230,14 @@ export default function CreateGroupModal({ onClose, onCreated }) {
               <div className="form-group">
                 <label className="form-label"># of Sessions</label>
                 <input
-  className="form-input no-spin"
-  type="number"
-  min="1"
-  max="200"
+  className="form-input"
+  type="text"
+  inputMode="numeric"
   value={form.total_sessions}
-  onChange={e => set('total_sessions', e.target.value)}
+  onChange={e => {
+    const onlyDigits = e.target.value.replace(/\D/g, '');
+    set('total_sessions', onlyDigits);
+  }}
   placeholder="e.g. 12"
 />
               </div>
