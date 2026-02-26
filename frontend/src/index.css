@@ -77,7 +77,16 @@ input, select, textarea {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Hide spinner arrows for specific number inputs */
+.no-spin::-webkit-outer-spin-button,
+.no-spin::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
 
+.no-spin[type='number'] {
+  -moz-appearance: textfield;
+}
 /* ── Layout ── */
 .layout {
   display: flex;
