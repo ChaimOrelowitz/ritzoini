@@ -263,8 +263,16 @@ export default function CreateGroupModal({ onClose, onCreated }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Duration (minutes)</label>
-                <input className="form-input" type="number" min="1" max="480" value={form.default_duration}
-                  onChange={e => set('default_duration', e.target.value)} />
+               <input
+  className="form-input no-spin"
+  type="number"
+  min="1"
+  max="200"
+  value={form.total_sessions}
+  onChange={e => set('total_sessions', e.target.value)}
+  onWheel={e => e.currentTarget.blur()}
+  placeholder="e.g. 12"
+/>
               </div>
               <div className="form-group">
                 <label className="form-label">End Time (computed)</label>
