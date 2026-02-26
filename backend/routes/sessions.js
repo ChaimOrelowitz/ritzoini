@@ -165,12 +165,26 @@ router.patch('/:id', requireAuth, async (req, res) => {
  *   - do not move notes out of locked sessions
  *   - do not clear notes on locked sessions
  */
+/**
+ * POST /api/sessions/:id/cancel
+ * Behavior:
+ * - Creates a new session at the end (next week from last session)
+ * - Shifts notes forward "down the chain"
+ *   so the cancelled session’s SOAP note moves to the next session, etc.
+ * - LOCKED sessions are treated as barriers:
+ *   - do not move notes into locked sessions
+ *   - do not move notes out of locked sessions
+ */
 router.post('/:id/cancel', requireAuth, async (req, res) => {
   try {
     const { data: session, error: loadErr } = await supabase
       .from('sessions')
-      .select('id, group_id, status, session_number, group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)')
-      .eq('id', req.params.id).single();
+      .select(
+        'id, group_id, status, session_number, ' +
+        'group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)'
+      )
+      .eq('id', req.params.id)
+      .single();
 
     if (loadErr || !session) return res.status(404).json({ error: 'Session not found' });
     if (session.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
@@ -191,9 +205,11 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
       .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked, status')
       .eq('group_id', session.group_id)
       .order('session_number', { ascending: true });
+
     if (allErr) throw allErr;
     if (!allSessions?.length) throw new Error('No sessions found for group');
 
+    // Compute where the new replacement session will go
     const lastSess = allSessions[allSessions.length - 1];
     const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
     if (!lastDateStr) throw new Error('Last session has no date');
@@ -230,51 +246,71 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
         soap_note: null,
         notes: null,
       })
-      .select().single();
+      .select()
+      .single();
     if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
 
-    // SHIFT NOTES FORWARD with locked as barrier
-    // Chain is: all sessions after cancelled + new session
-    const cancelledIdx = allSessions.findIndex(s => s.id === session.id);
-    if (cancelledIdx === -1) throw new Error('Cancelled session not found in group list');
+    // ── SHIFT NOTES FORWARD ───────────────────────────────────
+    // Build the chain of sessions affected by this cancel:
+    //  - start at the cancelled session’s number
+    //  - include sessions after it that are NOT already cancelled/group_ended
+    //  - append the new replacement session at the end
+    const chainBase = allSessions
+      .filter(s =>
+        s.session_number >= session.session_number &&
+        s.status !== 'cancelled' &&
+        s.status !== 'group_ended'
+      )
+      .sort((a, b) => a.session_number - b.session_number);
 
-    const cancelledSess = allSessions[cancelledIdx];
-const afterCancelled = allSessions.slice(cancelledIdx + 1);
+    const chain = [...chainBase, newSess];
 
-// IMPORTANT: include the cancelled session first so its note shifts down
-const chain = [cancelledSess, ...afterCancelled, newSess];
+    // Safety: make sure the cancelled session is part of the chain
+    const hasCancelledInChain = chain.some(s => s.id === session.id);
+    if (!hasCancelledInChain) {
+      console.warn('[cancel] Cancelled session not found in shift chain, skipping note shift');
+    } else {
+      // Work backwards: move note from chain[i] -> chain[i+1] if BOTH are unlocked
+      for (let i = chain.length - 2; i >= 0; i--) {
+        const from = chain[i];
+        const to = chain[i + 1];
 
-    // Work backwards: move note from chain[i] -> chain[i+1] if BOTH are unlocked
-    for (let i = chain.length - 2; i >= 0; i--) {
-      const from = chain[i];
-      const to = chain[i + 1];
+        // barrier-safe: never move into/out of locked
+        if (from.locked || to.locked) continue;
 
-      // barrier-safe: never move into/out of locked
-      if (from.locked || to.locked) continue;
+        const note = getNote(from);
+        if (!note || !String(note).trim()) continue;
 
-      const note = getNote(from);
+        // Write note onto the "next" session
+        const { error: upToErr } = await supabase
+          .from('sessions')
+          .update({ soap_note: note, notes: note })
+          .eq('id', to.id);
+        if (upToErr) throw upToErr;
 
-      const { error: upToErr } = await supabase
-        .from('sessions')
-        .update({ soap_note: note, notes: note })
-        .eq('id', to.id);
-      if (upToErr) throw upToErr;
-
-      const { error: clearFromErr } = await supabase
-        .from('sessions')
-        .update({ soap_note: null, notes: null })
-        .eq('id', from.id);
-      if (clearFromErr) throw clearFromErr;
+        // Clear note from the "from" session
+        const { error: clearFromErr } = await supabase
+          .from('sessions')
+          .update({ soap_note: null, notes: null })
+          .eq('id', from.id);
+        if (clearFromErr) throw clearFromErr;
+      }
     }
 
     // Cancel original + store replacement ref
-    const { error: cancelErr } = await supabase.from('sessions')
-      .update({ status: 'cancelled', status_manual_override: true, replacement_session_id: newSess.id })
+    const { error: cancelErr } = await supabase
+      .from('sessions')
+      .update({
+        status: 'cancelled',
+        status_manual_override: true,
+        replacement_session_id: newSess.id,
+      })
       .eq('id', req.params.id);
     if (cancelErr) throw cancelErr;
 
-    // Optional: keep total_sessions in groups aligned
-    await supabase.from('groups')
+    // Keep total_sessions in groups aligned
+    await supabase
+      .from('groups')
       .update({ total_sessions: newNum })
       .eq('id', session.group_id);
 
