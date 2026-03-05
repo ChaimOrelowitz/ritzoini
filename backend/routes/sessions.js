@@ -432,6 +432,13 @@ router.post('/:id/uncancel', requireAuth, async (req, res) => {
 
     const repNoteNow = repNow ? (repNow.soap_note ?? repNow.notes ?? null) : null;
 
+    // Restore the cancelled session first (clears replacement_session_id ref before we delete it)
+    const { data, error } = await supabase
+      .from('sessions')
+      .update({ status: 'scheduled', status_manual_override: false, replacement_session_id: null })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
+
     if (repNow && !repNow.locked && !repNoteNow) {
       const { error: delErr } = await supabase.from('sessions').delete().eq('id', replacementId);
       if (delErr) throw delErr;
@@ -440,13 +447,6 @@ router.post('/:id/uncancel', requireAuth, async (req, res) => {
         .update({ total_sessions: (replacementNum || 1) - 1 })
         .eq('id', session.group_id);
     }
-
-    // Restore the cancelled session to scheduled
-    const { data, error } = await supabase
-      .from('sessions')
-      .update({ status: 'scheduled', status_manual_override: false, replacement_session_id: null })
-      .eq('id', req.params.id).select().single();
-    if (error) throw error;
 
     res.json(data);
   } catch (err) {
