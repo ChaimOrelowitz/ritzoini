@@ -224,6 +224,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
   onWheel={e => e.preventDefault()}
   placeholder="e.g. 12"
 />
+              </div>
               <div className="form-group">
                 <label className="form-label">End Date</label>
                 <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
