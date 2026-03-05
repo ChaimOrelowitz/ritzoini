@@ -153,6 +153,100 @@ function DaySection({ dayName, groups, isAdmin, navigate }) {
   );
 }
 
+function BulkAssignModal({ groups, onClose, onDone }) {
+  const [supervisors, setSupervisors] = useState([]);
+  const [supervisorId, setSupervisorId] = useState('');
+  const [selected, setSelected] = useState(new Set());
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
+  }, []);
+
+  function toggleGroup(id) {
+    setSelected(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setSelected(prev => prev.size === groups.length ? new Set() : new Set(groups.map(g => g.id)));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!supervisorId) { setError('Please select a supervisor.'); return; }
+    if (selected.size === 0) { setError('Please select at least one group.'); return; }
+    setLoading(true); setError('');
+    try {
+      await Promise.all([...selected].map(id => api.updateGroup(id, { supervisor_id: supervisorId })));
+      onDone();
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div className="modal" style={{ maxWidth: 540 }}>
+        <div className="modal-header">
+          <h3>Bulk Assign Supervisor</h3>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div className="modal-body">
+            {error && <div className="alert alert-error">{error}</div>}
+            <div className="form-group">
+              <label className="form-label">Assign to Supervisor</label>
+              <select className="form-select" value={supervisorId} onChange={e => setSupervisorId(e.target.value)}>
+                <option value="">— Select supervisor —</option>
+                {supervisors.map(s => (
+                  <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <label className="form-label" style={{ margin: 0 }}>Groups ({selected.size} selected)</label>
+              <button type="button" className="btn btn-outline btn-xs" onClick={toggleAll}>
+                {selected.size === groups.length ? 'Deselect All' : 'Select All'}
+              </button>
+            </div>
+            <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)' }}>
+              {groups.map(g => (
+                <label key={g.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
+                  cursor: 'pointer', borderBottom: '1px solid var(--gray-100)',
+                  background: selected.has(g.id) ? 'var(--gray-50)' : 'white',
+                }}>
+                  <input type="checkbox" checked={selected.has(g.id)} onChange={() => toggleGroup(g.id)}
+                    style={{ width: 15, height: 15, accentColor: 'var(--navy)', flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--navy)' }}>
+                      {g.group_name || g.name}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>
+                      {g.internal_name}
+                      {g.supervisor ? ` · currently: ${g.supervisor.first_name} ${g.supervisor.last_name}` : ' · unassigned'}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="modal-footer">
+            <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-gold" disabled={loading}>
+              {loading ? 'Assigning…' : `Assign ${selected.size > 0 ? selected.size : ''} Group${selected.size !== 1 ? 's' : ''}`}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { profile, isAdmin } = useAuth();
   const navigate = useNavigate();
@@ -160,6 +254,7 @@ export default function DashboardPage() {
   const [loading, setLoading]         = useState(true);
   const [showCreateModal, setShowCreate] = useState(false);
   const [showArchived, setShowArchived]  = useState(false);
+  const [showBulkAssign, setShowBulkAssign] = useState(false);
   const [error, setError]             = useState('');
 
   const load = useCallback(async () => {
@@ -206,7 +301,10 @@ export default function DashboardPage() {
             {showArchived ? '← Active Groups' : 'View Archived'}
           </button>
           {isAdmin && !showArchived && (
-            <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
+            <>
+              <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>
+              <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
+            </>
           )}
         </div>
       </div>
@@ -244,6 +342,13 @@ export default function DashboardPage() {
         <CreateGroupModal
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); load(); }}
+        />
+      )}
+      {showBulkAssign && (
+        <BulkAssignModal
+          groups={groups}
+          onClose={() => setShowBulkAssign(false)}
+          onDone={() => { setShowBulkAssign(false); load(); }}
         />
       )}
     </div>
