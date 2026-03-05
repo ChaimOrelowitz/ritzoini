@@ -244,7 +244,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label">Duration (minutes)</label>
-                <input className="form-input" type="number" min="1" value={form.default_duration} onChange={e => set('default_duration', e.target.value)} />
+                <input className="form-input" type="number" min="1" value={form.default_duration} onChange={e => set('default_duration', e.target.value)} onWheel={e => e.preventDefault()} />
               </div>
               <div className="form-group">
                 <label className="form-label">End Time (computed)</label>
