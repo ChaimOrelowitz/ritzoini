@@ -238,6 +238,7 @@ export default function CreateGroupModal({ onClose, onCreated }) {
     const onlyDigits = e.target.value.replace(/\D/g, '');
     set('total_sessions', onlyDigits);
   }}
+  onWheel={e => e.preventDefault()}
   placeholder="e.g. 12"
 />
               </div>

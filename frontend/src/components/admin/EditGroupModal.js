@@ -221,6 +221,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
     const onlyDigits = e.target.value.replace(/\D/g, '');
     set('total_sessions', onlyDigits);
   }}
+  onWheel={e => e.preventDefault()}
   placeholder="e.g. 12"
 />
               <div className="form-group">
