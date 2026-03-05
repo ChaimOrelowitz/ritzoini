@@ -65,11 +65,6 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
     }, 1000);
   }
 
-  async function handleStatusChange(newStatus) {
-    const updated = await api.updateSession(session.id, { status: newStatus, status_manual_override: true });
-    onUpdate(updated);
-  }
-
   async function handleCheckbox(field, value) {
     const updated = await api.updateSession(session.id, { [field]: value });
     onUpdate(updated);
@@ -164,27 +159,17 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
           )}
         </div>
 
-        {/* Status dropdown */}
+        {/* Status badge */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
-          <select
-            value={session.status}
-            disabled={isCancelled}
-            onChange={e => handleStatusChange(e.target.value)}
-            style={{
-              padding: '5px 10px', fontSize: '0.82rem', width: 138,
-              borderRadius: 'var(--radius)', border: `1.5px solid ${style.border}`,
-              background: style.bg, color: style.color, fontWeight: 600,
-              cursor: isCancelled ? 'default' : 'pointer',
-              appearance: 'none', WebkitAppearance: 'none',
-              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='${encodeURIComponent(style.color)}' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
-              backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center', paddingRight: 28,
-            }}
-          >
-            {Object.entries(STATUS_LABELS).map(([val, label]) => (
-              <option key={val} value={val}>{label}</option>
-            ))}
-          </select>
+          <div style={{
+            padding: '5px 10px', fontSize: '0.82rem', width: 138,
+            borderRadius: 'var(--radius)', border: `1.5px solid ${style.border}`,
+            background: style.bg, color: style.color, fontWeight: 600,
+            boxSizing: 'border-box',
+          }}>
+            {STATUS_LABELS[session.status] || session.status}
+          </div>
           {session.status_manual_override && !isCancelled && (
             <button type="button" onClick={handleReturnToAuto}
               style={{ fontSize: '0.7rem', color: 'var(--gold)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 600, textAlign: 'left' }}>
