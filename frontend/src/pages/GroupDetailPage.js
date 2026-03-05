@@ -391,7 +391,7 @@ export default function GroupDetailPage() {
 
           <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: group.description ? 10 : 0 }}>
             <span>👤 {supervisorName}</span>
-            {instructorName && <span>🎓 {instructorName}</span>}
+            {instructorName && <span>🎓 {instructorName}{group.instructor.phone && ` · ${group.instructor.phone}`}</span>}
           </div>
 
           {group.description && (
