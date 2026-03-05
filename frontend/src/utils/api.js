@@ -46,6 +46,10 @@ export const api = {
     authFetch('/api/users/invite', { method: 'POST', body: JSON.stringify({ email, first_name, last_name, phone }) }),
   updateUser: (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
+  // Config
+  getEmailEnabled:  () => authFetch('/api/config/email'),
+  setEmailEnabled:  (enabled) => authFetch('/api/config/email', { method: 'POST', body: JSON.stringify({ enabled }) }),
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),

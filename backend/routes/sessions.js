@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
+const { sendSoapNoteEmail } = require('../utils/mailer');
 
 function addMinutesToTime(timeStr, mins) {
   if (!timeStr) return null;
@@ -49,10 +50,11 @@ async function autoCompleteSessions(groupId) {
     .update({ status: 'completed' })
     .in('id', toComplete.map(s => s.id));
 
+  await Promise.all(toComplete.map(s => sendSoapNoteEmail(s.id)));
   await checkGroupAutoComplete(groupId);
 }
 
-// If ALL sessions in group are locked → set group status = completed
+// If ALL sessions in group are locked OR all are completed → set group status = completed
 async function checkGroupAutoComplete(groupId) {
   const { data: sessions } = await supabase
     .from('sessions')
@@ -65,7 +67,8 @@ async function checkGroupAutoComplete(groupId) {
   if (!active.length) return;
 
   const allLocked = active.every(s => s.locked === true);
-  if (!allLocked) return;
+  const allCompleted = active.every(s => s.status === 'completed');
+  if (!allLocked && !allCompleted) return;
 
   await supabase.from('groups')
     .update({ status: 'completed' })
@@ -147,7 +150,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .from('sessions').update(updates).eq('id', req.params.id).select().single();
     if (error) throw error;
 
-    if (updates.locked === true) {
+    if (updates.status === 'completed' && session.status !== 'completed') {
+      await sendSoapNoteEmail(req.params.id);
+    }
+
+    if (updates.locked === true || updates.status === 'completed') {
       await checkGroupAutoComplete(session.group_id);
     }
 
@@ -531,6 +538,7 @@ router.post('/:id/submit-notes', requireAuth, async (req, res) => {
       })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
+    await sendSoapNoteEmail(req.params.id);
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

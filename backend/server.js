@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
+const { getEmailEnabled, setEmailEnabled } = require('./utils/mailer');
+const { requireAuth } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -24,6 +26,17 @@ app.use('/api/instructors', require('./routes/instructors'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });
+});
+
+app.get('/api/config/email', requireAuth, (req, res) => {
+  res.json({ email_enabled: getEmailEnabled() });
+});
+
+app.post('/api/config/email', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  const { enabled } = req.body;
+  setEmailEnabled(enabled);
+  res.json({ email_enabled: getEmailEnabled() });
 });
 
 app.listen(PORT, () => {

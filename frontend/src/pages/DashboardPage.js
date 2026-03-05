@@ -255,6 +255,7 @@ export default function DashboardPage() {
   const [showCreateModal, setShowCreate] = useState(false);
   const [showArchived, setShowArchived]  = useState(false);
   const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [emailEnabled, setEmailEnabledState] = useState(null);
   const [error, setError]             = useState('');
 
   const load = useCallback(async () => {
@@ -266,6 +267,17 @@ export default function DashboardPage() {
   }, [showArchived]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (isAdmin) {
+      api.getEmailEnabled().then(r => setEmailEnabledState(r.email_enabled)).catch(() => {});
+    }
+  }, [isAdmin]);
+
+  async function toggleEmail() {
+    const res = await api.setEmailEnabled(!emailEnabled);
+    setEmailEnabledState(res.email_enabled);
+  }
 
   // Group by day_of_week_int
   const byDay = {};
@@ -300,6 +312,16 @@ export default function DashboardPage() {
           >
             {showArchived ? '← Active Groups' : 'View Archived'}
           </button>
+          {isAdmin && emailEnabled !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={toggleEmail}
+              style={{ color: emailEnabled ? '#10b981' : 'var(--gray-400)' }}
+              title={emailEnabled ? 'Emails on — click to disable' : 'Emails off — click to enable'}
+            >
+              ✉ {emailEnabled ? 'Emails On' : 'Emails Off'}
+            </button>
+          )}
           {isAdmin && !showArchived && (
             <>
               <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>
