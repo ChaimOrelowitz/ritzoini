@@ -408,6 +408,7 @@ router.post('/:id/uncancel', requireAuth, async (req, res) => {
       if (to.locked || from.locked) continue;
 
       const note = getNote(from);
+      if (!note || !String(note).trim()) continue;
 
       const { error: upToErr } = await supabase
         .from('sessions')
