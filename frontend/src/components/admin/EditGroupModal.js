@@ -28,11 +28,11 @@ function computeNumSessions(startDate, endDate, dowInt) {
   if (!startDate || !endDate) return '';
   const [sy,sm,sd] = startDate.split('-').map(Number);
   const [ey,em,ed] = endDate.split('-').map(Number);
-  const start = new Date(sy,sm-1,sd), end = new Date(ey,em-1,ed);
-  const daysAhead = (dowInt - start.getDay() + 7) % 7;
-  const first = new Date(start); first.setDate(first.getDate() + daysAhead);
-  if (first > end) return 0;
-  return Math.floor((end - first) / (7*24*60*60*1000)) + 1;
+  const startMs = Date.UTC(sy,sm-1,sd), endMs = Date.UTC(ey,em-1,ed);
+  const daysAhead = (dowInt - new Date(startMs).getUTCDay() + 7) % 7;
+  const firstMs = startMs + daysAhead * 24*60*60*1000;
+  if (firstMs > endMs) return 0;
+  return Math.floor((endMs - firstMs) / (7*24*60*60*1000)) + 1;
 }
 
 function NewInstructorInline({ onCreated, onCancel }) {

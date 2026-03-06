@@ -48,8 +48,19 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
     setLocalDur(String(session.duration || groupDuration || 45));
   }, [session, groupDuration]);
 
-  const isCancelled = session.status === 'cancelled';
+  const isCancelled  = session.status === 'cancelled';
+  const isGroupEnded = session.status === 'group_ended';
   const style = STATUS_STYLE[session.status] || STATUS_STYLE.scheduled;
+
+  async function handleGroupEnded() {
+    const updated = await api.updateSession(session.id, { status: 'group_ended', status_manual_override: true });
+    onUpdate(updated);
+  }
+
+  async function handleUndoGroupEnded() {
+    const updated = await api.updateSession(session.id, { status: 'scheduled', status_manual_override: false });
+    onUpdate(updated);
+  }
 
   function handleNoteChange(val) {
     setSoapNote(val);
@@ -194,18 +205,31 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
           ))}
         </div>
 
-        {/* Cancel / Restore */}
-        <div style={{ display: 'flex', gap: 6, alignSelf: 'flex-start' }}>
+        {/* Cancel / Group Ended / Restore */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, alignSelf: 'flex-start' }}>
           {isCancelled ? (
             <button type="button" className="btn btn-outline btn-xs"
               onClick={() => onUncancel(session.id)}
               style={{ borderColor: '#10b981', color: '#10b981' }}>
               Restore
             </button>
-          ) : (
-            <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session.id)}>
-              Cancel
+          ) : isGroupEnded ? (
+            <button type="button" className="btn btn-outline btn-xs"
+              onClick={handleUndoGroupEnded}
+              style={{ borderColor: '#10b981', color: '#10b981' }}>
+              Undo
             </button>
+          ) : (
+            <>
+              <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session.id)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-outline btn-xs"
+                onClick={handleGroupEnded}
+                style={{ borderColor: STATUS_STYLE.group_ended.border, color: STATUS_STYLE.group_ended.color, fontSize: '0.7rem' }}>
+                Group Ended
+              </button>
+            </>
           )}
         </div>
       </div>
