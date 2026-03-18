@@ -204,12 +204,16 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
                 <input className="form-input" type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} />
               </div>
               <div className="form-group">
-                <label className="form-label">Day of Week</label>
-                <input className="form-input" value={dayName || '—'} readOnly style={{ background:'var(--gray-50)', color:'var(--gray-600)', cursor:'default' }} />
+                <label className="form-label">End Date</label>
+                <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
               </div>
             </div>
 
             <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Day of Week</label>
+                <input className="form-input" value={dayName || '—'} readOnly style={{ background:'var(--gray-50)', color:'var(--gray-600)', cursor:'default' }} />
+              </div>
               <div className="form-group">
                 <label className="form-label"># of Sessions</label>
                 <input
@@ -224,10 +228,6 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
   onWheel={e => e.preventDefault()}
   placeholder="e.g. 12"
 />
-              </div>
-              <div className="form-group">
-                <label className="form-label">End Date</label>
-                <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
               </div>
             </div>
 
