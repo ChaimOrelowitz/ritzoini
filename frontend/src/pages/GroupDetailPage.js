@@ -12,6 +12,14 @@ function fmt12(t) {
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
+function fmtPhone(raw) {
+  if (!raw) return '';
+  const d = (raw + '').replace(/\D/g, '').slice(0, 10);
+  if (d.length <= 3) return d.length ? `(${d}` : '';
+  if (d.length <= 6) return `(${d.slice(0,3)}) ${d.slice(3)}`;
+  return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+}
+
 // MM/DD/YYYY
 function fmtDate(d) {
   if (!d) return '';
@@ -415,7 +423,7 @@ export default function GroupDetailPage() {
 
           <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: group.description ? 10 : 0 }}>
             <span>👤 {supervisorName}</span>
-            {instructorName && <span>🎓 {instructorName}{group.instructor.phone && ` · ${group.instructor.phone}`}</span>}
+            {instructorName && <span>🎓 {instructorName}{group.instructor.phone && ` · ${fmtPhone(group.instructor.phone)}`}</span>}
           </div>
 
           {group.description && (
