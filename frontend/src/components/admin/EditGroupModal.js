@@ -40,7 +40,7 @@ function NewInstructorInline({ onCreated, onCancel }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   async function handleSave() {
-    if (!form.first_name || !form.last_name) { setError('First and last name required'); return; }
+    if (!form.phone) { setError('Phone is required'); return; }
     setLoading(true);
     try { const created = await api.createInstructor(form); onCreated(created); }
     catch (err) { setError(err.message); }
@@ -50,15 +50,15 @@ function NewInstructorInline({ onCreated, onCancel }) {
     <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 14px', marginTop: 8 }}>
       <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--navy)', marginBottom: 10 }}>New Instructor</div>
       {error && <div style={{ color: 'red', fontSize: '0.78rem', marginBottom: 8 }}>{error}</div>}
+      <input className="form-input" placeholder="Phone *" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} style={{ marginBottom: 8 }} />
       <div className="form-row">
         <div className="form-group" style={{ marginBottom: 8 }}>
-          <input className="form-input" placeholder="First name *" value={form.first_name} onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
+          <input className="form-input" placeholder="First name (optional)" value={form.first_name} onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} />
         </div>
         <div className="form-group" style={{ marginBottom: 8 }}>
-          <input className="form-input" placeholder="Last name *" value={form.last_name} onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} />
+          <input className="form-input" placeholder="Last name (optional)" value={form.last_name} onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} />
         </div>
       </div>
-      <input className="form-input" placeholder="Phone (optional)" value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} style={{ marginBottom: 10 }} />
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="button" className="btn btn-gold btn-sm" onClick={handleSave} disabled={loading}>{loading ? 'Saving…' : 'Add Instructor'}</button>
         <button type="button" className="btn btn-outline btn-sm" onClick={onCancel}>Cancel</button>
