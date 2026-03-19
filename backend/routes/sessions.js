@@ -76,6 +76,36 @@ async function checkGroupAutoComplete(groupId) {
     .neq('status', 'completed');
 }
 
+// GET /api/sessions/calendar — all sessions across all groups, with group info
+router.get('/calendar', requireAuth, async (req, res) => {
+  try {
+    const { supervisor_id } = req.query;
+
+    let query = supabase
+      .from('sessions')
+      .select(`
+        id, group_id, session_number, session_date, scheduled_date,
+        start_time, scheduled_time, ecw_time, ecw_end_time, duration, status,
+        groups!inner (
+          id, internal_name, group_name, supervisor_id,
+          supervisor:supervisor_id ( id, first_name, last_name )
+        )
+      `)
+      .not('status', 'in', '("cancelled","group_ended")')
+      .order('session_date', { ascending: true });
+
+    if (req.user.role === 'supervisor') {
+      query = query.eq('groups.supervisor_id', req.user.id);
+    } else if (supervisor_id) {
+      query = query.eq('groups.supervisor_id', supervisor_id);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/sessions?group_id=xxx
 router.get('/', requireAuth, async (req, res) => {
   try {

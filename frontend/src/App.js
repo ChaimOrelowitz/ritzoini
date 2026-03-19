@@ -6,6 +6,7 @@ import DashboardPage from './pages/DashboardPage';
 import GroupDetailPage from './pages/GroupDetailPage';
 import SupervisorsPage from './pages/SupervisorsPage';
 import InstructorsPage from './pages/InstructorsPage';
+import CalendarPage from './pages/CalendarPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -24,6 +25,7 @@ export default function App() {
           <PrivateRoute><Layout /></PrivateRoute>
         }>
           <Route index element={<DashboardPage />} />
+          <Route path="calendar" element={<CalendarPage />} />
           <Route path="groups/:id" element={<GroupDetailPage />} />
           <Route path="supervisors" element={
             <PrivateRoute adminOnly><SupervisorsPage /></PrivateRoute>

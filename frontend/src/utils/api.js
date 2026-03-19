@@ -30,7 +30,8 @@ export const api = {
   unarchiveGroup: (id) => authFetch(`/api/groups/${id}/unarchive`, { method: 'POST' }),
 
   // Sessions
-  getSessions:   (groupId) => authFetch(`/api/sessions?group_id=${groupId}`),
+  getSessions:        (groupId) => authFetch(`/api/sessions?group_id=${groupId}`),
+  getCalendarSessions:(supervisorId) => authFetch(`/api/sessions/calendar${supervisorId ? `?supervisor_id=${supervisorId}` : ''}`),
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
   uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),

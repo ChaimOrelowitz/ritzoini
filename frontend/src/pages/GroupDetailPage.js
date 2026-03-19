@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../utils/api';
 import EditGroupModal from '../components/admin/EditGroupModal';
@@ -315,6 +315,7 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
 export default function GroupDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { isAdmin } = useAuth();
   const [group,    setGroup]    = useState(null);
   const [sessions, setSessions] = useState([]);
@@ -323,6 +324,7 @@ export default function GroupDetailPage() {
   const [success,  setSuccess]  = useState('');
   const [showEdit, setShowEdit] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
+  const sessionRefs = useRef({});
 
   const load = useCallback(async () => {
     try {
@@ -333,6 +335,16 @@ export default function GroupDetailPage() {
   }, [id]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Scroll to session if ?session=ID is in the URL
+  useEffect(() => {
+    const sessionId = searchParams.get('session');
+    if (!sessionId || !sessions.length) return;
+    const el = sessionRefs.current[sessionId];
+    if (el) {
+      setTimeout(() => el.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100);
+    }
+  }, [sessions, searchParams]);
 
   function handleSessionUpdate(updated) {
     setSessions(prev => prev.map(s => s.id === updated.id ? { ...s, ...updated } : s));
@@ -483,14 +495,16 @@ export default function GroupDetailPage() {
           {sessions.length === 0 ? (
             <div className="empty-state"><div className="empty-icon">📅</div><p>No sessions yet.</p></div>
           ) : sessions.map(session => (
-            <SessionRow
-              key={session.id}
-              session={session}
-              groupDuration={group.default_duration || 45}
-              onUpdate={handleSessionUpdate}
-              onCancel={handleCancel}
-              onUncancel={handleUncancel}
-            />
+            <div key={session.id} ref={el => sessionRefs.current[session.id] = el}
+              style={searchParams.get('session') === session.id ? { borderRadius: 'var(--radius)', outline: '2px solid var(--gold)', outlineOffset: 2 } : {}}>
+              <SessionRow
+                session={session}
+                groupDuration={group.default_duration || 45}
+                onUpdate={handleSessionUpdate}
+                onCancel={handleCancel}
+                onUncancel={handleUncancel}
+              />
+            </div>
           ))}
         </div>
       </div>
