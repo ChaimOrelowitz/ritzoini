@@ -31,7 +31,13 @@ export const api = {
 
   // Sessions
   getSessions:        (groupId) => authFetch(`/api/sessions?group_id=${groupId}`),
-  getCalendarSessions:(supervisorId) => authFetch(`/api/sessions/calendar${supervisorId ? `?supervisor_id=${supervisorId}` : ''}`),
+  getCalendarSessions:(supervisorId, includeArchived) => {
+    const params = new URLSearchParams();
+    if (supervisorId) params.set('supervisor_id', supervisorId);
+    if (includeArchived) params.set('include_archived', 'true');
+    const qs = params.toString();
+    return authFetch(`/api/sessions/calendar${qs ? `?${qs}` : ''}`);
+  },
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
   uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),

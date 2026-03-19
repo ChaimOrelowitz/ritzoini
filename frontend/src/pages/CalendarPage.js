@@ -26,11 +26,12 @@ export default function CalendarPage() {
   const navigate = useNavigate();
   const calendarRef = useRef(null);
 
-  const [sessions,    setSessions]    = useState([]);
-  const [supervisors, setSupervisors] = useState([]);
-  const [filterSup,   setFilterSup]   = useState('');
-  const [loading,     setLoading]     = useState(true);
-  const [view,        setView]        = useState('dayGridMonth');
+  const [sessions,         setSessions]         = useState([]);
+  const [supervisors,      setSupervisors]      = useState([]);
+  const [filterSup,        setFilterSup]        = useState('');
+  const [includeArchived,  setIncludeArchived]  = useState(false);
+  const [loading,          setLoading]          = useState(true);
+  const [view,             setView]             = useState('dayGridMonth');
 
   useEffect(() => {
     if (isAdmin) api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
@@ -38,11 +39,11 @@ export default function CalendarPage() {
 
   useEffect(() => {
     setLoading(true);
-    api.getCalendarSessions(filterSup || null)
+    api.getCalendarSessions(filterSup || null, includeArchived)
       .then(setSessions)
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [filterSup]);
+  }, [filterSup, includeArchived]);
 
   const events = sessions.map(s => {
     const date = s.session_date || s.scheduled_date;
@@ -121,6 +122,12 @@ export default function CalendarPage() {
               ))}
             </select>
           )}
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.82rem', color: 'var(--gray-600)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={includeArchived} onChange={e => setIncludeArchived(e.target.checked)}
+              style={{ width: 14, height: 14, accentColor: 'var(--navy)' }} />
+            Show archived
+          </label>
 
           <div style={{ display: 'flex', gap: 4 }}>
             <button

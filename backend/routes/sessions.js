@@ -79,7 +79,7 @@ async function checkGroupAutoComplete(groupId) {
 // GET /api/sessions/calendar — all sessions across all groups, with group info
 router.get('/calendar', requireAuth, async (req, res) => {
   try {
-    const { supervisor_id } = req.query;
+    const { supervisor_id, include_archived } = req.query;
 
     let query = supabase
       .from('sessions')
@@ -87,12 +87,16 @@ router.get('/calendar', requireAuth, async (req, res) => {
         id, group_id, session_number, session_date, scheduled_date,
         start_time, scheduled_time, ecw_time, ecw_end_time, duration, status,
         groups!inner (
-          id, internal_name, group_name, supervisor_id,
+          id, internal_name, group_name, supervisor_id, archived,
           supervisor:supervisor_id ( id, first_name, last_name )
         )
       `)
       .not('status', 'in', '("cancelled","group_ended")')
       .order('session_date', { ascending: true });
+
+    if (include_archived !== 'true') {
+      query = query.eq('groups.archived', false);
+    }
 
     if (req.user.role === 'supervisor') {
       query = query.eq('groups.supervisor_id', req.user.id);
