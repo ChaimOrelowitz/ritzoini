@@ -270,16 +270,29 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
 
 // ── Bulk Notes Modal ──────────────────────────────────────────
 function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
-  const [text, setText]     = useState('');
-  const [result, setResult] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState('');
+  const [text, setText]         = useState('');
+  const [startFrom, setStartFrom] = useState('');
+  const [result, setResult]     = useState(null);
+  const [loading, setLoading]   = useState(false);
+  const [compiling, setCompiling] = useState(false);
+  const [error, setError]       = useState('');
+
+  async function handleCompile() {
+    setCompiling(true); setError('');
+    try {
+      const res = await api.compileNotes(groupId);
+      setText(res.compiled || '');
+    } catch (err) { setError(err.message); }
+    finally { setCompiling(false); }
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true); setError('');
-    try { const res = await api.bulkNotes(groupId, text); setResult(res); }
-    catch (err) { setError(err.message); }
+    try {
+      const res = await api.bulkNotes(groupId, text, startFrom ? parseInt(startFrom) : undefined);
+      setResult(res);
+    } catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }
 
@@ -299,12 +312,28 @@ function BulkNotesModal({ groupId, sessionCount, onClose, onDone }) {
           <form onSubmit={handleSubmit}>
             <div className="modal-body">
               {error && <div className="alert alert-error">{error}</div>}
-              <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 12 }}>
-                Paste notes separated by <code style={{ background: 'var(--gray-100)', padding: '1px 6px', borderRadius: 3 }}>---</code> on its own line.
-                Cancelled sessions are skipped. <strong>{sessionCount}</strong> active sessions.
-              </p>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', marginBottom: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--gray-600)', margin: 0 }}>
+                    Paste notes separated by <code style={{ background: 'var(--gray-100)', padding: '1px 6px', borderRadius: 3 }}>---</code>.
+                    Cancelled sessions are skipped. <strong>{sessionCount}</strong> active sessions.
+                  </p>
+                </div>
+                <button type="button" className="btn btn-outline btn-sm" onClick={handleCompile} disabled={compiling}
+                  style={{ whiteSpace: 'nowrap', flexShrink: 0 }}>
+                  {compiling ? 'Loading…' : '📄 Compile Existing'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <label style={{ fontSize: '0.82rem', color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>Start from session #</label>
+                <input type="number" className="form-input" min="1" max={sessionCount}
+                  value={startFrom} onChange={e => setStartFrom(e.target.value)}
+                  placeholder="1"
+                  style={{ width: 70, padding: '4px 8px', fontSize: '0.85rem' }} />
+                <span style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>Leave blank to start from session 1</span>
+              </div>
               <textarea className="form-textarea" value={text} onChange={e => setText(e.target.value)}
-                placeholder={"Session 1 notes...\n---\nSession 2 notes...\n---\nSession 3 notes..."}
+                placeholder={"Session notes...\n---\nNext session notes...\n---\n..."}
                 style={{ minHeight: 260, fontFamily: 'monospace', fontSize: '0.85rem' }} required />
             </div>
             <div className="modal-footer">
@@ -463,6 +492,26 @@ export default function GroupDetailPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '5px 10px' }}>
+            <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)', fontWeight: 600 }}>Notes:</span>
+            <span style={{ fontSize: '0.78rem', color: group.ai_notes ? 'var(--gray-400)' : 'var(--navy)', fontWeight: group.ai_notes ? 400 : 700 }}>Manual</span>
+            <div
+              onClick={async () => {
+                const updated = await api.updateGroup(id, { ai_notes: !group.ai_notes });
+                setGroup(prev => ({ ...prev, ai_notes: updated.ai_notes }));
+              }}
+              style={{
+                width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
+                background: group.ai_notes ? 'var(--navy)' : 'var(--gray-300)',
+              }}
+            >
+              <div style={{
+                position: 'absolute', top: 3, left: group.ai_notes ? 18 : 3,
+                width: 14, height: 14, borderRadius: '50%', background: 'white', transition: 'left 0.2s',
+              }} />
+            </div>
+            <span style={{ fontSize: '0.78rem', color: group.ai_notes ? 'var(--navy)' : 'var(--gray-400)', fontWeight: group.ai_notes ? 700 : 400 }}>AI</span>
+          </div>
           <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>📋 Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
           {isAdmin && !isEnded && (

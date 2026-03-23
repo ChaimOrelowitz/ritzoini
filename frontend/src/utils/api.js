@@ -43,9 +43,10 @@ export const api = {
   uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
   returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
   lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`,           { method: 'POST' }),
-  bulkNotes:     (groupId, notes_text) => authFetch(`/api/sessions/bulk-notes/${groupId}`, {
-    method: 'POST', body: JSON.stringify({ notes_text }),
+  bulkNotes:     (groupId, notes_text, start_from) => authFetch(`/api/sessions/bulk-notes/${groupId}`, {
+    method: 'POST', body: JSON.stringify({ notes_text, start_from }),
   }),
+  compileNotes:  (groupId) => authFetch(`/api/sessions/compile-notes/${groupId}`),
 
   // Users
   getUsers:   () => authFetch('/api/users'),

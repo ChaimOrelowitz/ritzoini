@@ -3,6 +3,7 @@ const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
 const { sendSoapNoteEmail } = require('../utils/mailer');
+const { generateSessionNote } = require('../utils/noteGenerator');
 
 function addMinutesToTime(timeStr, mins) {
   if (!timeStr) return null;
@@ -25,9 +26,15 @@ function getNote(s) {
 async function autoCompleteSessions(groupId) {
   const now = new Date();
 
+  const { data: group } = await supabase
+    .from('groups')
+    .select('id, ai_notes, description, total_sessions')
+    .eq('id', groupId)
+    .single();
+
   const { data } = await supabase
     .from('sessions')
-    .select('id, session_date, scheduled_date, ecw_time, ecw_end_time, duration')
+    .select('id, session_number, session_date, scheduled_date, ecw_time, ecw_end_time, duration, soap_note, notes')
     .eq('group_id', groupId)
     .eq('status', 'scheduled')
     .eq('status_manual_override', false);
@@ -50,7 +57,44 @@ async function autoCompleteSessions(groupId) {
     .update({ status: 'completed' })
     .in('id', toComplete.map(s => s.id));
 
-  await Promise.all(toComplete.map(s => sendSoapNoteEmail(s.id)));
+  for (const s of toComplete) {
+    if (group?.ai_notes) {
+      // AI mode: generate note, save it, then email
+      try {
+        const { data: prevSessions } = await supabase
+          .from('sessions')
+          .select('session_number, soap_note, notes')
+          .eq('group_id', groupId)
+          .lt('session_number', s.session_number)
+          .not('status', 'in', '("cancelled","group_ended")')
+          .order('session_number', { ascending: true });
+
+        const previousNotes = (prevSessions || [])
+          .map(p => p.soap_note || p.notes)
+          .filter(Boolean);
+
+        const note = await generateSessionNote(
+          group.description || '',
+          s.session_number,
+          group.total_sessions || 0,
+          previousNotes
+        );
+
+        await supabase.from('sessions')
+          .update({ soap_note: note, notes: note })
+          .eq('id', s.id);
+      } catch (err) {
+        console.error(`[noteGenerator] Failed to generate note for session ${s.id}:`, err.message);
+      }
+    }
+
+    // Email fires if: kill switch is on AND (AI mode OR soap_note is not empty)
+    const currentNote = s.soap_note || s.notes;
+    if (group?.ai_notes || currentNote?.trim()) {
+      await sendSoapNoteEmail(s.id);
+    }
+  }
+
   await checkGroupAutoComplete(groupId);
 }
 
@@ -185,7 +229,45 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (error) throw error;
 
     if (updates.status === 'completed' && session.status !== 'completed') {
-      await sendSoapNoteEmail(req.params.id);
+      const { data: group } = await supabase
+        .from('groups')
+        .select('ai_notes, description, total_sessions')
+        .eq('id', session.group_id)
+        .single();
+
+      if (group?.ai_notes) {
+        try {
+          const { data: prevSessions } = await supabase
+            .from('sessions')
+            .select('session_number, soap_note, notes')
+            .eq('group_id', session.group_id)
+            .lt('session_number', session.session_number)
+            .not('status', 'in', '("cancelled","group_ended")')
+            .order('session_number', { ascending: true });
+
+          const previousNotes = (prevSessions || [])
+            .map(p => p.soap_note || p.notes)
+            .filter(Boolean);
+
+          const note = await generateSessionNote(
+            group.description || '',
+            session.session_number,
+            group.total_sessions || 0,
+            previousNotes
+          );
+
+          await supabase.from('sessions')
+            .update({ soap_note: note, notes: note })
+            .eq('id', req.params.id);
+        } catch (err) {
+          console.error(`[noteGenerator] Failed for session ${req.params.id}:`, err.message);
+        }
+      }
+
+      const freshNote = updates.soap_note || session.soap_note || session.notes;
+      if (group?.ai_notes || freshNote?.trim()) {
+        await sendSoapNoteEmail(req.params.id);
+      }
     }
 
     if (updates.locked === true || updates.status === 'completed') {
@@ -529,7 +611,7 @@ router.post('/:id/return-to-auto', requireAuth, async (req, res) => {
 router.post('/bulk-notes/:groupId', requireAuth, async (req, res) => {
   try {
     const { groupId } = req.params;
-    const { notes_text } = req.body;
+    const { notes_text, start_from } = req.body;
     if (!notes_text?.trim()) return res.status(400).json({ error: 'notes_text is required' });
 
     const { data: group } = await supabase
@@ -539,11 +621,16 @@ router.post('/bulk-notes/:groupId', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
 
     const chunks = notes_text.split(/\n?---\n?/).map(c => c.trim()).filter(Boolean);
-    const { data: sessions } = await supabase
+    let query = supabase
       .from('sessions').select('id, session_number, status')
       .eq('group_id', groupId).neq('status', 'cancelled')
       .order('session_number', { ascending: true });
 
+    if (start_from && parseInt(start_from) > 1) {
+      query = query.gte('session_number', parseInt(start_from));
+    }
+
+    const { data: sessions } = await query;
     if (!sessions?.length) return res.status(400).json({ error: 'No sessions found' });
     const count = Math.min(chunks.length, sessions.length);
     await Promise.all(Array.from({ length: count }, (_, i) =>
@@ -552,6 +639,30 @@ router.post('/bulk-notes/:groupId', requireAuth, async (req, res) => {
         .eq('id', sessions[i].id)
     ));
     res.json({ success: true, updated: count, total_chunks: chunks.length, total_sessions: sessions.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/sessions/compile-notes/:groupId
+router.get('/compile-notes/:groupId', requireAuth, async (req, res) => {
+  try {
+    const { groupId } = req.params;
+    const { data: group } = await supabase
+      .from('groups').select('supervisor_id').eq('id', groupId).single();
+    if (!group) return res.status(404).json({ error: 'Group not found' });
+    if (req.user.role === 'supervisor' && group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: 'Access denied' });
+
+    const { data: sessions } = await supabase
+      .from('sessions').select('session_number, soap_note, notes, status')
+      .eq('group_id', groupId).neq('status', 'cancelled')
+      .order('session_number', { ascending: true });
+
+    const compiled = (sessions || [])
+      .filter(s => s.soap_note || s.notes)
+      .map(s => `Week ${s.session_number}:\n${s.soap_note || s.notes}`)
+      .join('\n\n---\n\n');
+
+    res.json({ compiled });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
