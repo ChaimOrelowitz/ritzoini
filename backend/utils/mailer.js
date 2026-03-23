@@ -1,18 +1,12 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const supabase = require('../db/supabase');
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 let emailEnabled = process.env.EMAIL_ENABLED === 'true';
 
 function getEmailEnabled() { return emailEnabled; }
 function setEmailEnabled(val) { emailEnabled = !!val; }
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
 
 const DAY_ABBREVS = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
 
@@ -69,10 +63,10 @@ async function sendSoapNoteEmail(sessionId) {
       : '<em>(no notes)</em>';
     const html = `<p><strong>${groupName}</strong></p><p>${bodyHtml}</p>`;
 
-    await transporter.sendMail({
-      from: process.env.GMAIL_USER,
+    await resend.emails.send({
+      from: process.env.FROM_EMAIL,
       to: process.env.TO_EMAIL,
-      replyTo: supervisorEmail || process.env.GMAIL_USER,
+      reply_to: supervisorEmail || process.env.FROM_EMAIL,
       subject,
       html,
     });
