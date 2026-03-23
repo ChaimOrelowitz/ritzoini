@@ -255,6 +255,7 @@ export default function DashboardPage() {
   const [showCreateModal, setShowCreate] = useState(false);
   const [showArchived, setShowArchived]  = useState(false);
   const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [filter, setFilter]           = useState('active');
   const [emailEnabled, setEmailEnabledState] = useState(null);
   const [error, setError]             = useState('');
 
@@ -279,21 +280,27 @@ export default function DashboardPage() {
     setEmailEnabledState(res.email_enabled);
   }
 
+  const stats = {
+    total:     groups.length,
+    active:    groups.filter(g => g.status === 'active').length,
+    completed: groups.filter(g => g.status === 'completed').length,
+  };
+
+  const visibleGroups = showArchived ? groups : groups.filter(g => {
+    if (filter === 'active')    return g.status === 'active';
+    if (filter === 'completed') return g.status === 'completed';
+    return true; // 'total'
+  });
+
   // Group by day_of_week_int
   const byDay = {};
-  groups.forEach(g => {
+  visibleGroups.forEach(g => {
     const dow = g.day_of_week_int ?? DAY_NAMES.indexOf(g.day_of_week);
     const key = dow >= 0 ? dow : 7;
     if (!byDay[key]) byDay[key] = [];
     byDay[key].push(g);
   });
   const sortedDays = Object.keys(byDay).map(Number).sort((a, b) => a - b);
-
-  const stats = {
-    total:     groups.length,
-    active:    groups.filter(g => g.status === 'active').length,
-    completed: groups.filter(g => g.status === 'completed').length,
-  };
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
 
@@ -307,7 +314,7 @@ export default function DashboardPage() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <button
             className="btn btn-outline btn-sm"
-            onClick={() => setShowArchived(a => !a)}
+            onClick={() => { setShowArchived(a => !a); setFilter('active'); }}
             style={{ color: showArchived ? 'var(--navy)' : 'var(--gray-400)' }}
           >
             {showArchived ? '← Active Groups' : 'View Archived'}
@@ -333,15 +340,32 @@ export default function DashboardPage() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {isAdmin && (
+      {isAdmin && !showArchived && (
         <div className="stats-row" style={{ marginBottom: 24 }}>
-          <div className="stat-card"><div className="stat-value">{stats.total}</div><div className="stat-label">Total Groups</div></div>
-          <div className="stat-card"><div className="stat-value" style={{ color: '#10b981' }}>{stats.active}</div><div className="stat-label">Active</div></div>
-          <div className="stat-card"><div className="stat-value" style={{ color: '#6b7280' }}>{stats.completed}</div><div className="stat-label">Completed</div></div>
+          {[
+            { key: 'total',     label: 'Total Groups', value: stats.total,     color: 'var(--navy)' },
+            { key: 'active',    label: 'Active',        value: stats.active,    color: '#10b981'     },
+            { key: 'completed', label: 'Completed',     value: stats.completed, color: '#6b7280'     },
+          ].map(({ key, label, value, color }) => (
+            <div
+              key={key}
+              className="stat-card"
+              onClick={() => setFilter(key)}
+              style={{
+                cursor: 'pointer',
+                outline: filter === key ? `2px solid ${color}` : '2px solid transparent',
+                transition: 'outline 0.15s, box-shadow 0.15s',
+                boxShadow: filter === key ? `0 0 0 1px ${color}20` : undefined,
+              }}
+            >
+              <div className="stat-value" style={{ color }}>{value}</div>
+              <div className="stat-label">{label}</div>
+            </div>
+          ))}
         </div>
       )}
 
-      {groups.length === 0 ? (
+      {visibleGroups.length === 0 ? (
         <div className="empty-state">
           <div className="empty-icon">📋</div>
           <p>{showArchived ? 'No archived groups.' : isAdmin ? 'No groups yet. Create one to get started.' : 'No groups assigned to you.'}</p>
@@ -368,7 +392,7 @@ export default function DashboardPage() {
       )}
       {showBulkAssign && (
         <BulkAssignModal
-          groups={groups}
+          groups={visibleGroups}
           onClose={() => setShowBulkAssign(false)}
           onDone={() => { setShowBulkAssign(false); load(); }}
         />
