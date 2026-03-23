@@ -14,6 +14,8 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+const DAY_ABBREVS = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+
 function fmt12(t) {
   if (!t) return '';
   const [h, m] = t.slice(0, 5).split(':').map(Number);
@@ -26,13 +28,25 @@ function fmtDate(dateStr) {
   return `${mo}/${d}/${y}`;
 }
 
+function buildSubject(internalName, session) {
+  const dayAbbrev = session.session_day_of_week != null
+    ? DAY_ABBREVS[session.session_day_of_week]
+    : '';
+  const ecwTime   = (session.ecw_time   || '').slice(0, 5);
+  const startTime = (session.start_time || '').slice(0, 5);
+  const ecwStr    = fmt12(ecwTime);
+  const startParen = (startTime && startTime !== ecwTime) ? ` (${fmt12(startTime)})` : '';
+  const dateStr   = fmtDate(session.session_date || session.scheduled_date);
+  return `${internalName} ${dayAbbrev} ${ecwStr}${startParen} ${dateStr}`.trim();
+}
+
 async function sendSoapNoteEmail(sessionId) {
   if (!emailEnabled) return;
   try {
     const { data: session } = await supabase
       .from('sessions')
       .select(`
-        id, session_number, session_date, scheduled_date, ecw_time, start_time, soap_note, notes,
+        id, session_number, session_date, scheduled_date, session_day_of_week, ecw_time, start_time, soap_note, notes,
         group:groups!group_id(
           internal_name, group_name, name,
           supervisor:profiles!supervisor_id(email)
@@ -46,12 +60,10 @@ async function sendSoapNoteEmail(sessionId) {
     const group = session.group;
     const internalName = group?.internal_name || '';
     const groupName = group?.group_name || group?.name || internalName;
-    const timeStr = fmt12(session.ecw_time || session.start_time);
-    const dateStr = fmtDate(session.session_date || session.scheduled_date);
     const soapNote = session.soap_note || session.notes || '';
     const supervisorEmail = group?.supervisor?.email;
 
-    const subject = `${internalName} ${timeStr} ${dateStr}`.trim();
+    const subject = buildSubject(internalName, session);
     const bodyHtml = soapNote
       ? soapNote.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
       : '<em>(no notes)</em>';
