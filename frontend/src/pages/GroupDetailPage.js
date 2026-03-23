@@ -48,12 +48,14 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
   const [localDate, setLocalDate] = useState(session.session_date || session.scheduled_date || '');
   const [localTime, setLocalTime] = useState((session.start_time || session.scheduled_time || '').slice(0,5));
   const [localDur,  setLocalDur]  = useState(String(session.duration || groupDuration || 45));
+  const [localEcw,  setLocalEcw]  = useState((session.ecw_time || '').slice(0,5));
 
   useEffect(() => {
     setSoapNote(session.soap_note || session.notes || '');
     setLocalDate(session.session_date || session.scheduled_date || '');
     setLocalTime((session.start_time || session.scheduled_time || '').slice(0,5));
     setLocalDur(String(session.duration || groupDuration || 45));
+    setLocalEcw((session.ecw_time || '').slice(0,5));
   }, [session, groupDuration]);
 
   const isCancelled  = session.status === 'cancelled';
@@ -104,7 +106,9 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
   async function saveTime() {
     setEditTime(false);
     const dur = parseInt(localDur) || groupDuration || 45;
-    const updated = await api.updateSession(session.id, { start_time: localTime, duration: dur });
+    const patch = { start_time: localTime, duration: dur };
+    if (localEcw) patch.ecw_time = localEcw;
+    const updated = await api.updateSession(session.id, patch);
     onUpdate(updated);
   }
 
@@ -155,11 +159,14 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
 
           {/* Time + ECW */}
           {editTime ? (
-            <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
               <input type="time" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 100 }}
-                value={localTime} onChange={e => setLocalTime(e.target.value)} />
+                value={localTime} onChange={e => setLocalTime(e.target.value)} title="Start time" />
               <input type="number" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 64 }}
-                value={localDur} onChange={e => setLocalDur(e.target.value)} placeholder="min" />
+                value={localDur} onChange={e => setLocalDur(e.target.value)} placeholder="min" title="Duration (min)" />
+              <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>ECW</span>
+              <input type="time" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 100 }}
+                value={localEcw} onChange={e => setLocalEcw(e.target.value)} title="ECW time" />
               <button className="btn btn-gold btn-xs" type="button" onClick={saveTime}>✓</button>
               <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditTime(false)}>✕</button>
             </div>
