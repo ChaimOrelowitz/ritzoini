@@ -58,10 +58,17 @@ async function sendSoapNoteEmail(sessionId) {
     const supervisorEmail = group?.supervisor?.email;
 
     const subject = buildSubject(internalName, session);
-    const bodyHtml = soapNote
-      ? soapNote.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
+
+    const formattedNote = soapNote
+      ? soapNote
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+          .replace(/^(subjective|objective|assessment|plan|client participation)(\s*:?)/gim,
+            (_, heading, colon) => `<strong>${heading.toUpperCase()}${colon}</strong>`)
+          .replace(/\n/g, '<br>')
       : '<em>(no notes)</em>';
-    const html = `<p><strong>${groupName}</strong></p><p>${bodyHtml}</p>`;
+
+    const html = `<p><strong>Group Name: ${groupName}</strong></p><p>${formattedNote}</p>`;
 
     await resend.emails.send({
       from: process.env.FROM_EMAIL,
