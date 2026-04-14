@@ -127,7 +127,7 @@ const GROUP_DETAIL_SELECT = `
   id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
   start_date, end_date, day_of_week_int, day_of_week,
   start_time, session_time, end_time, ecw_time, ecw_end_time,
-  total_sessions, default_duration, created_at,
+  total_sessions, default_duration, created_at, ai_notes,
   supervisor:profiles!supervisor_id(id, first_name, last_name, email),
   instructor:instructors!instructor_id(id, first_name, last_name, phone)
 `;

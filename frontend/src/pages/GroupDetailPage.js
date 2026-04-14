@@ -497,8 +497,12 @@ export default function GroupDetailPage() {
             <span style={{ fontSize: '0.78rem', color: group.ai_notes ? 'var(--gray-400)' : 'var(--navy)', fontWeight: group.ai_notes ? 400 : 700 }}>Manual</span>
             <div
               onClick={async () => {
-                const updated = await api.updateGroup(id, { ai_notes: !group.ai_notes });
-                setGroup(prev => ({ ...prev, ai_notes: updated.ai_notes }));
+                try {
+                  const updated = await api.updateGroup(id, { ai_notes: !group.ai_notes });
+                  setGroup(prev => ({ ...prev, ai_notes: updated.ai_notes }));
+                } catch (err) {
+                  alert('Failed to update notes mode: ' + err.message);
+                }
               }}
               style={{
                 width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
