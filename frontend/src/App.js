@@ -4,7 +4,7 @@ import Layout from './components/layout/Layout.js';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import GroupDetailPage from './pages/GroupDetailPage';
-import SupervisorsPage from './pages/SupervisorsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 import InstructorsPage from './pages/InstructorsPage';
 import CalendarPage from './pages/CalendarPage';
 
@@ -28,7 +28,7 @@ export default function App() {
           <Route path="calendar" element={<CalendarPage />} />
           <Route path="groups/:id" element={<GroupDetailPage />} />
           <Route path="supervisors" element={
-            <PrivateRoute adminOnly><SupervisorsPage /></PrivateRoute>
+            <PrivateRoute adminOnly><AdminUsersPage /></PrivateRoute>
           } />
           <Route path="instructors" element={
             <PrivateRoute><InstructorsPage /></PrivateRoute>
