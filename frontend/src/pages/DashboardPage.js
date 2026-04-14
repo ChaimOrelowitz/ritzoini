@@ -26,7 +26,7 @@ function StatusDot({ status }) {
   );
 }
 
-function GroupCard({ group, onClick }) {
+function GroupCard({ group, onClick, onEndGroup }) {
   const sessions   = group.sessions || [];
   const total      = sessions.filter(s => s.status !== 'cancelled').length;
   const completed  = sessions.filter(s => s.status === 'completed').length;
@@ -64,13 +64,30 @@ function GroupCard({ group, onClick }) {
           </div>
         )}
       </div>
-      <span className={`badge badge-${group.status}`} style={{ flexShrink: 0 }}>{group.status}</span>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+        {group.status === 'active' && onEndGroup && (
+          <button
+            onClick={e => { e.stopPropagation(); onEndGroup(group.id); }}
+            style={{
+              fontSize: '0.7rem', fontWeight: 600, padding: '3px 8px',
+              background: 'transparent', border: '1px solid #ef4444',
+              color: '#ef4444', borderRadius: 4, cursor: 'pointer',
+              lineHeight: 1.4,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = '#fef2f2'; }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            End Group
+          </button>
+        )}
+        <span className={`badge badge-${group.status}`}>{group.status}</span>
+      </div>
     </div>
   );
 }
 
 // Collapsible supervisor section within a day
-function SupervisorSection({ supervisorName, groups, navigate }) {
+function SupervisorSection({ supervisorName, groups, navigate, onEndGroup }) {
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginBottom: 10 }}>
@@ -93,7 +110,7 @@ function SupervisorSection({ supervisorName, groups, navigate }) {
       {open && (
         <div style={{ paddingLeft: 12, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {groups.map(g => (
-            <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} />
+            <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} />
           ))}
         </div>
       )}
@@ -102,7 +119,7 @@ function SupervisorSection({ supervisorName, groups, navigate }) {
 }
 
 // Collapsible day section
-function DaySection({ dayName, groups, isAdmin, navigate }) {
+function DaySection({ dayName, groups, isAdmin, navigate, onEndGroup }) {
   const [open, setOpen] = useState(true);
 
   // Group by supervisor for admin view
@@ -117,11 +134,11 @@ function DaySection({ dayName, groups, isAdmin, navigate }) {
       bySupervisor[name].push(g);
     });
     content = Object.entries(bySupervisor).sort(([a],[b]) => a.localeCompare(b)).map(([name, supGroups]) => (
-      <SupervisorSection key={name} supervisorName={name} groups={supGroups} navigate={navigate} />
+      <SupervisorSection key={name} supervisorName={name} groups={supGroups} navigate={navigate} onEndGroup={onEndGroup} />
     ));
   } else {
     content = groups.map(g => (
-      <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} />
+      <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} />
     ));
   }
 
@@ -280,6 +297,14 @@ export default function DashboardPage() {
     setEmailEnabledState(res.email_enabled);
   }
 
+  async function handleEndGroup(groupId) {
+    if (!window.confirm('Mark this group as completed?')) return;
+    try {
+      await api.updateGroup(groupId, { status: 'completed' });
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
   const stats = {
     total:     groups.length,
     active:    groups.filter(g => g.status === 'active').length,
@@ -379,6 +404,7 @@ export default function DashboardPage() {
               groups={byDay[dow]}
               isAdmin={isAdmin}
               navigate={navigate}
+              onEndGroup={handleEndGroup}
             />
           ))}
         </div>
