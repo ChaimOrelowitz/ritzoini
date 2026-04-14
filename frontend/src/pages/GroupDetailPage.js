@@ -510,10 +510,8 @@ export default function GroupDetailPage() {
                     }
                   }}
                   style={{
-                    fontSize: '0.78rem', cursor: 'pointer', padding: '2px 8px',
-                    borderRadius: 4, transition: 'all 0.15s',
-                    background: active ? 'var(--navy)' : 'transparent',
-                    color: active ? 'white' : 'var(--gray-400)',
+                    fontSize: '0.78rem', cursor: 'pointer',
+                    color: active ? 'var(--navy)' : 'var(--gray-400)',
                     fontWeight: active ? 700 : 400,
                   }}
                 >{mode}</span>
