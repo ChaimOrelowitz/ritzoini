@@ -40,10 +40,7 @@ router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) =
       .from('profiles').select('email').eq('id', req.params.id).single();
     if (!profile) return res.status(404).json({ error: 'User not found' });
 
-    const { error } = await supabase.auth.admin.generateLink({
-      type: 'recovery',
-      email: profile.email,
-    });
+    const { error } = await supabase.auth.resetPasswordForEmail(profile.email);
     if (error) throw error;
     res.json({ success: true, message: `Password reset email sent to ${profile.email}` });
   } catch (err) {
