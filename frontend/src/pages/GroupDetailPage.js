@@ -553,10 +553,10 @@ export default function GroupDetailPage() {
           </div>
           <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
-          {isAdmin && !isEnded && (
+          {!isEnded && (
             <button className="btn btn-danger btn-sm" onClick={handleEndGroup}>End Group</button>
           )}
-          {isAdmin && isEnded && (
+          {isEnded && (
             <button className="btn btn-outline btn-sm" onClick={handleUnendGroup}>Re-open Group</button>
           )}
           {!group.archived && (

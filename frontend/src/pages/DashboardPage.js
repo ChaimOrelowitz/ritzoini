@@ -304,10 +304,8 @@ export default function DashboardPage() {
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
-    if (isAdmin) {
-      api.getEmailEnabled().then(r => setEmailEnabledState(r.email_enabled)).catch(() => {});
-    }
-  }, [isAdmin]);
+    api.getEmailEnabled().then(r => setEmailEnabledState(r.email_enabled)).catch(() => {});
+  }, []);
 
   async function toggleEmail() {
     const res = await api.setEmailEnabled(!emailEnabled);
@@ -368,7 +366,7 @@ export default function DashboardPage() {
           >
             {showArchived ? '← Active Groups' : 'View Archived'}
           </button>
-          {isAdmin && emailEnabled !== null && (
+          {emailEnabled !== null && (
             <button
               className="btn btn-outline btn-sm"
               onClick={toggleEmail}
