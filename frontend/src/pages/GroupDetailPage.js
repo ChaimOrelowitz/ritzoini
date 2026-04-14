@@ -494,27 +494,31 @@ export default function GroupDetailPage() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '5px 10px' }}>
             <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)', fontWeight: 600 }}>Notes:</span>
-            <span style={{ fontSize: '0.78rem', color: group.ai_notes ? 'var(--gray-400)' : 'var(--navy)', fontWeight: group.ai_notes ? 400 : 700 }}>Manual</span>
-            <div
-              onClick={async () => {
-                try {
-                  const updated = await api.updateGroup(id, { ai_notes: !group.ai_notes });
-                  setGroup(prev => ({ ...prev, ai_notes: updated.ai_notes }));
-                } catch (err) {
-                  alert('Failed to update notes mode: ' + err.message);
-                }
-              }}
-              style={{
-                width: 36, height: 20, borderRadius: 10, cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
-                background: group.ai_notes ? 'var(--navy)' : 'var(--gray-300)',
-              }}
-            >
-              <div style={{
-                position: 'absolute', top: 3, left: group.ai_notes ? 18 : 3,
-                width: 14, height: 14, borderRadius: '50%', background: 'white', transition: 'left 0.2s',
-              }} />
-            </div>
-            <span style={{ fontSize: '0.78rem', color: group.ai_notes ? 'var(--navy)' : 'var(--gray-400)', fontWeight: group.ai_notes ? 700 : 400 }}>AI</span>
+            {['Manual', 'AI'].map(mode => {
+              const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
+              return (
+                <span
+                  key={mode}
+                  onClick={async () => {
+                    const newVal = mode === 'AI';
+                    if (newVal === !!group.ai_notes) return;
+                    try {
+                      const updated = await api.updateGroup(id, { ai_notes: newVal });
+                      setGroup(prev => ({ ...prev, ai_notes: updated.ai_notes }));
+                    } catch (err) {
+                      alert('Failed to update notes mode: ' + err.message);
+                    }
+                  }}
+                  style={{
+                    fontSize: '0.78rem', cursor: 'pointer', padding: '2px 8px',
+                    borderRadius: 4, transition: 'all 0.15s',
+                    background: active ? 'var(--navy)' : 'transparent',
+                    color: active ? 'white' : 'var(--gray-400)',
+                    fontWeight: active ? 700 : 400,
+                  }}
+                >{mode}</span>
+              );
+            })}
           </div>
           <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>📋 Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
