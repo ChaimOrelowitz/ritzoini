@@ -102,6 +102,15 @@ export default function AdminUsersPage() {
     setForm(f => ({ ...f, [field]: value }));
   }
 
+  async function handleResetPassword(userId) {
+    try {
+      const res = await api.resetPassword(userId);
+      setStatus({ type: 'success', message: res.message });
+    } catch (err) {
+      setStatus({ type: 'error', message: err.message });
+    }
+  }
+
   async function toggleUserEmail(user) {
     const next = user.email_enabled === false ? true : false;
     setTogglingEmail(user.id);
@@ -239,9 +248,10 @@ export default function AdminUsersPage() {
                       {new Date(user.created_at).toLocaleDateString()}
                     </td>
                     <td>
-                      <button className="btn btn-outline btn-xs" onClick={() => setEditingUser(user)}>
-                        Edit
-                      </button>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button className="btn btn-outline btn-xs" onClick={() => setEditingUser(user)}>Edit</button>
+                        <button className="btn btn-outline btn-xs" onClick={() => handleResetPassword(user.id)}>Reset Password</button>
+                      </div>
                     </td>
                   </tr>
                 ))}
