@@ -28,9 +28,11 @@ async function autoCompleteSessions(groupId) {
 
   const { data: group } = await supabase
     .from('groups')
-    .select('id, ai_notes, description, total_sessions')
+    .select('id, ai_notes, description, total_sessions, status')
     .eq('id', groupId)
     .single();
+
+  if (!group || group.status !== 'active') return;
 
   const { data } = await supabase
     .from('sessions')
