@@ -26,6 +26,7 @@ Write the complete SOAP note for Session ${sessionNumber}. Requirements:
 - Developmentally and therapeutically appropriate for this group
 - Natural progression and continuity from prior sessions
 - Appropriate for an Orthodox Jewish community context
+- Do NOT include any title, header, or session number line — begin directly with the Subjective section
 
 Then write exactly 6 Client Participation options labeled "Client Participation:" followed by 6 numbered options.
 Each option must:

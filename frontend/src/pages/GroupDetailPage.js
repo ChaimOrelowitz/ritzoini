@@ -39,9 +39,11 @@ const STATUS_LABELS = {
 };
 
 // ── Session Row ───────────────────────────────────────────────
-function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) {
-  const [soapNote, setSoapNote]   = useState(session.soap_note || session.notes || '');
-  const [saveState, setSaveState] = useState('idle');
+function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, aiNotes }) {
+  const [soapNote, setSoapNote]       = useState(session.soap_note || session.notes || '');
+  const [saveState, setSaveState]     = useState('idle');
+  const [generating, setGenerating]   = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
   const saveTimer = useRef(null);
   const [editDate, setEditDate]   = useState(false);
   const [editTime, setEditTime]   = useState(false);
@@ -94,6 +96,26 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
   async function handleReturnToAuto() {
     const updated = await api.returnToAuto(session.id);
     onUpdate(updated);
+  }
+
+  async function handleGenerateNote() {
+    setGenerating(true);
+    try {
+      const updated = await api.generateNote(session.id);
+      setSoapNote(updated.soap_note || updated.notes || '');
+      onUpdate(updated);
+    } catch (err) { alert('Failed to generate note: ' + err.message); }
+    finally { setGenerating(false); }
+  }
+
+  async function handleSendEmail() {
+    setSendingEmail(true);
+    try {
+      await api.sendEmail(session.id);
+      const updated = await api.updateSession(session.id, { email_sent: true });
+      onUpdate(updated);
+    } catch (err) { alert('Failed to send email: ' + err.message); }
+    finally { setSendingEmail(false); }
   }
 
   async function saveDate() {
@@ -263,6 +285,18 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel }) 
           disabled={isCancelled}
           style={{ minHeight: 72, fontSize: '0.875rem', background: isCancelled ? '#fafafa' : 'white' }}
         />
+        {!isCancelled && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            {aiNotes && (
+              <button type="button" className="btn btn-outline btn-xs" onClick={handleGenerateNote} disabled={generating}>
+                {generating ? 'Generating…' : 'Generate Note'}
+              </button>
+            )}
+            <button type="button" className="btn btn-outline btn-xs" onClick={handleSendEmail} disabled={sendingEmail || !soapNote.trim()}>
+              {sendingEmail ? 'Sending…' : 'Send Email'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -562,6 +596,7 @@ export default function GroupDetailPage() {
                 onUpdate={handleSessionUpdate}
                 onCancel={handleCancel}
                 onUncancel={handleUncancel}
+                aiNotes={!!group.ai_notes}
               />
             </div>
           ))}

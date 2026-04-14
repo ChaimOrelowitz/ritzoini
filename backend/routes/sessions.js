@@ -61,34 +61,40 @@ async function autoCompleteSessions(groupId) {
     let shouldEmail = false;
 
     if (group?.ai_notes) {
-      // AI mode: generate note, save it, then email only if generation succeeded
-      try {
-        const { data: prevSessions } = await supabase
-          .from('sessions')
-          .select('session_number, soap_note, notes')
-          .eq('group_id', groupId)
-          .lt('session_number', s.session_number)
-          .not('status', 'in', '("cancelled","group_ended")')
-          .order('session_number', { ascending: true });
-
-        const previousNotes = (prevSessions || [])
-          .map(p => p.soap_note || p.notes)
-          .filter(Boolean);
-
-        const note = await generateSessionNote(
-          group.description || '',
-          s.session_number,
-          group.total_sessions || 0,
-          previousNotes
-        );
-
-        await supabase.from('sessions')
-          .update({ soap_note: note, notes: note })
-          .eq('id', s.id);
-
+      const existingNote = s.soap_note || s.notes;
+      if (existingNote?.trim()) {
+        // Note already exists (e.g. shifted from a cancelled session) — just email it
         shouldEmail = true;
-      } catch (err) {
-        console.error(`[noteGenerator] Failed to generate note for session ${s.id}:`, err.message);
+      } else {
+        // Generate a new note
+        try {
+          const { data: prevSessions } = await supabase
+            .from('sessions')
+            .select('session_number, soap_note, notes')
+            .eq('group_id', groupId)
+            .lt('session_number', s.session_number)
+            .not('status', 'in', '("cancelled","group_ended")')
+            .order('session_number', { ascending: true });
+
+          const previousNotes = (prevSessions || [])
+            .map(p => p.soap_note || p.notes)
+            .filter(Boolean);
+
+          const note = await generateSessionNote(
+            group.description || '',
+            s.session_number,
+            group.total_sessions || 0,
+            previousNotes
+          );
+
+          await supabase.from('sessions')
+            .update({ soap_note: note, notes: note })
+            .eq('id', s.id);
+
+          shouldEmail = true;
+        } catch (err) {
+          console.error(`[noteGenerator] Failed to generate note for session ${s.id}:`, err.message);
+        }
       }
     } else {
       // Manual mode: only email if a note already exists
@@ -667,6 +673,56 @@ router.get('/compile-notes/:groupId', requireAuth, async (req, res) => {
       .join('\n\n---\n\n');
 
     res.json({ compiled });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/sessions/:id/generate-note
+router.post('/:id/generate-note', requireAuth, async (req, res) => {
+  try {
+    const { data: session } = await supabase
+      .from('sessions')
+      .select('*, group:groups(supervisor_id, description, total_sessions, ai_notes)')
+      .eq('id', req.params.id).single();
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: 'Access denied' });
+
+    const { data: prevSessions } = await supabase
+      .from('sessions')
+      .select('session_number, soap_note, notes')
+      .eq('group_id', session.group_id)
+      .lt('session_number', session.session_number)
+      .not('status', 'in', '("cancelled","group_ended")')
+      .order('session_number', { ascending: true });
+
+    const previousNotes = (prevSessions || []).map(p => p.soap_note || p.notes).filter(Boolean);
+
+    const note = await generateSessionNote(
+      session.group.description || '',
+      session.session_number,
+      session.group.total_sessions || 0,
+      previousNotes
+    );
+
+    const { data, error } = await supabase
+      .from('sessions').update({ soap_note: note, notes: note }).eq('id', req.params.id).select().single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/sessions/:id/send-email
+router.post('/:id/send-email', requireAuth, async (req, res) => {
+  try {
+    const { data: session } = await supabase
+      .from('sessions').select('*, group:groups(supervisor_id)').eq('id', req.params.id).single();
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: 'Access denied' });
+    const note = session.soap_note || session.notes;
+    if (!note?.trim()) return res.status(400).json({ error: 'No note to send' });
+    await sendSoapNoteEmail(req.params.id);
+    res.json({ success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

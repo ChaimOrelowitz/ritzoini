@@ -42,7 +42,9 @@ export const api = {
   cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
   uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
   returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
-  lockSession:   (id) => authFetch(`/api/sessions/${id}/lock`,           { method: 'POST' }),
+  lockSession:    (id) => authFetch(`/api/sessions/${id}/lock`,           { method: 'POST' }),
+  generateNote:   (id) => authFetch(`/api/sessions/${id}/generate-note`,  { method: 'POST' }),
+  sendEmail:      (id) => authFetch(`/api/sessions/${id}/send-email`,      { method: 'POST' }),
   bulkNotes:     (groupId, notes_text, start_from) => authFetch(`/api/sessions/bulk-notes/${groupId}`, {
     method: 'POST', body: JSON.stringify({ notes_text, start_from }),
   }),
