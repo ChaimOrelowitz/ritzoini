@@ -582,8 +582,95 @@ input, select, textarea {
   white-space: nowrap;
 }
 
+/* ── Hamburger button (mobile only) ── */
+.hamburger {
+  display: none;
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 200;
+  width: 40px;
+  height: 40px;
+  background: var(--navy);
+  color: white;
+  border-radius: var(--radius);
+  font-size: 1.2rem;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-md);
+}
+
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 99;
+}
+
 @media (max-width: 768px) {
-  .sidebar { transform: translateX(-100%); }
-  .main-content { margin-left: 0; padding: 20px; }
+  .hamburger { display: flex; }
+
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    z-index: 150;
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay.open {
+    display: block;
+  }
+
+  .main-content {
+    margin-left: 0;
+    padding: 72px 16px 24px;
+  }
+
   .form-row { grid-template-columns: 1fr; }
+
+  /* Page header stacks on mobile */
+  .page-header {
+    flex-direction: column;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+
+  .page-header > div:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* Groups grid single column */
+  .groups-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Stats row 2 columns */
+  .stats-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Modals full width */
+  .modal {
+    max-width: 100%;
+    max-height: 95vh;
+    border-radius: var(--radius);
+  }
+
+  /* Hide less important table columns */
+  .sessions-table .col-hide-mobile { display: none; }
+
+  /* Session actions wrap nicely */
+  .session-actions { flex-wrap: wrap; gap: 4px; }
+
+  /* Login card full width */
+  .login-card {
+    padding: 32px 24px;
+    border-radius: var(--radius);
+  }
 }
