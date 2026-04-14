@@ -39,6 +39,7 @@ function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
       borderRadius: 'var(--radius)', padding: '12px 16px',
       cursor: 'pointer', transition: 'box-shadow 0.15s',
       display: 'flex', alignItems: 'center', gap: 14,
+      position: 'relative',
     }}
       onMouseEnter={e => e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)'}
       onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}
@@ -64,23 +65,23 @@ function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
           </div>
         )}
       </div>
+      <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 6 }}>
+        {['Manual', 'AI'].map(mode => {
+          const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
+          return (
+            <span
+              key={mode}
+              onClick={e => { e.stopPropagation(); if (!active) onToggleAi && onToggleAi(group.id, mode === 'AI'); }}
+              style={{
+                fontSize: '0.68rem', cursor: active ? 'default' : 'pointer',
+                color: active ? 'var(--navy)' : 'var(--gray-300)',
+                fontWeight: active ? 700 : 400,
+              }}
+            >{mode}</span>
+          );
+        })}
+      </div>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {['Manual', 'AI'].map(mode => {
-            const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
-            return (
-              <span
-                key={mode}
-                onClick={e => { e.stopPropagation(); if (!active) onToggleAi && onToggleAi(group.id, mode === 'AI'); }}
-                style={{
-                  fontSize: '0.7rem', cursor: active ? 'default' : 'pointer',
-                  color: active ? 'var(--navy)' : 'var(--gray-400)',
-                  fontWeight: active ? 700 : 400,
-                }}
-              >{mode}</span>
-            );
-          })}
-        </div>
         {group.status === 'active' && onEndGroup && (
           <button
             onClick={e => { e.stopPropagation(); onEndGroup(group.id); }}
