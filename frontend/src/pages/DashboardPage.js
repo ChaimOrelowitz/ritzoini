@@ -26,7 +26,7 @@ function StatusDot({ status }) {
   );
 }
 
-function GroupCard({ group, onClick, onEndGroup }) {
+function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
   const sessions   = group.sessions || [];
   const total      = sessions.filter(s => s.status !== 'cancelled').length;
   const completed  = sessions.filter(s => s.status === 'completed').length;
@@ -65,6 +65,22 @@ function GroupCard({ group, onClick, onEndGroup }) {
         )}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6, flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {['Manual', 'AI'].map(mode => {
+            const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
+            return (
+              <span
+                key={mode}
+                onClick={e => { e.stopPropagation(); if (!active) onToggleAi && onToggleAi(group.id, mode === 'AI'); }}
+                style={{
+                  fontSize: '0.7rem', cursor: active ? 'default' : 'pointer',
+                  color: active ? 'var(--navy)' : 'var(--gray-400)',
+                  fontWeight: active ? 700 : 400,
+                }}
+              >{mode}</span>
+            );
+          })}
+        </div>
         {group.status === 'active' && onEndGroup && (
           <button
             onClick={e => { e.stopPropagation(); onEndGroup(group.id); }}
@@ -87,7 +103,7 @@ function GroupCard({ group, onClick, onEndGroup }) {
 }
 
 // Collapsible supervisor section within a day
-function SupervisorSection({ supervisorName, groups, navigate, onEndGroup }) {
+function SupervisorSection({ supervisorName, groups, navigate, onEndGroup, onToggleAi }) {
   const [open, setOpen] = useState(true);
   return (
     <div style={{ marginBottom: 10 }}>
@@ -110,7 +126,7 @@ function SupervisorSection({ supervisorName, groups, navigate, onEndGroup }) {
       {open && (
         <div style={{ paddingLeft: 12, paddingTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {groups.map(g => (
-            <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} />
+            <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} onToggleAi={onToggleAi} />
           ))}
         </div>
       )}
@@ -119,7 +135,7 @@ function SupervisorSection({ supervisorName, groups, navigate, onEndGroup }) {
 }
 
 // Collapsible day section
-function DaySection({ dayName, groups, isAdmin, navigate, onEndGroup }) {
+function DaySection({ dayName, groups, isAdmin, navigate, onEndGroup, onToggleAi }) {
   const [open, setOpen] = useState(true);
 
   // Group by supervisor for admin view
@@ -134,11 +150,11 @@ function DaySection({ dayName, groups, isAdmin, navigate, onEndGroup }) {
       bySupervisor[name].push(g);
     });
     content = Object.entries(bySupervisor).sort(([a],[b]) => a.localeCompare(b)).map(([name, supGroups]) => (
-      <SupervisorSection key={name} supervisorName={name} groups={supGroups} navigate={navigate} onEndGroup={onEndGroup} />
+      <SupervisorSection key={name} supervisorName={name} groups={supGroups} navigate={navigate} onEndGroup={onEndGroup} onToggleAi={onToggleAi} />
     ));
   } else {
     content = groups.map(g => (
-      <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} />
+      <GroupCard key={g.id} group={g} onClick={() => navigate(`/groups/${g.id}`)} onEndGroup={onEndGroup} onToggleAi={onToggleAi} />
     ));
   }
 
@@ -305,6 +321,13 @@ export default function DashboardPage() {
     } catch (err) { setError(err.message); }
   }
 
+  async function handleToggleAi(groupId, aiNotes) {
+    try {
+      const updated = await api.updateGroup(groupId, { ai_notes: aiNotes });
+      setGroups(prev => prev.map(g => g.id === groupId ? { ...g, ai_notes: updated.ai_notes } : g));
+    } catch (err) { setError(err.message); }
+  }
+
   const stats = {
     total:     groups.length,
     active:    groups.filter(g => g.status === 'active').length,
@@ -405,6 +428,7 @@ export default function DashboardPage() {
               isAdmin={isAdmin}
               navigate={navigate}
               onEndGroup={handleEndGroup}
+              onToggleAi={handleToggleAi}
             />
           ))}
         </div>
