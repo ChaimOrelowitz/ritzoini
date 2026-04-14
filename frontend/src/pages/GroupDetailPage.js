@@ -492,8 +492,7 @@ export default function GroupDetailPage() {
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '5px 10px' }}>
-            <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)', fontWeight: 600 }}>Notes:</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '5px 12px' }}>
             {['Manual', 'AI'].map(mode => {
               const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
               return (
@@ -510,7 +509,7 @@ export default function GroupDetailPage() {
                     }
                   }}
                   style={{
-                    fontSize: '0.78rem', cursor: 'pointer',
+                    fontSize: '0.82rem', cursor: active ? 'default' : 'pointer',
                     color: active ? 'var(--navy)' : 'var(--gray-400)',
                     fontWeight: active ? 700 : 400,
                   }}
@@ -518,18 +517,16 @@ export default function GroupDetailPage() {
               );
             })}
           </div>
-          <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>📋 Bulk Notes</button>
+          <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
           {isAdmin && !isEnded && (
             <button className="btn btn-danger btn-sm" onClick={handleEndGroup}>End Group</button>
           )}
           {isAdmin && isEnded && (
-            <button className="btn btn-outline btn-sm" onClick={handleUnendGroup}
-              style={{ borderColor: '#10b981', color: '#10b981' }}>Re-open Group</button>
+            <button className="btn btn-outline btn-sm" onClick={handleUnendGroup}>Re-open Group</button>
           )}
           {!group.archived && (
-            <button className="btn btn-outline btn-sm" onClick={handleArchive}
-              style={{ color: 'var(--gray-400)' }}>Archive</button>
+            <button className="btn btn-outline btn-sm" onClick={handleArchive}>Archive</button>
           )}
         </div>
       </div>

@@ -65,7 +65,7 @@ function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
           </div>
         )}
       </div>
-      <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', display: 'flex', gap: 6 }}>
+      <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '2px 10px' }}>
         {['Manual', 'AI'].map(mode => {
           const active = mode === 'AI' ? !!group.ai_notes : !group.ai_notes;
           return (
@@ -73,8 +73,8 @@ function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
               key={mode}
               onClick={e => { e.stopPropagation(); if (!active) onToggleAi && onToggleAi(group.id, mode === 'AI'); }}
               style={{
-                fontSize: '0.68rem', cursor: active ? 'default' : 'pointer',
-                color: active ? 'var(--navy)' : 'var(--gray-300)',
+                fontSize: '0.75rem', cursor: active ? 'default' : 'pointer',
+                color: active ? 'var(--navy)' : 'var(--gray-400)',
                 fontWeight: active ? 700 : 400,
               }}
             >{mode}</span>
