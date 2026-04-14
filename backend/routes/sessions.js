@@ -154,6 +154,8 @@ router.get('/calendar', requireAuth, async (req, res) => {
       query = query.eq('groups.archived', false);
     }
 
+    query = query.eq('groups.status', 'active');
+
     if (req.user.role === 'supervisor') {
       query = query.eq('groups.supervisor_id', req.user.id);
     } else if (supervisor_id) {
