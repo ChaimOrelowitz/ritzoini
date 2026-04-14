@@ -291,6 +291,7 @@ export default function DashboardPage() {
   const [showBulkAssign, setShowBulkAssign] = useState(false);
   const [filter, setFilter]           = useState('active');
   const [emailEnabled, setEmailEnabledState] = useState(null);
+  const [myEmailEnabled, setMyEmailEnabled] = useState(null);
   const [error, setError]             = useState('');
 
   const load = useCallback(async () => {
@@ -305,11 +306,23 @@ export default function DashboardPage() {
 
   useEffect(() => {
     api.getEmailEnabled().then(r => setEmailEnabledState(r.email_enabled)).catch(() => {});
+    api.getMyProfile().then(p => setMyEmailEnabled(p.email_enabled !== false)).catch(() => {});
   }, []);
 
   async function toggleEmail() {
     const res = await api.setEmailEnabled(!emailEnabled);
     setEmailEnabledState(res.email_enabled);
+  }
+
+  async function toggleMyEmail() {
+    const next = !myEmailEnabled;
+    setMyEmailEnabled(next);
+    try {
+      await api.updateMyProfile({ email_enabled: next });
+    } catch (err) {
+      setMyEmailEnabled(!next);
+      alert('Failed to update email setting: ' + err.message);
+    }
   }
 
   async function handleEndGroup(groupId) {
@@ -366,14 +379,24 @@ export default function DashboardPage() {
           >
             {showArchived ? '← Active Groups' : 'View Archived'}
           </button>
-          {emailEnabled !== null && (
+          {myEmailEnabled !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={toggleMyEmail}
+              style={{ color: myEmailEnabled ? '#10b981' : 'var(--gray-400)' }}
+              title={myEmailEnabled ? 'My emails on — click to disable' : 'My emails off — click to enable'}
+            >
+              ✉ {myEmailEnabled ? 'My Emails On' : 'My Emails Off'}
+            </button>
+          )}
+          {isAdmin && emailEnabled !== null && (
             <button
               className="btn btn-outline btn-sm"
               onClick={toggleEmail}
-              style={{ color: emailEnabled ? '#10b981' : 'var(--gray-400)' }}
-              title={emailEnabled ? 'Emails on — click to disable' : 'Emails off — click to enable'}
+              style={{ color: emailEnabled ? '#10b981' : 'var(--gray-400)', fontSize: '0.75rem' }}
+              title={emailEnabled ? 'Global emails on — click to disable all' : 'Global emails off — click to enable all'}
             >
-              ✉ {emailEnabled ? 'Emails On' : 'Emails Off'}
+              {emailEnabled ? 'Global On' : 'Global Off'}
             </button>
           )}
           {!showArchived && (

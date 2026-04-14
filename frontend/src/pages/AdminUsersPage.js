@@ -83,6 +83,7 @@ export default function AdminUsersPage() {
   const [status, setStatus] = useState({ type: '', message: '' });
   const [inviting, setInviting] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
+  const [togglingEmail, setTogglingEmail] = useState(null);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -99,6 +100,19 @@ export default function AdminUsersPage() {
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }));
+  }
+
+  async function toggleUserEmail(user) {
+    const next = user.email_enabled === false ? true : false;
+    setTogglingEmail(user.id);
+    try {
+      await api.updateUser(user.id, { email_enabled: next });
+      setUsers(us => us.map(u => u.id === user.id ? { ...u, email_enabled: next } : u));
+    } catch (err) {
+      setStatus({ type: 'error', message: err.message });
+    } finally {
+      setTogglingEmail(null);
+    }
   }
 
   async function handleInvite(e) {
@@ -187,6 +201,7 @@ export default function AdminUsersPage() {
                   <th>Email</th>
                   <th>Phone</th>
                   <th>Role</th>
+                  <th>Emails</th>
                   <th>Joined</th>
                   <th></th>
                 </tr>
@@ -208,6 +223,17 @@ export default function AdminUsersPage() {
                       <span className={`badge badge-${user.role === 'admin' ? 'locked' : 'active'}`}>
                         {user.role}
                       </span>
+                    </td>
+                    <td>
+                      <button
+                        className="btn btn-outline btn-xs"
+                        onClick={() => toggleUserEmail(user)}
+                        disabled={togglingEmail === user.id}
+                        style={{ color: user.email_enabled === false ? 'var(--gray-400)' : '#10b981', minWidth: 56 }}
+                        title={user.email_enabled === false ? 'Emails off — click to enable' : 'Emails on — click to disable'}
+                      >
+                        {user.email_enabled === false ? 'Off' : 'On'}
+                      </button>
                     </td>
                     <td style={{ color: 'var(--gray-400)', fontSize: '0.8rem' }}>
                       {new Date(user.created_at).toLocaleDateString()}

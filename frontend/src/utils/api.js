@@ -52,6 +52,8 @@ export const api = {
 
   // Users
   getUsers:   () => authFetch('/api/users'),
+  getMyProfile: () => authFetch('/api/users/me'),
+  updateMyProfile: (body) => authFetch('/api/users/me', { method: 'PATCH', body: JSON.stringify(body) }),
   inviteUser: (email, first_name, last_name, phone, role) =>
     authFetch('/api/users/invite', { method: 'POST', body: JSON.stringify({ email, first_name, last_name, phone, role }) }),
   updateUser:     (id, body) => authFetch(`/api/users/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),

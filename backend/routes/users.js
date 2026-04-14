@@ -3,11 +3,44 @@ const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
+router.get('/me', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id, first_name, last_name, email, phone, role, email_enabled')
+      .eq('id', req.user.id)
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/me', requireAuth, async (req, res) => {
+  try {
+    const allowed = ['email_enabled'];
+    const updates = Object.fromEntries(
+      Object.entries(req.body).filter(([k]) => allowed.includes(k))
+    );
+    const { data, error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', req.user.id)
+      .select()
+      .single();
+    if (error) throw error;
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, email, phone, role, created_at')
+      .select('id, first_name, last_name, email, phone, role, email_enabled, created_at')
       .order('last_name');
     if (error) throw error;
     res.json(data);
@@ -50,7 +83,7 @@ router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) =
 
 router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const allowed = ['first_name', 'last_name', 'phone', 'role'];
+    const allowed = ['first_name', 'last_name', 'phone', 'role', 'email_enabled'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );

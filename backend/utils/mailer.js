@@ -43,7 +43,7 @@ async function sendSoapNoteEmail(sessionId) {
         id, session_number, session_date, scheduled_date, session_day_of_week, ecw_time, start_time, soap_note, notes,
         group:groups!group_id(
           internal_name, group_name, name,
-          supervisor:profiles!supervisor_id(email)
+          supervisor:profiles!supervisor_id(email, email_enabled)
         )
       `)
       .eq('id', sessionId)
@@ -52,10 +52,14 @@ async function sendSoapNoteEmail(sessionId) {
     if (!session) return;
 
     const group = session.group;
+    const supervisor = group?.supervisor;
+    // Respect per-user email_enabled (null/undefined treated as true for backwards compat)
+    if (supervisor?.email_enabled === false) return;
+
     const internalName = group?.internal_name || '';
     const groupName = group?.group_name || group?.name || internalName;
     const soapNote = session.soap_note || session.notes || '';
-    const supervisorEmail = group?.supervisor?.email;
+    const supervisorEmail = supervisor?.email;
 
     const subject = buildSubject(internalName, session);
 
