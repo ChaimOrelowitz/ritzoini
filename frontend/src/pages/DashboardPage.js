@@ -378,9 +378,9 @@ export default function DashboardPage() {
               ✉ {emailEnabled ? 'Emails On' : 'Emails Off'}
             </button>
           )}
-          {isAdmin && !showArchived && (
+          {!showArchived && (
             <>
-              <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>
+              {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>}
               <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
             </>
           )}
@@ -389,7 +389,7 @@ export default function DashboardPage() {
 
       {error && <div className="alert alert-error">{error}</div>}
 
-      {isAdmin && !showArchived && (
+      {!showArchived && (
         <div className="stats-row" style={{ marginBottom: 24 }}>
           {[
             { key: 'total',     label: 'Total Groups', value: stats.total,     color: 'var(--navy)' },
