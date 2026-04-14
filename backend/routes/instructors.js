@@ -23,7 +23,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 router.post('/', requireAuth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!['admin', 'supervisor'].includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
     const { first_name, last_name, phone } = req.body;
     const digits = (phone || '').replace(/\D/g, '');
     if (digits.length < 4) return res.status(400).json({ error: 'Phone number is required' });
@@ -38,7 +38,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 router.patch('/:id', requireAuth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' });
+    if (!['admin', 'supervisor'].includes(req.user.role)) return res.status(403).json({ error: 'Access denied' });
     const { data: existing } = await supabase
       .from('instructors').select('*').eq('id', req.params.id).single();
     if (!existing) return res.status(404).json({ error: 'Not found' });

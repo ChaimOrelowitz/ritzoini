@@ -31,7 +31,7 @@ export default function App() {
             <PrivateRoute adminOnly><SupervisorsPage /></PrivateRoute>
           } />
           <Route path="instructors" element={
-            <PrivateRoute adminOnly><InstructorsPage /></PrivateRoute>
+            <PrivateRoute><InstructorsPage /></PrivateRoute>
           } />
           {/* Legacy redirect */}
           <Route path="users" element={<Navigate to="/supervisors" replace />} />

@@ -31,15 +31,13 @@ export default function Layout() {
           <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">📅</span> Calendar
           </NavLink>
+          <NavLink to="/instructors" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            <span className="nav-icon">🎓</span> Instructors
+          </NavLink>
           {isAdmin && (
-            <>
-              <NavLink to="/supervisors" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-                <span className="nav-icon">👤</span> Supervisors
-              </NavLink>
-              <NavLink to="/instructors" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-                <span className="nav-icon">🎓</span> Instructors
-              </NavLink>
-            </>
+            <NavLink to="/supervisors" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              <span className="nav-icon">👤</span> Users
+            </NavLink>
           )}
         </nav>
 

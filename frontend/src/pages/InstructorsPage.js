@@ -26,7 +26,10 @@ function isAutoName(first, last) {
   return first === 'Instructor' || /^\d{4}$/.test(last || '');
 }
 
+import { useAuth } from '../context/AuthContext';
+
 export default function InstructorsPage() {
+  const { isAdmin } = useAuth();
   const [instructors, setInstructors] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [form, setForm]         = useState({ first_name: '', last_name: '', phone: '' });
@@ -187,7 +190,9 @@ export default function InstructorsPage() {
                           <td>
                             <div style={{ display: 'flex', gap: 6 }}>
                               <button className="btn btn-outline btn-xs" onClick={() => startEdit(inst)}>Edit</button>
-                              <button className="btn btn-danger btn-xs" onClick={() => handleDelete(inst)}>Remove</button>
+                              {isAdmin && (
+                                <button className="btn btn-danger btn-xs" onClick={() => handleDelete(inst)}>Remove</button>
+                              )}
                             </div>
                           </td>
                         </>
