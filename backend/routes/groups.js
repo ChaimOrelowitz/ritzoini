@@ -225,7 +225,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
     const adminOnly = ['internal_name', 'supervisor_id', 'instructor_id'];
     const supervisorAllowed = ['group_name','description','start_date','end_date',
-                               'start_time','ecw_time','total_sessions','default_duration','status'];
+                               'start_time','ecw_time','total_sessions','default_duration','status','ai_notes'];
     const allowed = req.user.role === 'admin' ? [...adminOnly, ...supervisorAllowed] : supervisorAllowed;
     const updates = Object.fromEntries(Object.entries(req.body).filter(([k]) => allowed.includes(k)));
 

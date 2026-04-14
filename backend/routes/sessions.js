@@ -58,8 +58,10 @@ async function autoCompleteSessions(groupId) {
     .in('id', toComplete.map(s => s.id));
 
   for (const s of toComplete) {
+    let shouldEmail = false;
+
     if (group?.ai_notes) {
-      // AI mode: generate note, save it, then email
+      // AI mode: generate note, save it, then email only if generation succeeded
       try {
         const { data: prevSessions } = await supabase
           .from('sessions')
@@ -83,16 +85,18 @@ async function autoCompleteSessions(groupId) {
         await supabase.from('sessions')
           .update({ soap_note: note, notes: note })
           .eq('id', s.id);
+
+        shouldEmail = true;
       } catch (err) {
         console.error(`[noteGenerator] Failed to generate note for session ${s.id}:`, err.message);
       }
+    } else {
+      // Manual mode: only email if a note already exists
+      const currentNote = s.soap_note || s.notes;
+      shouldEmail = !!currentNote?.trim();
     }
 
-    // Email fires if: kill switch is on AND (AI mode OR soap_note is not empty)
-    const currentNote = s.soap_note || s.notes;
-    if (group?.ai_notes || currentNote?.trim()) {
-      await sendSoapNoteEmail(s.id);
-    }
+    if (shouldEmail) await sendSoapNoteEmail(s.id);
   }
 
   await checkGroupAutoComplete(groupId);
