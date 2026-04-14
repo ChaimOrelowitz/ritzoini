@@ -80,7 +80,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const updated = await api.updateSession(session.id, { soap_note: val });
+        const updated = await api.updateSession(session.id, { soap_note: val, notes: val });
         onUpdate(updated);
         setSaveState('saved');
         setTimeout(() => setSaveState('idle'), 2000);

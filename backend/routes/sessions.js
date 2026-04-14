@@ -198,7 +198,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
 
     const allowed = [
-      'soap_note', 'status', 'status_manual_override',
+      'soap_note', 'notes', 'status', 'status_manual_override',
       'email_sent', 'ready_to_lock', 'locked',
       'session_date', 'start_time', 'ecw_time', 'ecw_end_time', 'duration',
     ];

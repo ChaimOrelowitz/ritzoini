@@ -27,6 +27,7 @@ Write the complete SOAP note for Session ${sessionNumber}. Requirements:
 - Natural progression and continuity from prior sessions
 - Appropriate for an Orthodox Jewish community context
 - Do NOT include any title, header, or session number line — begin directly with the Subjective section
+- Do NOT restate the group description, population, grade range, number of sessions, or any identifying metadata in the note — write as if the reader already knows the group context
 
 Then write exactly 6 Client Participation options labeled "Client Participation:" followed by 6 numbered options.
 Each option must:
