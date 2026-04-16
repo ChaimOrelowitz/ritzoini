@@ -97,6 +97,31 @@ async function applyTimeToFutureSessions(groupId, newStartTime, newEcwTime, newD
   return futureSessions.length;
 }
 
+// Reschedule all scheduled sessions when the group start date changes
+async function applyDatesToScheduledSessions(groupId, newStartDate, newDayOfWeekInt) {
+  const { data: sessions } = await supabase
+    .from('sessions')
+    .select('id, session_number')
+    .eq('group_id', groupId)
+    .eq('status', 'scheduled')
+    .order('session_number', { ascending: true });
+
+  if (!sessions?.length) return 0;
+
+  const [sy, sm, sd] = newStartDate.split('-').map(Number);
+  const baseMs = Date.UTC(sy, sm - 1, sd);
+
+  for (const s of sessions) {
+    const newDate = new Date(baseMs + (s.session_number - 1) * 7 * 24 * 60 * 60 * 1000)
+      .toISOString().split('T')[0];
+    await supabase.from('sessions')
+      .update({ session_date: newDate, scheduled_date: newDate, session_day_of_week: newDayOfWeekInt })
+      .eq('id', s.id);
+  }
+
+  return sessions.length;
+}
+
 // Mark sessions beyond newCount as group_ended
 async function truncateExcessSessions(groupId, newCount) {
   const { data: excess } = await supabase
@@ -284,6 +309,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
         req.params.id, effStartTime, effEcwTime, effDuration
       );
       console.log(`[groups patch] updated ${affected} future sessions with new time`);
+    }
+
+    // If start date changed, reschedule all scheduled sessions
+    if (updates.start_date) {
+      const affected = await applyDatesToScheduledSessions(req.params.id, effStartDate, effDow);
+      console.log(`[groups patch] rescheduled ${affected} sessions to new start date`);
     }
 
     res.json(data);

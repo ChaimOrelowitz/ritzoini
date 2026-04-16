@@ -208,6 +208,11 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
                 <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
               </div>
             </div>
+            {form.start_date && form.start_date !== (group.start_date || '') && (
+              <div style={{ background: '#fef3c7', borderRadius: 'var(--radius)', padding: '8px 12px', fontSize: '0.8rem', color: '#92400e', marginBottom: 12 }}>
+                ⚠️ All scheduled sessions will be rescheduled to match the new start date and day of week.
+              </div>
+            )}
 
             <div className="form-row">
               <div className="form-group">
