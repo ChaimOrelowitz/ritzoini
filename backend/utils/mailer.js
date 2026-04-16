@@ -3,10 +3,30 @@ const supabase = require('../db/supabase');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+// In-memory cache — loaded from Supabase on startup, persisted on change
 let emailEnabled = process.env.EMAIL_ENABLED === 'true';
 
+async function loadEmailEnabled() {
+  try {
+    const { data } = await supabase
+      .from('app_config').select('value').eq('key', 'email_enabled').single();
+    if (data) emailEnabled = data.value === 'true';
+  } catch (err) {
+    console.warn('[mailer] Could not load email_enabled from DB, using env default:', err.message);
+  }
+}
+
 function getEmailEnabled() { return emailEnabled; }
-function setEmailEnabled(val) { emailEnabled = !!val; }
+
+async function setEmailEnabled(val) {
+  emailEnabled = !!val;
+  try {
+    await supabase.from('app_config')
+      .upsert({ key: 'email_enabled', value: val ? 'true' : 'false' });
+  } catch (err) {
+    console.error('[mailer] Failed to persist email_enabled:', err.message);
+  }
+}
 
 const DAY_ABBREVS = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
 
@@ -90,4 +110,4 @@ async function sendSoapNoteEmail(sessionId) {
   }
 }
 
-module.exports = { sendSoapNoteEmail, getEmailEnabled, setEmailEnabled };
+module.exports = { sendSoapNoteEmail, getEmailEnabled, setEmailEnabled, loadEmailEnabled };
