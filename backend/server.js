@@ -23,6 +23,8 @@ app.use('/api/groups',      require('./routes/groups'));
 app.use('/api/sessions',    require('./routes/sessions'));
 app.use('/api/users',       require('./routes/users'));
 app.use('/api/instructors', require('./routes/instructors'));
+app.use('/api/pay-periods', require('./routes/payPeriods'));
+app.use('/api/payments',    require('./routes/payments'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

@@ -8,6 +8,7 @@ import AdminUsersPage from './pages/AdminUsersPage';
 import InstructorsPage from './pages/InstructorsPage';
 import CalendarPage from './pages/CalendarPage';
 import SetPasswordPage from './pages/SetPasswordPage';
+import PaymentsPage from './pages/PaymentsPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -34,6 +35,9 @@ export default function App() {
           } />
           <Route path="instructors" element={
             <PrivateRoute><InstructorsPage /></PrivateRoute>
+          } />
+          <Route path="payments" element={
+            <PrivateRoute adminOnly><PaymentsPage /></PrivateRoute>
           } />
           {/* Legacy redirect */}
           <Route path="users" element={<Navigate to="/supervisors" replace />} />

@@ -45,6 +45,11 @@ export default function Layout() {
               <span className="nav-icon">👤</span> Users
             </NavLink>
           )}
+          {isAdmin && (
+            <NavLink to="/payments" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              <span className="nav-icon">💰</span> Payments
+            </NavLink>
+          )}
         </nav>
 
         <div className="sidebar-footer">

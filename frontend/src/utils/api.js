@@ -63,6 +63,18 @@ export const api = {
   getEmailEnabled:  () => authFetch('/api/config/email'),
   setEmailEnabled:  (enabled) => authFetch('/api/config/email', { method: 'POST', body: JSON.stringify({ enabled }) }),
 
+  // Pay Periods
+  getPayPeriods:    () => authFetch('/api/pay-periods'),
+  createPayPeriod:  (body) => authFetch('/api/pay-periods', { method: 'POST', body: JSON.stringify(body) }),
+  generatePayPeriods: (anchor_date) => authFetch('/api/pay-periods/generate', { method: 'POST', body: JSON.stringify({ anchor_date }) }),
+  updatePayPeriod:  (id, body) => authFetch(`/api/pay-periods/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  deletePayPeriod:  (id) => authFetch(`/api/pay-periods/${id}`, { method: 'DELETE' }),
+
+  // Payments / Reconciliation
+  getPaymentSessions: (supervisor_id, start_date, end_date) =>
+    authFetch(`/api/payments/sessions?supervisor_id=${supervisor_id}&start_date=${start_date}&end_date=${end_date}`),
+  confirmPayment: (session_ids) => authFetch('/api/payments/confirm', { method: 'POST', body: JSON.stringify({ session_ids }) }),
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),
