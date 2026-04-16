@@ -57,8 +57,10 @@ router.post('/invite', requireAuth, requireAdmin, async (req, res) => {
     if (!last_name)  return res.status(400).json({ error: 'Last name is required' });
 
     const assignedRole = role === 'admin' ? 'admin' : 'supervisor';
+    const frontendUrl = process.env.FRONTEND_URL || 'https://ritzoini.vercel.app';
     const { data, error } = await supabase.auth.admin.inviteUserByEmail(email, {
       data: { first_name, last_name, phone: phone || '', role: assignedRole },
+      redirectTo: `${frontendUrl}/set-password`,
     });
     if (error) throw error;
     res.json({ success: true, message: `Invitation sent to ${email}` });
@@ -73,7 +75,10 @@ router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) =
       .from('profiles').select('email').eq('id', req.params.id).single();
     if (!profile) return res.status(404).json({ error: 'User not found' });
 
-    const { error } = await supabase.auth.resetPasswordForEmail(profile.email);
+    const frontendUrl = process.env.FRONTEND_URL || 'https://ritzoini.vercel.app';
+    const { error } = await supabase.auth.resetPasswordForEmail(profile.email, {
+      redirectTo: `${frontendUrl}/set-password`,
+    });
     if (error) throw error;
     res.json({ success: true, message: `Password reset email sent to ${profile.email}` });
   } catch (err) {

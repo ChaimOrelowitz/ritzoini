@@ -7,6 +7,7 @@ import GroupDetailPage from './pages/GroupDetailPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import InstructorsPage from './pages/InstructorsPage';
 import CalendarPage from './pages/CalendarPage';
+import SetPasswordPage from './pages/SetPasswordPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -21,6 +22,7 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/set-password" element={<SetPasswordPage />} />
         <Route path="/" element={
           <PrivateRoute><Layout /></PrivateRoute>
         }>
