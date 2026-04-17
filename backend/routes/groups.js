@@ -139,7 +139,7 @@ async function truncateExcessSessions(groupId, newCount) {
 }
 
 const GROUP_LIST_SELECT = `
-  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
+  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status,
   start_date, end_date, day_of_week_int, day_of_week,
   start_time, session_time, end_time, ecw_time, ecw_end_time,
   total_sessions, default_duration, created_at, ai_notes,
@@ -149,7 +149,7 @@ const GROUP_LIST_SELECT = `
 `;
 
 const GROUP_DETAIL_SELECT = `
-  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status, archived,
+  id, internal_name, group_name, name, description, supervisor_id, instructor_id, status,
   start_date, end_date, day_of_week_int, day_of_week,
   start_time, session_time, end_time, ecw_time, ecw_end_time,
   total_sessions, default_duration, created_at, ai_notes,
@@ -162,9 +162,13 @@ router.get('/', requireAuth, async (req, res) => {
     const showArchived = req.query.archived === 'true';
     let query = supabase
       .from('groups').select(GROUP_LIST_SELECT)
-      .eq('archived', showArchived)
       .order('day_of_week_int', { ascending: true })
       .order('ecw_time', { ascending: true });
+    if (showArchived) {
+      query = query.eq('status', 'archived');
+    } else {
+      query = query.in('status', ['active', 'completed']);
+    }
     if (req.user.role === 'supervisor') query = query.eq('supervisor_id', req.user.id);
     const { data, error } = await query;
     if (error) throw error;
@@ -381,9 +385,13 @@ router.post('/:id/archive', requireAuth, async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Not found' });
     if (req.user.role === 'supervisor' && existing.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
+    // End any remaining scheduled sessions
+    await supabase.from('sessions')
+      .update({ status: 'group_ended', status_manual_override: true })
+      .eq('group_id', req.params.id).eq('status', 'scheduled');
     const { data, error } = await supabase.from('groups')
-      .update({ archived: true, archived_at: new Date().toISOString() })
-      .eq('id', req.params.id).select().single();
+      .update({ status: 'archived' })
+      .eq('id', req.params.id).select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -392,8 +400,8 @@ router.post('/:id/archive', requireAuth, async (req, res) => {
 router.post('/:id/unarchive', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase.from('groups')
-      .update({ archived: false, archived_at: null })
-      .eq('id', req.params.id).select().single();
+      .update({ status: 'active' })
+      .eq('id', req.params.id).select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }

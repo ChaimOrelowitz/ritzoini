@@ -16,7 +16,7 @@ function StatusDot({ status }) {
   const colors = {
     active:    '#10b981',
     completed: '#6b7280',
-    stopped:   '#ef4444',
+    archived:  '#d1d5db',
   };
   return (
     <span style={{

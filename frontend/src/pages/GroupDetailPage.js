@@ -460,8 +460,14 @@ export default function GroupDetailPage() {
   }
 
   async function handleArchive() {
-    if (!window.confirm('Archive this group?')) return;
+    if (!window.confirm('Archive this group? Remaining scheduled sessions will be ended.')) return;
     try { await api.archiveGroup(id); navigate('/'); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function handleUnarchive() {
+    if (!window.confirm('Unarchive this group? It will return to Active.')) return;
+    try { await api.unarchiveGroup(id); setSuccess('Group unarchived.'); load(); }
     catch (err) { setError(err.message); }
   }
 
@@ -474,7 +480,8 @@ export default function GroupDetailPage() {
     ? `${group.instructor.first_name} ${group.instructor.last_name}`.trim() : null;
   const dow     = group.day_of_week_int ?? DAY_NAMES.indexOf(group.day_of_week);
   const dayName = DAY_NAMES[dow] || group.day_of_week || '';
-  const isEnded = group.status === 'completed';
+  const isCompleted = group.status === 'completed';
+  const isArchived  = group.status === 'archived';
 
   const stats = {
     total:      sessions.length,
@@ -495,7 +502,6 @@ export default function GroupDetailPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>{group.group_name || group.name}</h2>
             <span className={`badge badge-${group.status}`}>{group.status}</span>
-            {group.archived && <span className="badge badge-cancelled">Archived</span>}
           </div>
 
           {group.internal_name && group.internal_name !== (group.group_name || group.name) && (
@@ -568,14 +574,17 @@ export default function GroupDetailPage() {
           </div>
           <button className="btn btn-outline btn-sm" onClick={() => setShowBulk(true)}>Bulk Notes</button>
           <button className="btn btn-outline btn-sm" onClick={() => setShowEdit(true)}>Edit Group</button>
-          {!isEnded && (
+          {!isCompleted && !isArchived && (
             <button className="btn btn-danger btn-sm" onClick={handleEndGroup}>End Group</button>
           )}
-          {isEnded && (
+          {isCompleted && (
             <button className="btn btn-outline btn-sm" onClick={handleUnendGroup}>Re-open Group</button>
           )}
-          {!group.archived && (
+          {!isArchived && (
             <button className="btn btn-outline btn-sm" onClick={handleArchive}>Archive</button>
+          )}
+          {isArchived && (
+            <button className="btn btn-outline btn-sm" onClick={handleUnarchive}>Unarchive</button>
           )}
         </div>
       </div>
