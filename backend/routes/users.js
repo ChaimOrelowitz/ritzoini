@@ -99,6 +99,17 @@ router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
       .select()
       .single();
     if (error) throw error;
+
+    // Keep auth user metadata in sync so any trigger won't revert the name change
+    const metaUpdate = {};
+    if (updates.first_name !== undefined) metaUpdate.first_name = updates.first_name;
+    if (updates.last_name  !== undefined) metaUpdate.last_name  = updates.last_name;
+    if (updates.phone      !== undefined) metaUpdate.phone      = updates.phone;
+    if (updates.role       !== undefined) metaUpdate.role       = updates.role;
+    if (Object.keys(metaUpdate).length) {
+      await supabase.auth.admin.updateUserById(req.params.id, { user_metadata: metaUpdate });
+    }
+
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
