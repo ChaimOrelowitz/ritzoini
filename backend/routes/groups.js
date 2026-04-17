@@ -250,9 +250,10 @@ router.post('/', requireAuth, async (req, res) => {
         }).map(s => s.id);
         console.log('[skip_dates] toSkip ids:', toSkip);
         if (toSkip.length) {
-          await supabase.from('sessions')
+          const { error: skipErr } = await supabase.from('sessions')
             .update({ status: 'skipped', status_manual_override: true })
             .in('id', toSkip);
+          console.log('[skip_dates] update error:', skipErr);
         }
       }
     }
