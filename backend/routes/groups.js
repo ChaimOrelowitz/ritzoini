@@ -241,9 +241,14 @@ router.post('/', requireAuth, async (req, res) => {
         const { data: allSessions } = await supabase
           .from('sessions').select('id, session_date, scheduled_date').eq('group_id', group.id);
         const skipSet = new Set(skip_dates);
-        const toSkip = (allSessions || []).filter(s =>
-          skipSet.has(s.session_date) || skipSet.has(s.scheduled_date)
-        ).map(s => s.id);
+        console.log('[skip_dates] requested:', skip_dates);
+        console.log('[skip_dates] sessions sample:', (allSessions || []).slice(0, 3).map(s => ({ id: s.id, session_date: s.session_date, scheduled_date: s.scheduled_date })));
+        const toSkip = (allSessions || []).filter(s => {
+          const d1 = (s.session_date || '').slice(0, 10);
+          const d2 = (s.scheduled_date || '').slice(0, 10);
+          return skipSet.has(d1) || skipSet.has(d2);
+        }).map(s => s.id);
+        console.log('[skip_dates] toSkip ids:', toSkip);
         if (toSkip.length) {
           await supabase.from('sessions')
             .update({ status: 'skipped', status_manual_override: true })
