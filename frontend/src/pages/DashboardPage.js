@@ -223,7 +223,7 @@ function BulkAssignModal({ groups, onClose, onDone }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay">
       <div className="modal" style={{ maxWidth: 540 }}>
         <div className="modal-header">
           <h3>Bulk Assign Supervisor</h3>

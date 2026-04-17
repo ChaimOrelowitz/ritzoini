@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../../utils/api';
+import { useAuth } from '../../context/AuthContext';
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
@@ -80,6 +81,7 @@ function NewInstructorInline({ onCreated, onCancel }) {
 }
 
 export default function CreateGroupModal({ onClose, onCreated }) {
+  const { profile, isAdmin } = useAuth();
   const [supervisors, setSupervisors]   = useState([]);
   const [instructors, setInstructors]   = useState([]);
   const [showNewInstructor, setShowNewInstructor] = useState(false);
@@ -88,16 +90,16 @@ export default function CreateGroupModal({ onClose, onCreated }) {
     internal_name: '', group_name: '', description: '',
     supervisor_id: '', instructor_id: '',
     start_date: '', end_date: '',
-    start_time: '09:00', ecw_time: '',
+    start_time: '', ecw_time: '',
     total_sessions: '', default_duration: '45',
   });
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState('');
 
   useEffect(() => {
-    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
+    if (isAdmin) api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
     api.getInstructors().then(setInstructors);
-  }, []);
+  }, [isAdmin]);
 
   const dowInt = form.start_date
     ? (() => { const [y,m,d] = form.start_date.split('-').map(Number); return new Date(y,m-1,d).getDay(); })()
@@ -153,7 +155,7 @@ export default function CreateGroupModal({ onClose, onCreated }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay">
       <div className="modal" style={{ maxWidth: 600 }}>
         <div className="modal-header">
           <h3>Create New Group</h3>
@@ -183,13 +185,21 @@ export default function CreateGroupModal({ onClose, onCreated }) {
             </div>
 
             {/* Supervisor */}
-            <div className="form-group">
-              <label className="form-label">Supervisor</label>
-              <select className="form-select" value={form.supervisor_id} onChange={e => set('supervisor_id', e.target.value)}>
-                <option value="">— Assign later —</option>
-                {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
-              </select>
-            </div>
+            {isAdmin ? (
+              <div className="form-group">
+                <label className="form-label">Supervisor</label>
+                <select className="form-select" value={form.supervisor_id} onChange={e => set('supervisor_id', e.target.value)}>
+                  <option value="">— Assign later —</option>
+                  {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div className="form-group">
+                <label className="form-label">Supervisor</label>
+                <input className="form-input" value={`${profile?.first_name || ''} ${profile?.last_name || ''}`.trim()} readOnly
+                  style={{ background: 'var(--gray-50)', color: 'var(--gray-600)', cursor: 'default' }} />
+              </div>
+            )}
 
             {/* Instructor */}
             <div className="form-group">
@@ -220,8 +230,8 @@ export default function CreateGroupModal({ onClose, onCreated }) {
                 <input className="form-input" type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} required />
               </div>
               <div className="form-group">
-                <label className="form-label">End Date</label>
-                <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} />
+                <label className="form-label">End Date *</label>
+                <input className="form-input" type="date" value={form.end_date} onChange={e => set('end_date', e.target.value)} required />
               </div>
             </div>
 

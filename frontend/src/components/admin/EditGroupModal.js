@@ -143,7 +143,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay">
       <div className="modal" style={{ maxWidth: 580 }}>
         <div className="modal-header">
           <h3>Edit Group</h3>

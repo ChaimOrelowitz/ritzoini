@@ -22,7 +22,7 @@ export default function SubmitNotesModal({ session, onClose, onSubmitted }) {
   }
 
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-overlay">
       <div className="modal">
         <div className="modal-header">
           <h3>Session #{session.session_number} Notes</h3>

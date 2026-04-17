@@ -186,9 +186,12 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 router.post('/', requireAuth, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
-    const { internal_name, group_name, description, supervisor_id, instructor_id,
+    const { internal_name, group_name, description, instructor_id,
             start_date, end_date, start_time, ecw_time, total_sessions, default_duration } = req.body;
+    // Supervisors can only create groups for themselves
+    const supervisor_id = req.user.role === 'admin'
+      ? (req.body.supervisor_id || null)
+      : req.user.id;
 
     if (!internal_name) return res.status(400).json({ error: 'internal_name is required' });
     if (!start_date)    return res.status(400).json({ error: 'start_date is required' });
