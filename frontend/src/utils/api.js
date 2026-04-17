@@ -39,9 +39,10 @@ export const api = {
     return authFetch(`/api/sessions/calendar${qs ? `?${qs}` : ''}`);
   },
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  cancelSession: (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
-  uncancelSession:(id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
-  returnToAuto:  (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
+  cancelSession:    (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
+  uncancelSession:  (id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
+  restoreSkip:      (id) => authFetch(`/api/sessions/${id}/restore-skip`,  { method: 'POST' }),
+  returnToAuto:     (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),
   lockSession:    (id) => authFetch(`/api/sessions/${id}/lock`,           { method: 'POST' }),
   generateNote:   (id) => authFetch(`/api/sessions/${id}/generate-note`,  { method: 'POST' }),
   sendEmail:      (id) => authFetch(`/api/sessions/${id}/send-email`,      { method: 'POST' }),

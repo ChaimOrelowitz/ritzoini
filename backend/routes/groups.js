@@ -187,7 +187,8 @@ router.get('/:id', requireAuth, async (req, res) => {
 router.post('/', requireAuth, async (req, res) => {
   try {
     const { internal_name, group_name, description, instructor_id,
-            start_date, end_date, start_time, ecw_time, total_sessions, default_duration } = req.body;
+            start_date, end_date, start_time, ecw_time, total_sessions, default_duration,
+            skip_dates } = req.body;
     // Supervisors can only create groups for themselves
     const supervisor_id = req.user.role === 'admin'
       ? (req.body.supervisor_id || null)
@@ -235,6 +236,18 @@ router.post('/', requireAuth, async (req, res) => {
     if (error) throw error;
     if (resolvedSessions) {
       await supabase.rpc('generate_sessions_for_group', { p_group_id: group.id });
+
+      if (skip_dates?.length) {
+        const { data: allSessions } = await supabase
+          .from('sessions').select('id, session_date').eq('group_id', group.id);
+        const skipSet = new Set(skip_dates);
+        const toSkip = (allSessions || []).filter(s => skipSet.has(s.session_date)).map(s => s.id);
+        if (toSkip.length) {
+          await supabase.from('sessions')
+            .update({ status: 'skipped', status_manual_override: true })
+            .in('id', toSkip);
+        }
+      }
     }
     res.status(201).json(group);
   } catch (err) { res.status(500).json({ error: err.message }); }

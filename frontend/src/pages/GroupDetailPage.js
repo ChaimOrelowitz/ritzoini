@@ -32,14 +32,16 @@ const STATUS_STYLE = {
   completed:   { bg: '#dcfce7', color: '#166534', border: '#86efac' },
   cancelled:   { bg: '#f3f4f6', color: '#6b7280', border: '#d1d5db' },
   group_ended: { bg: '#fef3c7', color: '#92400e', border: '#fcd34d' },
+  skipped:     { bg: '#f3f4f6', color: '#9ca3af', border: '#e5e7eb' },
 };
 const STATUS_LABELS = {
   scheduled: 'Scheduled', completed: 'Completed',
   cancelled: 'Cancelled', group_ended: 'Group Ended',
+  skipped: 'Skipped',
 };
 
 // ── Session Row ───────────────────────────────────────────────
-function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, aiNotes }) {
+function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, onRestoreSkip, aiNotes }) {
   const [soapNote, setSoapNote]       = useState(session.soap_note || session.notes || '');
   const [saveState, setSaveState]     = useState('idle');
   const [generating, setGenerating]   = useState(false);
@@ -62,6 +64,8 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
 
   const isCancelled  = session.status === 'cancelled';
   const isGroupEnded = session.status === 'group_ended';
+  const isSkipped    = session.status === 'skipped';
+  const isInactive   = isCancelled || isSkipped;
   const style = STATUS_STYLE[session.status] || STATUS_STYLE.scheduled;
 
   async function handleGroupEnded() {
@@ -145,7 +149,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
       borderRadius: 'var(--radius)',
       padding: '14px 18px',
       marginBottom: 10,
-      opacity: isCancelled ? 0.72 : 1,
+      opacity: isInactive ? 0.65 : 1,
     }}>
       <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
 
@@ -170,12 +174,12 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
             </div>
           ) : (
             <div
-              style={{ fontSize: '0.82rem', color: 'var(--gray-700)', cursor: isCancelled ? 'default' : 'pointer', fontWeight: 500 }}
-              onClick={() => !isCancelled && setEditDate(true)}
-              title={isCancelled ? '' : 'Click to change date'}
+              style={{ fontSize: '0.82rem', color: 'var(--gray-700)', cursor: isInactive ? 'default' : 'pointer', fontWeight: 500 }}
+              onClick={() => !isInactive && setEditDate(true)}
+              title={isInactive ? '' : 'Click to change date'}
             >
               {fmtDate(dateStr)}
-              {!isCancelled && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+              {!isInactive && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
 
@@ -194,15 +198,15 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
             </div>
           ) : (
             <div
-              style={{ fontSize: '0.75rem', color: 'var(--gray-400)', cursor: isCancelled ? 'default' : 'pointer', marginTop: 2 }}
-              onClick={() => !isCancelled && setEditTime(true)}
-              title={isCancelled ? '' : 'Click to change time/duration'}
+              style={{ fontSize: '0.75rem', color: 'var(--gray-400)', cursor: isInactive ? 'default' : 'pointer', marginTop: 2 }}
+              onClick={() => !isInactive && setEditTime(true)}
+              title={isInactive ? '' : 'Click to change time/duration'}
             >
               {fmt12(session.start_time || session.scheduled_time)}
               {session.ecw_time && ` · ECW ${fmt12(session.ecw_time)}`}
               {ecwEnd && `–${fmt12(ecwEnd)}`}
               {` · ${session.duration || groupDuration || 45} min`}
-              {!isCancelled && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
+              {!isInactive && <span style={{ color: 'var(--gray-300)', marginLeft: 4, fontSize: '0.7rem' }}>✏</span>}
             </div>
           )}
         </div>
@@ -218,7 +222,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
           }}>
             {STATUS_LABELS[session.status] || session.status}
           </div>
-          {session.status_manual_override && !isCancelled && (
+          {session.status_manual_override && !isCancelled && !isSkipped && (
             <button type="button" onClick={handleReturnToAuto}
               style={{ fontSize: '0.7rem', color: 'var(--gold)', background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 600, textAlign: 'left' }}>
               ↺ Return to Auto
@@ -247,6 +251,12 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
           {isCancelled ? (
             <button type="button" className="btn btn-outline btn-xs"
               onClick={() => onUncancel(session.id)}
+              style={{ borderColor: '#10b981', color: '#10b981' }}>
+              Restore
+            </button>
+          ) : isSkipped ? (
+            <button type="button" className="btn btn-outline btn-xs"
+              onClick={() => onRestoreSkip(session.id)}
               style={{ borderColor: '#10b981', color: '#10b981' }}>
               Restore
             </button>
@@ -282,10 +292,10 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, ai
           value={soapNote}
           onChange={e => handleNoteChange(e.target.value)}
           placeholder="Subjective · Objective · Assessment · Plan…"
-          disabled={isCancelled}
-          style={{ minHeight: 72, fontSize: '0.875rem', background: isCancelled ? '#fafafa' : 'white' }}
+          disabled={isInactive}
+          style={{ minHeight: 72, fontSize: '0.875rem', background: isInactive ? '#fafafa' : 'white' }}
         />
-        {!isCancelled && (
+        {!isInactive && (
           <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
             {aiNotes && (
               <button type="button" className="btn btn-outline btn-xs" onClick={handleGenerateNote} disabled={generating}>
@@ -429,6 +439,11 @@ export default function GroupDetailPage() {
   async function handleUncancel(sessionId) {
     if (!window.confirm("Restore this session? The replacement added at the end will be removed if unused.")) return;
     try { await api.uncancelSession(sessionId); setSuccess('Session restored.'); load(); }
+    catch (err) { setError(err.message); }
+  }
+
+  async function handleRestoreSkip(sessionId) {
+    try { const updated = await api.restoreSkip(sessionId); handleSessionUpdate(updated); }
     catch (err) { setError(err.message); }
   }
 
@@ -596,6 +611,7 @@ export default function GroupDetailPage() {
                 onUpdate={handleSessionUpdate}
                 onCancel={handleCancel}
                 onUncancel={handleUncancel}
+                onRestoreSkip={handleRestoreSkip}
                 aiNotes={!!group.ai_notes}
               />
             </div>

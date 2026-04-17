@@ -119,7 +119,7 @@ async function checkGroupAutoComplete(groupId) {
 
   if (!sessions?.length) return;
 
-  const active = sessions.filter(s => s.status !== 'cancelled' && s.status !== 'group_ended');
+  const active = sessions.filter(s => s.status !== 'cancelled' && s.status !== 'group_ended' && s.status !== 'skipped');
   if (!active.length) return;
 
   const allLocked = active.every(s => s.locked === true);
@@ -147,7 +147,7 @@ router.get('/calendar', requireAuth, async (req, res) => {
           supervisor:supervisor_id ( id, first_name, last_name )
         )
       `)
-      .not('status', 'in', '("cancelled","group_ended")')
+      .not('status', 'in', '("cancelled","group_ended","skipped")')
       .order('session_date', { ascending: true });
 
     if (include_archived !== 'true') {
@@ -747,6 +747,21 @@ router.post('/:id/submit-notes', requireAuth, async (req, res) => {
       .eq('id', req.params.id).select().single();
     if (error) throw error;
     await sendSoapNoteEmail(req.params.id);
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/:id/restore-skip', requireAuth, async (req, res) => {
+  try {
+    const { data: session } = await supabase
+      .from('sessions').select('*, group:groups(supervisor_id)').eq('id', req.params.id).single();
+    if (!session) return res.status(404).json({ error: 'Session not found' });
+    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: 'Access denied' });
+    const { data, error } = await supabase.from('sessions')
+      .update({ status: 'scheduled', status_manual_override: false })
+      .eq('id', req.params.id).select().single();
+    if (error) throw error;
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });

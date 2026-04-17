@@ -93,8 +93,16 @@ export default function CreateGroupModal({ onClose, onCreated }) {
     start_time: '', ecw_time: '',
     total_sessions: '', default_duration: '45',
   });
+  const [skipDates, setSkipDates] = useState([]);
+  const [skipInput, setSkipInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState('');
+
+  function addSkipDate() {
+    if (!skipInput || skipDates.includes(skipInput)) { setSkipInput(''); return; }
+    setSkipDates(d => [...d, skipInput].sort());
+    setSkipInput('');
+  }
 
   useEffect(() => {
     if (isAdmin) api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
@@ -148,6 +156,7 @@ export default function CreateGroupModal({ onClose, onCreated }) {
         supervisor_id:  form.supervisor_id || null,
         instructor_id:  form.instructor_id || null,
         end_date:       form.end_date || null,
+        skip_dates:     skipDates.length ? skipDates : undefined,
       });
       onCreated();
     } catch (err) { setError(err.message); }
@@ -260,6 +269,32 @@ export default function CreateGroupModal({ onClose, onCreated }) {
             <p style={{ fontSize: '0.74rem', color: 'var(--gray-400)', marginTop: -8, marginBottom: 12 }}>
               # Sessions and End Date are linked — editing one updates the other.
             </p>
+
+            {/* Skip Dates */}
+            <div className="form-group">
+              <label className="form-label">Skip Dates <span style={{ fontWeight: 400, color: 'var(--gray-400)', fontSize: '0.75rem' }}>(optional — sessions on these dates will be marked Skipped)</span></label>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                <input className="form-input" type="date" value={skipInput}
+                  onChange={e => setSkipInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addSkipDate())}
+                  style={{ flex: 1 }} />
+                <button type="button" className="btn btn-outline btn-sm" onClick={addSkipDate}>Add</button>
+              </div>
+              {skipDates.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {skipDates.map(d => {
+                    const [y, m, day] = d.split('-');
+                    return (
+                      <span key={d} style={{ display: 'flex', alignItems: 'center', gap: 4, background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 12, padding: '2px 10px', fontSize: '0.78rem', color: '#92400e' }}>
+                        {parseInt(m)}/{parseInt(day)}/{y}
+                        <button type="button" onClick={() => setSkipDates(dates => dates.filter(x => x !== d))}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#92400e', fontWeight: 700, padding: '0 0 0 2px', lineHeight: 1 }}>×</button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             {/* Times */}
             <div className="form-row">
