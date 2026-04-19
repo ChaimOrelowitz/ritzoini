@@ -316,7 +316,22 @@ router.patch('/:id', requireAuth, async (req, res) => {
       .select(GROUP_DETAIL_SELECT).single();
     if (error) throw error;
 
-       // If session count changed, adjust sessions
+    // Mark skip dates as skipped
+    if (req.body.skip_dates?.length) {
+      const { data: allSessions } = await supabase
+        .from('sessions').select('id, session_date, scheduled_date').eq('group_id', req.params.id);
+      const skipSet = new Set(req.body.skip_dates);
+      const toSkip = (allSessions || []).filter(s =>
+        skipSet.has((s.session_date || '').slice(0,10)) || skipSet.has((s.scheduled_date || '').slice(0,10))
+      ).map(s => s.id);
+      if (toSkip.length) {
+        await supabase.from('sessions')
+          .update({ status: 'skipped', status_manual_override: true })
+          .in('id', toSkip);
+      }
+    }
+
+    // If session count changed, adjust sessions
     const newTotal = parseInt(updates.total_sessions || existing.total_sessions);
     const oldTotal = parseInt(existing.total_sessions);
 

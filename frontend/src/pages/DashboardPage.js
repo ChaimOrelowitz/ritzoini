@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../utils/api';
 import CreateGroupModal from '../components/admin/CreateGroupModal';
+import BulkImportModal from '../components/admin/BulkImportModal';
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
@@ -289,6 +290,7 @@ export default function DashboardPage() {
   const [showCreateModal, setShowCreate] = useState(false);
   const [showArchived, setShowArchived]  = useState(false);
   const [showBulkAssign, setShowBulkAssign] = useState(false);
+  const [showBulkImport, setShowBulkImport] = useState(false);
   const [filter, setFilter]           = useState('active');
   const [emailEnabled, setEmailEnabledState] = useState(null);
   const [myEmailEnabled, setMyEmailEnabled] = useState(null);
@@ -402,6 +404,7 @@ export default function DashboardPage() {
           {!showArchived && (
             <>
               {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>}
+              {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkImport(true)}>↑ Import Sheet</button>}
               <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
             </>
           )}
@@ -460,6 +463,12 @@ export default function DashboardPage() {
         <CreateGroupModal
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); load(); }}
+        />
+      )}
+      {showBulkImport && (
+        <BulkImportModal
+          onClose={() => setShowBulkImport(false)}
+          onImported={() => { setShowBulkImport(false); load(); }}
         />
       )}
       {showBulkAssign && (
