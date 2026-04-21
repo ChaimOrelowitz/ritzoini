@@ -13,7 +13,7 @@ function getOAuthClient() {
 }
 
 // GET /api/email/oauth-init — visit this once in browser to authorize
-router.get('/oauth-init', requireAuth, requireAdmin, (req, res) => {
+router.get('/oauth-init', (req, res) => {
   const oauth2Client = getOAuthClient();
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
