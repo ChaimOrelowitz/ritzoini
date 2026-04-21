@@ -181,6 +181,7 @@ router.get('/all', requireAuth, async (req, res) => {
         group:groups!inner(id, internal_name, group_name, supervisor_id)
       `)
       .not('status', 'in', '("cancelled","group_ended","skipped")')
+      .not('groups.status', 'eq', 'archived')
       .order('session_date', { ascending: true });
 
     if (req.user.role === 'supervisor') {

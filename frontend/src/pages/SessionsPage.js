@@ -164,7 +164,7 @@ export default function SessionsPage() {
   const [loading, setLoading]             = useState(true);
   const [supervisors, setSupervisors]     = useState([]);
   const [supervisorFilter, setSupervisorFilter] = useState('');
-  const [upcomingOpen, setUpcomingOpen]   = useState(true);
+  const [upcomingOpen, setUpcomingOpen]   = useState(false);
   const [completedOpen, setCompletedOpen] = useState(true);
 
   const load = useCallback(async () => {
