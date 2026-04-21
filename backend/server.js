@@ -27,6 +27,7 @@ app.use('/api/pay-periods',  require('./routes/payPeriods'));
 app.use('/api/payments',     require('./routes/payments'));
 app.use('/api/bulk-import',  require('./routes/bulkImport'));
 app.use('/api/cron',         require('./routes/cron'));
+app.use('/api/email',        require('./routes/email'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });
