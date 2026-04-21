@@ -18,7 +18,7 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
   let processed = 0, skipped = 0, failed = 0;
 
   try {
-    // Find completed sessions with no note and email not yet sent, for ai_notes groups
+    // Find completed sessions where email not yet sent, for ai_notes groups
     const { data: sessions, error } = await supabase
       .from('sessions')
       .select(`
@@ -30,8 +30,7 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
       `)
       .eq('status', 'completed')
       .eq('email_sent', false)
-      .or('soap_note.is.null,soap_note.eq.')
-      .limit(50); // cap per run to avoid timeouts
+      .limit(50);
 
     if (error) throw error;
 
@@ -45,27 +44,30 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
       if (group.supervisor?.email_enabled === false) { skipped++; continue; }
 
       try {
-        // Generate note
-        const { data: prevSessions } = await supabase
-          .from('sessions')
-          .select('session_number, soap_note, notes')
-          .eq('group_id', session.group_id)
-          .lt('session_number', session.session_number)
-          .not('status', 'in', '("cancelled","group_ended","skipped")')
-          .order('session_number', { ascending: true });
+        // Generate note only if one doesn't exist yet
+        const existingNote = session.soap_note || session.notes;
+        if (!existingNote?.trim()) {
+          const { data: prevSessions } = await supabase
+            .from('sessions')
+            .select('session_number, soap_note, notes')
+            .eq('group_id', session.group_id)
+            .lt('session_number', session.session_number)
+            .not('status', 'in', '("cancelled","group_ended","skipped")')
+            .order('session_number', { ascending: true });
 
-        const previousNotes = (prevSessions || []).map(p => p.soap_note || p.notes).filter(Boolean);
+          const previousNotes = (prevSessions || []).map(p => p.soap_note || p.notes).filter(Boolean);
 
-        const note = await generateSessionNote(
-          group.description || '',
-          session.session_number,
-          group.total_sessions || 0,
-          previousNotes
-        );
+          const note = await generateSessionNote(
+            group.description || '',
+            session.session_number,
+            group.total_sessions || 0,
+            previousNotes
+          );
 
-        await supabase.from('sessions')
-          .update({ soap_note: note, notes: note })
-          .eq('id', session.id);
+          await supabase.from('sessions')
+            .update({ soap_note: note, notes: note })
+            .eq('id', session.id);
+        }
 
         // Send email (mailer checks global kill switch internally)
         await sendSoapNoteEmail(session.id);
