@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
-const { generateSessionNote } = require('../utils/noteGenerator');
-const { sendSoapNoteEmail, getEmailEnabled } = require('../utils/mailer');
+const { autoCompleteSessions } = require('./sessions');
 
-// Simple token auth — no user session needed
 function requireCronSecret(req, res, next) {
   const secret = process.env.CRON_SECRET;
   const provided = req.headers['x-cron-secret'] || req.query.secret;
@@ -18,70 +16,26 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
   let processed = 0, skipped = 0, failed = 0;
 
   try {
-    // Find completed sessions where email not yet sent, for ai_notes groups
-    const { data: sessions, error } = await supabase
-      .from('sessions')
-      .select(`
-        id, session_number, group_id, soap_note, notes, email_sent,
-        group:groups!group_id(
-          id, description, total_sessions, ai_notes,
-          supervisor:profiles!supervisor_id(email, email_enabled)
-        )
-      `)
-      .eq('status', 'completed')
-      .eq('email_sent', false)
-      .limit(50);
+    const { data: groups, error } = await supabase
+      .from('groups')
+      .select('id')
+      .eq('status', 'active');
 
     if (error) throw error;
 
-    for (const session of (sessions || [])) {
-      const group = session.group;
-
-      // Only process ai_notes groups
-      if (!group?.ai_notes) { skipped++; continue; }
-
-      // Respect per-user email setting
-      if (group.supervisor?.email_enabled === false) { skipped++; continue; }
-
+    for (const group of (groups || [])) {
       try {
-        // Generate note only if one doesn't exist yet
-        const existingNote = session.soap_note || session.notes;
-        if (!existingNote?.trim()) {
-          const { data: prevSessions } = await supabase
-            .from('sessions')
-            .select('session_number, soap_note, notes')
-            .eq('group_id', session.group_id)
-            .lt('session_number', session.session_number)
-            .not('status', 'in', '("cancelled","group_ended","skipped")')
-            .order('session_number', { ascending: true });
-
-          const previousNotes = (prevSessions || []).map(p => p.soap_note || p.notes).filter(Boolean);
-
-          const note = await generateSessionNote(
-            group.description || '',
-            session.session_number,
-            group.total_sessions || 0,
-            previousNotes
-          );
-
-          await supabase.from('sessions')
-            .update({ soap_note: note, notes: note })
-            .eq('id', session.id);
-        }
-
-        // Send email (mailer checks global kill switch internally)
-        await sendSoapNoteEmail(session.id);
-
+        await autoCompleteSessions(group.id);
         processed++;
-        log.push({ id: session.id, status: 'ok' });
+        log.push({ id: group.id, status: 'ok' });
       } catch (err) {
         failed++;
-        log.push({ id: session.id, status: 'error', error: err.message });
-        console.error(`[cron] Failed session ${session.id}:`, err.message);
+        log.push({ id: group.id, status: 'error', error: err.message });
+        console.error(`[cron] Failed group ${group.id}:`, err.message);
       }
     }
 
-    console.log(`[cron] process-sessions: processed=${processed} skipped=${skipped} failed=${failed}`);
+    console.log(`[cron] process-sessions: groups=${groups?.length || 0} processed=${processed} failed=${failed}`);
     res.json({ processed, skipped, failed, log });
   } catch (err) {
     console.error('[cron] Fatal error:', err.message);
