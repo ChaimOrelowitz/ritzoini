@@ -1,17 +1,13 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const XLSX = require('xlsx');
 const Anthropic = require('@anthropic-ai/sdk');
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
-const upload = multer({ storage: multer.memoryStorage() });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const DAY_NAMES   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const DAY_ABBREV  = { sunday:'SUN', monday:'MON', tuesday:'TUE', wednesday:'WED', thursday:'THU', friday:'FRI', saturday:'SAT' };
-const DAY_INT     = { sunday:0, monday:1, tuesday:2, wednesday:3, thursday:4, friday:5, saturday:6 };
+const DAY_ABBREV = { sunday:'SUN', monday:'MON', tuesday:'TUE', wednesday:'WED', thursday:'THU', friday:'FRI', saturday:'SAT' };
+const DAY_INT    = { sunday:0, monday:1, tuesday:2, wednesday:3, thursday:4, friday:5, saturday:6 };
 
 const HISTORICAL_NAMES = [
   'Aqua Renewal','BrainBounce','Calming Comotion','Color Blasters','Creative Crew',
@@ -24,15 +20,11 @@ const HISTORICAL_NAMES = [
   'Revive & Thrive','Renew & Move',
 ];
 
-function parseDate(val) {
-  if (!val && val !== 0) return null;
-  if (typeof val === 'number') {
-    const d = new Date((val - 25569) * 86400 * 1000);
-    return d.toISOString().split('T')[0];
-  }
-  const str = String(val).trim();
+function parseDate(str) {
   if (!str) return null;
-  const parts = str.split('/');
+  const s = String(str).trim();
+  if (!s) return null;
+  const parts = s.split('/');
   if (parts.length === 3) {
     let [m, d, y] = parts.map(p => parseInt(p));
     if (y < 100) y += 2000;
@@ -41,25 +33,17 @@ function parseDate(val) {
   return null;
 }
 
-function parseTime(val) {
-  if (!val && val !== 0) return null;
-  if (typeof val === 'number' && val > 0 && val < 1) {
-    const totalMin = Math.round(val * 24 * 60);
-    return `${String(Math.floor(totalMin / 60)).padStart(2,'0')}:${String(totalMin % 60).padStart(2,'0')}`;
-  }
-  const str = String(val).trim();
-  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(str)) {
-    const [h, m] = str.split(':');
-    return `${String(parseInt(h)).padStart(2,'0')}:${m.slice(0,2)}`;
-  }
-  const match = str.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+function parseTime(str) {
+  if (!str) return null;
+  const s = String(str).trim();
+  const match = s.match(/(\d+):(\d+)\s*(AM|PM)?/i);
   if (!match) return null;
   let h = parseInt(match[1]);
   const m = parseInt(match[2]);
   const mer = (match[3] || '').toUpperCase();
   if (mer === 'PM' && h !== 12) h += 12;
   else if (mer === 'AM' && h === 12) h = 0;
-  else if (!mer && h < 12) h += 12;
+  else if (!mer && h < 12) h += 12; // assume PM for ambiguous times
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
 }
 
@@ -92,25 +76,39 @@ function parseInstructor(val) {
   if (!val) return null;
   const str = String(val).trim();
   const phoneMatch = str.match(/(\d{3}[-.\s]?\d{3}[-.\s]?\d{4})/);
-  if (!phoneMatch) return { first_name: str, last_name: '', phone: '' };
-  const phone = phoneMatch[1].replace(/\D/g, '');
-  const namePart = str.slice(0, phoneMatch.index).trim();
+  const phone = phoneMatch ? phoneMatch[1].replace(/\D/g, '') : '';
+  const namePart = phoneMatch ? str.slice(0, phoneMatch.index).trim() : str;
   const tokens = namePart.split(/\s+/).filter(Boolean);
+  const titleRe = /^(mr\.?|mrs\.?|ms\.?|dr\.?|miss\.?)$/i;
+  const nameTokens = tokens.filter(t => !titleRe.test(t));
   return {
-    first_name: tokens[0] || '',
-    last_name:  tokens.slice(1).join(' ') || '',
+    first_name: nameTokens[0] || '',
+    last_name:  nameTokens.slice(1).join(' ') || '',
     phone,
   };
+}
+
+function stripDayFromLabel(label, dayName) {
+  const regex = new RegExp(`\\b${dayName}\\b`, 'gi');
+  return label.replace(regex, '').replace(/\s+/g, ' ').trim();
 }
 
 function buildInternalName(gender, groupLabel, dayAbbrev, time) {
   return [gender, groupLabel, dayAbbrev, fmt12(time)].filter(Boolean).join(' ');
 }
 
+function buildDescription(gender, grade, setting) {
+  const lines = [];
+  if (gender) lines.push(`Gender: ${gender}`);
+  lines.push(`Grade: ${grade || '18+ years'}`);
+  if (setting) lines.push(setting);
+  return lines.join('\n');
+}
+
 async function generateNames(groups) {
   if (!groups.length) return [];
   const descriptions = groups.map((g, i) =>
-    `${i+1}. ${g.gender || ''} ${g.groupLabel} on ${g.dayName}s at ${fmt12(g.time)}${g.description ? `, setting: ${g.description}` : ''}`
+    `${i+1}. ${g.gender || ''} ${g.groupLabel} on ${g.dayName}s at ${fmt12(g.time)}${g.setting ? `, setting: ${g.setting}` : ''}`
   ).join('\n');
 
   const prompt = `You are naming enrichment and therapy groups for children, teens, and adults. Generate one short, catchy, creative name (2-3 words) for each group below.
@@ -138,14 +136,13 @@ Reply with ONLY the names, one per line, numbered. Example:
     .map(l => l.replace(/^\d+\.\s*/, '').trim());
 }
 
-// POST /api/bulk-import/parse
-router.post('/parse', requireAuth, requireAdmin, upload.single('file'), async (req, res) => {
+// POST /api/bulk-import/parse — accepts pasted TSV text
+router.post('/parse', requireAuth, requireAdmin, async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const { text } = req.body;
+    if (!text?.trim()) return res.status(400).json({ error: 'No text provided' });
 
-    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
-    const sheet    = workbook.Sheets[workbook.SheetNames[0]];
-    const rows     = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const rows = text.split('\n').map(line => line.split('\t'));
 
     const groups = [];
     let currentDay = null, currentDayAbbrev = null, currentDayInt = null;
@@ -154,7 +151,7 @@ router.post('/parse', requireAuth, requireAdmin, upload.single('file'), async (r
       const col0 = String(row[0] || '').trim();
       const col1 = String(row[1] || '').trim();
 
-      // Day header row detection
+      // Day header row: col0 is a day name, col1 is "Group Time"
       const dayKey = col0.toLowerCase();
       if (DAY_INT[dayKey] !== undefined && col1.toLowerCase() === 'group time') {
         currentDay      = col0;
@@ -164,40 +161,45 @@ router.post('/parse', requireAuth, requireAdmin, upload.single('file'), async (r
       }
       if (!currentDay) continue;
 
-      // CO Added = TRUE → already imported, skip
-      const coAdded = row[9];
-      if (coAdded === true || String(coAdded).toUpperCase() === 'TRUE') continue;
+      // CO Added = TRUE → skip
+      const coAdded = String(row[9] || '').trim().toUpperCase();
+      if (coAdded === 'TRUE') continue;
 
       const groupLabel  = col0;
-      const timeVal     = row[1];
-      const instructorVal = row[2];
-      const startDateVal  = row[3];
-      const endDateVal    = row[4];
+      if (!groupLabel) continue;
+
+      const timeVal       = String(row[1] || '').trim();
+      const instructorVal = String(row[2] || '').trim();
+      const startDateVal  = String(row[3] || '').trim();
+      const endDateVal    = String(row[4] || '').trim();
       const cancellations = String(row[5] || '').trim();
       const grade         = String(row[6] || '').trim();
       const gender        = String(row[7] || '').trim();
-      const description   = String(row[8] || '').trim();
+      const setting       = String(row[8] || '').trim();
 
-      if (!groupLabel || !timeVal) continue;
+      if (!timeVal) continue;
 
-      const time      = parseTime(timeVal);
-      const startDate = parseDate(startDateVal);
-      const endDate   = parseDate(endDateVal);
+      const time       = parseTime(timeVal);
+      const startDate  = parseDate(startDateVal);
+      const endDate    = parseDate(endDateVal);
       const instructor = parseInstructor(instructorVal);
-      const internalName = buildInternalName(gender, groupLabel, currentDayAbbrev, time);
-      const sessions = computeNumSessions(startDate, endDate, currentDayInt);
+      const stripped   = stripDayFromLabel(groupLabel, currentDay);
+      const internalName = buildInternalName(gender, stripped, currentDayAbbrev, time);
+      const description  = buildDescription(gender, grade, setting);
+      const sessions     = computeNumSessions(startDate, endDate, currentDayInt);
 
       groups.push({
         dayName: currentDay,
         dayAbbrev: currentDayAbbrev,
         dayInt: currentDayInt,
-        groupLabel,
+        groupLabel: stripped,
         time,
         startDate,
         endDate,
         sessions,
         grade,
         gender,
+        setting,
         description,
         cancellations,
         instructor,
@@ -222,7 +224,6 @@ router.post('/confirm', requireAuth, requireAdmin, async (req, res) => {
     const { groups } = req.body;
     if (!groups?.length) return res.status(400).json({ error: 'No groups provided' });
 
-    // Cache existing instructors by phone
     const { data: existingInstructors } = await supabase.from('instructors').select('id, phone');
     const byPhone = {};
     (existingInstructors || []).forEach(i => { byPhone[i.phone.replace(/\D/g,'')] = i.id; });
@@ -230,7 +231,6 @@ router.post('/confirm', requireAuth, requireAdmin, async (req, res) => {
     const results = [];
     for (const g of groups) {
       try {
-        // Find or create instructor
         let instructorId = null;
         if (g.instructor?.phone) {
           const phone = g.instructor.phone.replace(/\D/g,'');
@@ -246,9 +246,9 @@ router.post('/confirm', requireAuth, requireAdmin, async (req, res) => {
           }
         }
 
-        const duration  = 45;
-        const endTime   = addMinutesToTime(g.time, duration);
-        const sessions  = computeNumSessions(g.startDate, g.endDate, g.dayInt);
+        const duration = 45;
+        const endTime  = addMinutesToTime(g.time, duration);
+        const sessions = computeNumSessions(g.startDate, g.endDate, g.dayInt);
 
         const { data: group, error } = await supabase.from('groups').insert({
           internal_name:    g.internalName,

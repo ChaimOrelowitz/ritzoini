@@ -81,20 +81,7 @@ export const api = {
   confirmPayment: (session_ids) => authFetch('/api/payments/confirm', { method: 'POST', body: JSON.stringify({ session_ids }) }),
 
   // Bulk Import
-  parseBulkImport: async (file) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    const formData = new FormData();
-    formData.append('file', file);
-    const res = await fetch(`${API}/api/bulk-import/parse`, {
-      method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-      body: formData,
-    });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || 'Parse failed');
-    return json;
-  },
+  parseBulkImport: (text) => authFetch('/api/bulk-import/parse', { method: 'POST', body: JSON.stringify({ text }) }),
   confirmBulkImport: (groups) => authFetch('/api/bulk-import/confirm', { method: 'POST', body: JSON.stringify({ groups }) }),
 
   // Instructors
