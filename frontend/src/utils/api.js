@@ -38,6 +38,10 @@ export const api = {
     const qs = params.toString();
     return authFetch(`/api/sessions/calendar${qs ? `?${qs}` : ''}`);
   },
+  getAllSessions: (supervisorId) => {
+    const qs = supervisorId ? `?supervisor_id=${supervisorId}` : '';
+    return authFetch(`/api/sessions/all${qs}`);
+  },
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   cancelSession:    (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
   uncancelSession:  (id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),

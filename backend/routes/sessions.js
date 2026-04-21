@@ -168,6 +168,33 @@ router.get('/calendar', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/sessions/all — sessions dashboard across all groups
+router.get('/all', requireAuth, async (req, res) => {
+  try {
+    const { supervisor_id } = req.query;
+
+    let query = supabase
+      .from('sessions')
+      .select(`
+        id, group_id, session_number, session_date, scheduled_date,
+        start_time, scheduled_time, ecw_time, status, email_sent, ready_to_lock, locked,
+        group:groups!inner(id, internal_name, group_name, supervisor_id)
+      `)
+      .not('status', 'in', '("cancelled","group_ended","skipped")')
+      .order('session_date', { ascending: true });
+
+    if (req.user.role === 'supervisor') {
+      query = query.eq('groups.supervisor_id', req.user.id);
+    } else if (supervisor_id) {
+      query = query.eq('groups.supervisor_id', supervisor_id);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/sessions?group_id=xxx
 router.get('/', requireAuth, async (req, res) => {
   try {

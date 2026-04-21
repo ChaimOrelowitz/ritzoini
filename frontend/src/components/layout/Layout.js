@@ -34,6 +34,9 @@ export default function Layout() {
           <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">⊞</span> Groups
           </NavLink>
+          <NavLink to="/sessions" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            <span className="nav-icon">☑</span> Sessions
+          </NavLink>
           <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">📅</span> Calendar
           </NavLink>
