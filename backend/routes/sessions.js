@@ -241,10 +241,19 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (updates.status !== undefined && updates.status_manual_override === undefined)
       updates.status_manual_override = true;
 
-    // Rescheduling a completed session reverts it to scheduled
+    // If date/time changed on a completed session, revert to scheduled only if the new time is in the future
     if ((updates.session_date || updates.start_time) && updates.status === undefined && session.status === 'completed') {
-      updates.status = 'scheduled';
-      updates.status_manual_override = false;
+      const effectiveDate = updates.session_date || session.session_date || session.scheduled_date;
+      const effectiveTime = updates.start_time || session.start_time || session.scheduled_time;
+      if (effectiveDate && effectiveTime) {
+        const [h, m] = effectiveTime.slice(0, 5).split(':').map(Number);
+        const sessionDT = new Date(effectiveDate + 'T00:00:00');
+        sessionDT.setHours(h, m, 0, 0);
+        if (sessionDT > new Date()) {
+          updates.status = 'scheduled';
+          updates.status_manual_override = false;
+        }
+      }
     }
 
     const effDuration = parseInt(updates.duration || session.duration || session.group.default_duration || 45, 10);
