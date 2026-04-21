@@ -241,6 +241,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (updates.status !== undefined && updates.status_manual_override === undefined)
       updates.status_manual_override = true;
 
+    // Rescheduling a completed session reverts it to scheduled
+    if ((updates.session_date || updates.start_time) && updates.status === undefined && session.status === 'completed') {
+      updates.status = 'scheduled';
+      updates.status_manual_override = false;
+    }
+
     const effDuration = parseInt(updates.duration || session.duration || session.group.default_duration || 45, 10);
 
     const effStartTime = updates.start_time || session.start_time || session.scheduled_time;
