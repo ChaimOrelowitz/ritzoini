@@ -48,8 +48,9 @@ async function autoCompleteSessions(groupId) {
     const ecwEnd = s.ecw_end_time || computeEcwEnd(s.ecw_time, s.duration);
     if (!dateStr || !ecwEnd) return false;
     const [h, m] = ecwEnd.slice(0, 5).split(':').map(Number);
-    const endDT = new Date(dateStr + 'T00:00:00');
-    endDT.setHours(h, m, 0, 0);
+    const [y, mo, d] = dateStr.split('-').map(Number);
+    const easternOffset = (mo >= 3 && mo <= 11) ? 4 : 5; // EDT=4, EST=5
+    const endDT = new Date(Date.UTC(y, mo - 1, d, h + easternOffset, m, 0));
     return now > new Date(endDT.getTime() + 5 * 60 * 1000);
   });
 
@@ -247,8 +248,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
       const effectiveTime = updates.start_time || session.start_time || session.scheduled_time;
       if (effectiveDate && effectiveTime) {
         const [h, m] = effectiveTime.slice(0, 5).split(':').map(Number);
-        const sessionDT = new Date(effectiveDate + 'T00:00:00');
-        sessionDT.setHours(h, m, 0, 0);
+        const [y, mo, d] = effectiveDate.split('-').map(Number);
+        const easternOffset = (mo >= 3 && mo <= 11) ? 4 : 5;
+        const sessionDT = new Date(Date.UTC(y, mo - 1, d, h + easternOffset, m, 0));
         updates.status = sessionDT > new Date() ? 'scheduled' : 'completed';
         updates.status_manual_override = false;
       }
