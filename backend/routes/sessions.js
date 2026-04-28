@@ -144,7 +144,7 @@ router.get('/calendar', requireAuth, async (req, res) => {
         id, group_id, session_number, session_date, scheduled_date,
         start_time, scheduled_time, ecw_time, ecw_end_time, duration, status,
         groups!inner (
-          id, internal_name, group_name, supervisor_id, archived,
+          id, internal_name, group_name, supervisor_id, status,
           supervisor:supervisor_id ( id, first_name, last_name )
         )
       `)
@@ -152,10 +152,8 @@ router.get('/calendar', requireAuth, async (req, res) => {
       .order('session_date', { ascending: true });
 
     if (include_archived !== 'true') {
-      query = query.eq('groups.archived', false);
+      query = query.not('groups.status', 'eq', 'archived');
     }
-
-    query = query.eq('groups.status', 'active');
 
     if (req.user.role === 'supervisor') {
       query = query.eq('groups.supervisor_id', req.user.id);
