@@ -78,6 +78,7 @@ export const api = {
   // Payments / Reconciliation
   getPaymentSessions: (supervisor_id, start_date, end_date) =>
     authFetch(`/api/payments/sessions?supervisor_id=${supervisor_id}&start_date=${start_date}&end_date=${end_date}`),
+  getUnpaidSessions: (supervisor_id) => authFetch(`/api/payments/unpaid?supervisor_id=${supervisor_id}`),
   confirmPayment: (session_ids) => authFetch('/api/payments/confirm', { method: 'POST', body: JSON.stringify({ session_ids }) }),
 
   // Bulk Import

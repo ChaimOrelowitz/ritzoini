@@ -598,6 +598,133 @@ function ReconcileTab() {
   );
 }
 
+// ── Unpaid Tab ───────────────────────────────────────────────────────────────
+
+function daysAgo(dateStr) {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const sess = new Date(y, m-1, d);
+  return Math.floor((today - sess) / (1000*60*60*24));
+}
+
+function ageBadge(days) {
+  if (days >= 30) return { background: '#fee2e2', color: '#991b1b', label: `${days}d` };
+  if (days >= 14) return { background: '#fef3c7', color: '#92400e', label: `${days}d` };
+  return { background: 'var(--gray-100)', color: 'var(--gray-600)', label: `${days}d` };
+}
+
+function UnpaidTab() {
+  const [supervisors,   setSupervisors]   = useState([]);
+  const [supervisorId,  setSupervisorId]  = useState('');
+  const [sessions,      setSessions]      = useState([]);
+  const [loading,       setLoading]       = useState(false);
+  const [marking,       setMarking]       = useState(new Set());
+  const [error,         setError]         = useState('');
+
+  useEffect(() => {
+    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor' || x.role === 'admin')));
+  }, []);
+
+  useEffect(() => {
+    if (!supervisorId) { setSessions([]); return; }
+    setLoading(true); setError('');
+    api.getUnpaidSessions(supervisorId)
+      .then(setSessions)
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [supervisorId]);
+
+  async function markPaid(sessionId) {
+    setMarking(prev => new Set([...prev, sessionId]));
+    try {
+      await api.confirmPayment([sessionId]);
+      setSessions(prev => prev.filter(s => s.id !== sessionId));
+    } catch (e) { setError(e.message); }
+    finally { setMarking(prev => { const n = new Set(prev); n.delete(sessionId); return n; }); }
+  }
+
+  return (
+    <div>
+      {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+      <div className="form-row" style={{ marginBottom: 20 }}>
+        <div className="form-group" style={{ maxWidth: 280 }}>
+          <label className="form-label">Supervisor</label>
+          <select className="form-select" value={supervisorId} onChange={e => setSupervisorId(e.target.value)}>
+            <option value="">— Select supervisor —</option>
+            {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {!supervisorId ? null : loading ? (
+        <div className="loading-screen"><div className="spinner" /></div>
+      ) : (
+        <>
+          {sessions.length > 0 && (
+            <div style={{ marginBottom: 12, fontSize: '0.85rem', color: 'var(--gray-500)' }}>
+              <strong style={{ color: '#dc2626' }}>{sessions.length}</strong> unpaid session{sessions.length !== 1 ? 's' : ''}
+              {' · '}{sessions.filter(s => daysAgo(s.session_date) >= 30).length > 0 && (
+                <span style={{ color: '#991b1b', fontWeight: 600 }}>
+                  {sessions.filter(s => daysAgo(s.session_date) >= 30).length} overdue 30+ days
+                </span>
+              )}
+            </div>
+          )}
+
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid var(--gray-200)', textAlign: 'left' }}>
+                  <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Group</th>
+                  <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Date</th>
+                  <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>ECW Time</th>
+                  <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Waiting</th>
+                  <th style={{ padding: '8px 12px' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.map(s => {
+                  const days = daysAgo(s.session_date);
+                  const badge = ageBadge(days);
+                  return (
+                    <tr key={s.id} style={{ borderBottom: '1px solid var(--gray-100)', background: days >= 30 ? '#fff5f5' : days >= 14 ? '#fffbeb' : 'white' }}>
+                      <td style={{ padding: '10px 12px', fontWeight: 500, color: 'var(--navy)' }}>
+                        {s.group?.internal_name || s.group?.group_name || '—'}
+                      </td>
+                      <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmtDate(s.session_date)}</td>
+                      <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmt12(s.ecw_time)}</td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: 12, ...badge }}>
+                          {badge.label}
+                        </span>
+                      </td>
+                      <td style={{ padding: '10px 12px' }}>
+                        <button
+                          className="btn btn-outline btn-sm"
+                          style={{ fontSize: '0.75rem' }}
+                          disabled={marking.has(s.id)}
+                          onClick={() => markPaid(s.id)}>
+                          {marking.has(s.id) ? '…' : 'Mark Paid'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!sessions.length && (
+                  <tr><td colSpan={5} style={{ padding: 40, textAlign: 'center', color: 'var(--gray-400)' }}>
+                    All sessions paid.
+                  </td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PaymentsPage() {
@@ -610,11 +737,13 @@ export default function PaymentsPage() {
         <div style={{ display: 'flex', gap: 8 }}>
           <button className={`btn btn-sm ${tab === 'periods' ? 'btn-gold' : 'btn-outline'}`} onClick={() => setTab('periods')}>Pay Periods</button>
           <button className={`btn btn-sm ${tab === 'reconcile' ? 'btn-gold' : 'btn-outline'}`} onClick={() => setTab('reconcile')}>Reconcile</button>
+          <button className={`btn btn-sm ${tab === 'unpaid' ? 'btn-gold' : 'btn-outline'}`} onClick={() => setTab('unpaid')}>Unpaid</button>
         </div>
       </div>
 
       {tab === 'periods'   && <PayPeriodsTab />}
       {tab === 'reconcile' && <ReconcileTab />}
+      {tab === 'unpaid'    && <UnpaidTab />}
     </div>
   );
 }

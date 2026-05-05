@@ -28,6 +28,25 @@ router.get('/sessions', requireAuth, requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET all unpaid completed sessions for a supervisor
+router.get('/unpaid', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { supervisor_id } = req.query;
+    if (!supervisor_id) return res.status(400).json({ error: 'supervisor_id required' });
+
+    const { data, error } = await supabase
+      .from('sessions')
+      .select('id, session_date, ecw_time, group:groups!group_id(id, internal_name, group_name, supervisor_id)')
+      .eq('status', 'completed')
+      .eq('paid', false)
+      .order('session_date', { ascending: true });
+
+    if (error) throw error;
+    const filtered = (data || []).filter(s => s.group?.supervisor_id === supervisor_id);
+    res.json(filtered);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // POST upload Excel pay report and match against DB sessions
 router.post('/upload', requireAuth, requireAdmin, upload.single('file'), async (req, res) => {
   try {
