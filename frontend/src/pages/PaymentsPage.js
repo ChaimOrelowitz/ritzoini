@@ -435,7 +435,7 @@ function PayPeriodRow({ period, supervisorId }) {
                           onChange={e => setPendingMappings(prev => ({ ...prev, [u.billingName]: e.target.value }))}>
                           <option value="">— pick group —</option>
                           {allGroups.map(g => (
-                            <option key={g.id} value={g.id}>{g.internal_name || g.group_name}</option>
+                            <option key={g.id} value={g.id}>{g.internal_name}{g.group_name && g.group_name !== g.internal_name ? ` — ${g.group_name}` : ''}</option>
                           ))}
                         </select>
                       </div>
