@@ -1,32 +1,46 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const pdfParse = require('pdf-parse');
+const Anthropic = require('@anthropic-ai/sdk');
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-function parseStubEntries(text) {
-  const markerIdx = text.search(/information\s*&\s*announcements/i);
-  const block = markerIdx !== -1 ? text.slice(markerIdx) : text;
-  const entries = [];
+async function extractEntriesFromPDF(buffer) {
+  const base64 = buffer.toString('base64');
 
-  for (const raw of block.split('\n')) {
-    const line = raw.trim();
-    const dateMatch = line.match(/(\d{1,2}\/\d{1,2}\/\d{4})$/);
-    if (!dateMatch) continue;
+  const response = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [{
+      role: 'user',
+      content: [
+        {
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+        },
+        {
+          type: 'text',
+          text: `Extract every session entry from the "Information & Announcements" section of this pay stub.
 
-    const dateStr = dateMatch[1];
-    const billingName = line.slice(0, line.lastIndexOf(dateStr)).trim();
-    if (!billingName) continue;
+Each line in that section looks like: <Group Name> <Date>
+The date is at the end in M/D/YYYY format, sometimes run together with the last digits of the time (e.g. "Sensory Thursday 5:004/16/2026").
 
-    const [m, d, y] = dateStr.split('/');
-    const date = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    entries.push({ billingName, date });
-  }
+Return ONLY a JSON array, no explanation. Each element: { "billingName": "<everything before the date>", "date": "YYYY-MM-DD" }
 
-  return entries;
+Example output:
+[{"billingName":"Sensory Gym Sunday 3:15 PM","date":"2026-03-29"},{"billingName":"Art Sunday 4:30pm","date":"2026-04-12"}]`,
+        },
+      ],
+    }],
+  });
+
+  const text = response.content[0].text.trim();
+  const jsonMatch = text.match(/\[[\s\S]*\]/);
+  if (!jsonMatch) throw new Error('Could not parse session list from PDF');
+  return JSON.parse(jsonMatch[0]);
 }
 
 async function matchEntries(entries) {
@@ -68,9 +82,8 @@ async function matchEntries(entries) {
 router.post('/parse-stub', requireAuth, requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const data = await pdfParse(req.file.buffer);
-    const entries = parseStubEntries(data.text);
-    if (!entries.length) return res.status(400).json({ error: 'No session lines found in PDF. Make sure the PDF has an "Information & Announcements" section.' });
+    const entries = await extractEntriesFromPDF(req.file.buffer);
+    if (!entries.length) return res.status(400).json({ error: 'No session entries found in PDF.' });
     const { matched, unmatched } = await matchEntries(entries);
     res.json({ matched, unmatched });
   } catch (err) {
@@ -79,7 +92,7 @@ router.post('/parse-stub', requireAuth, requireAdmin, upload.single('file'), asy
   }
 });
 
-// POST /api/billing/save-mappings  — saves billing_name to groups, then re-matches the pending entries
+// POST /api/billing/save-mappings
 router.post('/save-mappings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { mappings, entries } = req.body;
