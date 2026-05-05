@@ -76,6 +76,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
     internal_name:    group.internal_name  || group.name || '',
     group_name:       group.group_name     || group.name || '',
     description:      group.description   || '',
+    billing_name:     group.billing_name  || '',
     supervisor_id:    group.supervisor_id  || '',
     instructor_id:    group.instructor_id  || '',
     start_date:       group.start_date     || '',
@@ -135,7 +136,7 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
     setLoading(true); setError('');
     try {
       await api.updateGroup(group.id, {
-        ...(isAdmin ? { internal_name: form.internal_name, supervisor_id: form.supervisor_id || null, instructor_id: form.instructor_id || null } : {}),
+        ...(isAdmin ? { internal_name: form.internal_name, billing_name: form.billing_name || null, supervisor_id: form.supervisor_id || null, instructor_id: form.instructor_id || null } : {}),
         group_name:       form.group_name,
         description:      form.description,
         start_date:       form.start_date,
@@ -179,6 +180,14 @@ export default function EditGroupModal({ group, onClose, onSaved }) {
               <textarea className="form-textarea" value={form.description} onChange={e => set('description', e.target.value)}
                 placeholder="Brief description…" style={{ minHeight: 60 }} />
             </div>
+
+            {isAdmin && (
+              <div className="form-group">
+                <label className="form-label">Billing Name <span style={{ fontWeight: 400, color: 'var(--gray-400)', fontSize: '0.75rem' }}>(office's name for this group on pay stubs)</span></label>
+                <input className="form-input" value={form.billing_name} onChange={e => set('billing_name', e.target.value)}
+                  placeholder="e.g. Sensory Gym Sunday 3:15 PM" />
+              </div>
+            )}
 
             {isAdmin && (
               <div className="form-group">

@@ -4,6 +4,21 @@ import supabase from '../supabaseClient';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 
+async function parsePayStub(file) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const token = session?.access_token;
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API}/api/billing/parse-stub`, {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Parse failed');
+  return json;
+}
+
 async function uploadPayReport(file, supervisor_id, start_date, end_date) {
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
@@ -200,18 +215,21 @@ const CONFIDENCE_STYLE = {
 };
 
 function PayPeriodRow({ period, supervisorId }) {
-  const [open, setOpen]             = useState(false);
-  const [sessions, setSessions]     = useState([]);
-  const [loading, setLoading]       = useState(false);
-  const [uploadResult, setUploadResult] = useState(null);
-  const [checkedIds, setCheckedIds] = useState(new Set());
-  const [uploading, setUploading]   = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError]           = useState('');
+  const [open, setOpen]               = useState(false);
+  const [sessions, setSessions]       = useState([]);
+  const [loading, setLoading]         = useState(false);
+  const [stubResult, setStubResult]   = useState(null); // { matched, unmatched }
+  const [pendingMappings, setPendingMappings] = useState({}); // { billingName: group_id }
+  const [allGroups, setAllGroups]     = useState([]);
+  const [checkedIds, setCheckedIds]   = useState(new Set());
+  const [uploading, setUploading]     = useState(false);
+  const [savingMappings, setSavingMappings] = useState(false);
+  const [confirming, setConfirming]   = useState(false);
+  const [error, setError]             = useState('');
   const fileRef = useRef();
 
   useEffect(() => {
-    if (!open || !supervisorId) { setSessions([]); setUploadResult(null); setCheckedIds(new Set()); return; }
+    if (!open || !supervisorId) { setSessions([]); setStubResult(null); setCheckedIds(new Set()); return; }
     setLoading(true);
     api.getPaymentSessions(supervisorId, period.start_date, period.end_date)
       .then(setSessions)
@@ -219,21 +237,47 @@ function PayPeriodRow({ period, supervisorId }) {
       .finally(() => setLoading(false));
   }, [open, supervisorId]);
 
-  async function handleUpload(e) {
+  useEffect(() => {
+    if (open && stubResult?.unmatched?.length && !allGroups.length) {
+      api.getGroups().then(setAllGroups).catch(() => {});
+    }
+  }, [open, stubResult]);
+
+  async function handleStubUpload(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    setUploading(true); setError(''); setUploadResult(null);
+    setUploading(true); setError(''); setStubResult(null); setPendingMappings({});
     try {
-      const result = await uploadPayReport(file, supervisorId, period.start_date, period.end_date);
-      setUploadResult(result);
+      const result = await parsePayStub(file);
+      setStubResult(result);
       const preChecked = new Set(
-        result.matches
-          .filter(m => m.session && (m.confidence === 'high' || m.confidence === 'medium'))
-          .map(m => m.session.id)
+        result.matched.filter(m => m.session && !m.session.paid).map(m => m.session.id)
       );
       setCheckedIds(preChecked);
     } catch (e) { setError(e.message); }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+  }
+
+  async function handleSaveMappings() {
+    const mappings = Object.entries(pendingMappings)
+      .filter(([, gid]) => gid)
+      .map(([billingName, group_id]) => ({ billing_name: billingName, group_id }));
+    if (!mappings.length) return;
+    setSavingMappings(true); setError('');
+    try {
+      const pendingEntries = stubResult.unmatched.flatMap(u => u.dates.map(date => ({ billingName: u.billingName, date })));
+      const result = await api.saveBillingMappings(mappings, pendingEntries);
+      setStubResult(prev => ({
+        matched: [...prev.matched, ...result.matched],
+        unmatched: result.unmatched,
+      }));
+      const preChecked = new Set(
+        result.matched.filter(m => m.session && !m.session.paid).map(m => m.session.id)
+      );
+      setCheckedIds(prev => new Set([...prev, ...preChecked]));
+      setPendingMappings({});
+    } catch (e) { setError(e.message); }
+    finally { setSavingMappings(false); }
   }
 
   async function handleConfirm() {
@@ -243,7 +287,14 @@ function PayPeriodRow({ period, supervisorId }) {
       await api.confirmPayment([...checkedIds]);
       const updated = await api.getPaymentSessions(supervisorId, period.start_date, period.end_date);
       setSessions(updated);
-      setUploadResult(null);
+      if (stubResult) {
+        setStubResult(prev => ({
+          ...prev,
+          matched: prev.matched.map(m =>
+            m.session && checkedIds.has(m.session.id) ? { ...m, session: { ...m.session, paid: true } } : m
+          ),
+        }));
+      }
       setCheckedIds(new Set());
       alert(`Marked ${checkedIds.size} session(s) as paid.`);
     } catch (e) { setError(e.message); }
@@ -348,38 +399,79 @@ function PayPeriodRow({ period, supervisorId }) {
                 </table>
               </div>
 
-              {/* Upload */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+              {/* Upload stub */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: stubResult ? 20 : 0 }}>
                 <button className="btn btn-gold btn-sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
-                  {uploading ? 'Processing…' : '📂 Upload Pay Report (Excel)'}
+                  {uploading ? 'Parsing…' : '📄 Upload Pay Stub (PDF)'}
                 </button>
-                <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleUpload} />
-                {uploadResult && (
+                <input ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={handleStubUpload} />
+                {stubResult && (
                   <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-                    {uploadResult.matches.length} Excel rows parsed · {uploadResult.matches.filter(m => m.session).length} matched
+                    {stubResult.matched.length} matched · {stubResult.unmatched.length} unrecognized
                   </span>
+                )}
+                {stubResult && (
+                  <button className="btn btn-outline btn-sm" onClick={() => { setStubResult(null); setCheckedIds(new Set()); setPendingMappings({}); }}>Clear</button>
                 )}
               </div>
 
-              {/* Match results */}
-              {uploadResult && (
-                <div>
-                  <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 12, color: 'var(--navy)' }}>Match Results</h4>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', marginBottom: 20 }}>
+              {/* Unrecognized billing names — need mapping */}
+              {stubResult?.unmatched?.length > 0 && (
+                <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 'var(--radius)', padding: '14px 16px', marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700, color: '#92400e', marginBottom: 12, fontSize: '0.85rem' }}>
+                    {stubResult.unmatched.length} unrecognized billing name{stubResult.unmatched.length !== 1 ? 's' : ''} — assign each to a group to save for future stubs:
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {stubResult.unmatched.map(u => (
+                      <div key={u.billingName} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                        <div style={{ minWidth: 260, fontSize: '0.82rem', fontFamily: 'monospace', color: 'var(--navy)', fontWeight: 600 }}>
+                          {u.billingName}
+                          <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 8 }}>
+                            ({u.dates.map(fmtDate).join(', ')})
+                          </span>
+                        </div>
+                        <select className="form-select" style={{ maxWidth: 260, fontSize: '0.82rem' }}
+                          value={pendingMappings[u.billingName] || ''}
+                          onChange={e => setPendingMappings(prev => ({ ...prev, [u.billingName]: e.target.value }))}>
+                          <option value="">— pick group —</option>
+                          {allGroups.map(g => (
+                            <option key={g.id} value={g.id}>{g.internal_name || g.group_name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    className="btn btn-gold btn-sm"
+                    style={{ marginTop: 14 }}
+                    onClick={handleSaveMappings}
+                    disabled={savingMappings || !Object.values(pendingMappings).some(v => v)}>
+                    {savingMappings ? 'Saving…' : 'Save & Match'}
+                  </button>
+                </div>
+              )}
+
+              {/* Matched stub sessions */}
+              {stubResult?.matched?.length > 0 && (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--navy)', marginBottom: 10 }}>
+                    Pay stub sessions ({stubResult.matched.length}):
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', marginBottom: 16 }}>
                     <thead>
                       <tr style={{ borderBottom: '2px solid var(--gray-200)', textAlign: 'left' }}>
-                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Confirm</th>
-                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Excel Row</th>
+                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Mark Paid</th>
+                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Billing Name</th>
                         <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Date</th>
-                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Matched Session</th>
-                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Confidence</th>
+                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Group</th>
+                        <th style={{ padding: '6px 10px', color: 'var(--gray-500)' }}>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {uploadResult.matches.map((m, i) => (
+                      {stubResult.matched.map((m, i) => (
                         <tr key={i} style={{ borderBottom: '1px solid var(--gray-100)', background: !m.session ? '#fff7ed' : undefined }}>
                           <td style={{ padding: '8px 10px' }}>
-                            {m.session ? (
+                            {m.session && !m.session.paid ? (
                               <input type="checkbox" checked={checkedIds.has(m.session.id)}
                                 onChange={e => {
                                   const next = new Set(checkedIds);
@@ -388,44 +480,30 @@ function PayPeriodRow({ period, supervisorId }) {
                                 }} />
                             ) : <span style={{ color: 'var(--gray-300)' }}>—</span>}
                           </td>
-                          <td style={{ padding: '8px 10px', color: 'var(--gray-700)' }}>{m.excelEntry.rawName}</td>
-                          <td style={{ padding: '8px 10px', color: 'var(--gray-600)' }}>{fmtDate(m.excelEntry.date)}</td>
-                          <td style={{ padding: '8px 10px', fontWeight: m.session ? 500 : 400, color: m.session ? 'var(--navy)' : '#c2410c' }}>
-                            {m.session
-                              ? `${m.session.group?.internal_name || '—'} @ ${fmt12(m.session.ecw_time)}`
-                              : '⚠ No match found'}
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontSize: '0.78rem', color: 'var(--gray-700)' }}>{m.billingName}</td>
+                          <td style={{ padding: '8px 10px', color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{fmtDate(m.date)}</td>
+                          <td style={{ padding: '8px 10px', fontWeight: 500, color: m.session ? 'var(--navy)' : '#c2410c' }}>
+                            {m.session ? (m.group?.internal_name || m.group?.group_name || '—') : '⚠ No session found for this date'}
                           </td>
                           <td style={{ padding: '8px 10px' }}>
-                            {m.confidence ? (
-                              <span style={{ fontSize: '0.72rem', fontWeight: 700, padding: '2px 8px', borderRadius: 10, ...CONFIDENCE_STYLE[m.confidence] }}>
-                                {m.confidence.toUpperCase()}
+                            {m.session ? (
+                              <span style={{ fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: 12,
+                                background: m.session.paid ? '#d1fae5' : '#fee2e2',
+                                color: m.session.paid ? '#065f46' : '#991b1b' }}>
+                                {m.session.paid ? 'Paid' : 'Unpaid'}
                               </span>
-                            ) : <span style={{ color: '#c2410c', fontSize: '0.8rem' }}>Unmatched</span>}
+                            ) : <span style={{ fontSize: '0.75rem', color: '#c2410c' }}>Missing</span>}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
 
-                  {uploadResult.unmatchedSessions.length > 0 && (
-                    <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: 16 }}>
-                      <div style={{ fontWeight: 700, color: '#991b1b', marginBottom: 8, fontSize: '0.85rem' }}>
-                        ⚠ {uploadResult.unmatchedSessions.length} session(s) in app NOT found in pay report — you may not have been paid for these:
-                      </div>
-                      {uploadResult.unmatchedSessions.map(s => (
-                        <div key={s.id} style={{ fontSize: '0.8rem', color: '#7f1d1d', padding: '2px 0' }}>
-                          {s.group?.internal_name || '—'} · {fmtDate(s.session_date)} · ECW {fmt12(s.ecw_time)}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <button className="btn btn-gold" onClick={handleConfirm} disabled={confirming || !checkedIds.size}>
+                  {checkedIds.size > 0 && (
+                    <button className="btn btn-gold" onClick={handleConfirm} disabled={confirming}>
                       {confirming ? 'Marking paid…' : `Mark ${checkedIds.size} Session(s) as Paid`}
                     </button>
-                    <button className="btn btn-outline btn-sm" onClick={() => { setUploadResult(null); setCheckedIds(new Set()); }}>Clear</button>
-                  </div>
+                  )}
                 </div>
               )}
             </>

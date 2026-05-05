@@ -50,6 +50,9 @@ CREATE TABLE groups (
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- billing_name: the office's label for this group on pay stubs (self-learning)
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS billing_name TEXT;
+
 -- ─────────────────────────────────────────
 -- SESSIONS
 -- ─────────────────────────────────────────

@@ -27,6 +27,7 @@ app.use('/api/instructors', require('./routes/instructors'));
 app.use('/api/pay-periods',  require('./routes/payPeriods'));
 app.use('/api/payments',     require('./routes/payments'));
 app.use('/api/bulk-import',  require('./routes/bulkImport'));
+app.use('/api/billing',      require('./routes/billing'));
 app.use('/api/cron',         require('./routes/cron'));
 app.use('/api/email',        require('./routes/email'));
 

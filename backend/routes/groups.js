@@ -142,7 +142,7 @@ const GROUP_LIST_SELECT = `
   id, internal_name, group_name, name, description, supervisor_id, instructor_id, status,
   start_date, end_date, day_of_week_int, day_of_week,
   start_time, session_time, end_time, ecw_time, ecw_end_time,
-  total_sessions, default_duration, created_at, ai_notes,
+  total_sessions, default_duration, created_at, ai_notes, billing_name,
   supervisor:profiles!supervisor_id(id, first_name, last_name, email),
   instructor:instructors!instructor_id(id, first_name, last_name, phone),
   sessions(id, status, locked)
@@ -152,7 +152,7 @@ const GROUP_DETAIL_SELECT = `
   id, internal_name, group_name, name, description, supervisor_id, instructor_id, status,
   start_date, end_date, day_of_week_int, day_of_week,
   start_time, session_time, end_time, ecw_time, ecw_end_time,
-  total_sessions, default_duration, created_at, ai_notes,
+  total_sessions, default_duration, created_at, ai_notes, billing_name,
   supervisor:profiles!supervisor_id(id, first_name, last_name, email),
   instructor:instructors!instructor_id(id, first_name, last_name, phone)
 `;
@@ -276,7 +276,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (req.user.role === 'supervisor' && existing.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
 
-    const adminOnly = ['internal_name', 'supervisor_id', 'instructor_id'];
+    const adminOnly = ['internal_name', 'supervisor_id', 'instructor_id', 'billing_name'];
     const supervisorAllowed = ['group_name','description','start_date','end_date',
                                'start_time','ecw_time','total_sessions','default_duration','status','ai_notes'];
     const allowed = req.user.role === 'admin' ? [...adminOnly, ...supervisorAllowed] : supervisorAllowed;

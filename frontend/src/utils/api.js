@@ -84,6 +84,9 @@ export const api = {
   parseBulkImport: (text) => authFetch('/api/bulk-import/parse', { method: 'POST', body: JSON.stringify({ text }) }),
   confirmBulkImport: (groups) => authFetch('/api/bulk-import/confirm', { method: 'POST', body: JSON.stringify({ groups }) }),
 
+  // Billing / Pay Stub
+  saveBillingMappings: (mappings, entries) => authFetch('/api/billing/save-mappings', { method: 'POST', body: JSON.stringify({ mappings, entries }) }),
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),
