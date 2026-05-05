@@ -2,11 +2,49 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const Anthropic = require('@anthropic-ai/sdk');
+const XLSX = require('xlsx');
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function parseExcelEntries(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+  // Find the header row (contains "Group Name")
+  let startRow = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0] || '').toLowerCase().includes('group name')) { startRow = i + 1; break; }
+  }
+
+  const entries = [];
+  for (let i = startRow; i < rows.length; i++) {
+    const billingName = String(rows[i][0] || '').trim();
+    const dateRaw     = rows[i][1];
+    if (!billingName || !dateRaw) continue;
+
+    let date = null;
+    if (typeof dateRaw === 'number') {
+      // Excel serial date
+      const d = XLSX.SSF.parse_date_code(dateRaw);
+      if (d) date = `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`;
+    } else {
+      const s = String(dateRaw).trim();
+      const parts = s.split('/');
+      if (parts.length === 3) {
+        let [m, d, y] = parts.map(Number);
+        if (y < 100) y += 2000;
+        date = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+      }
+    }
+
+    if (date) entries.push({ billingName, date });
+  }
+  return entries;
+}
 
 async function extractEntriesFromPDF(buffer) {
   const base64 = buffer.toString('base64');
@@ -78,12 +116,18 @@ async function matchEntries(entries) {
   return { matched, unmatched };
 }
 
-// POST /api/billing/parse-stub
+// POST /api/billing/parse-stub  — accepts PDF or Excel
 router.post('/parse-stub', requireAuth, requireAdmin, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-    const entries = await extractEntriesFromPDF(req.file.buffer);
-    if (!entries.length) return res.status(400).json({ error: 'No session entries found in PDF.' });
+
+    const name = req.file.originalname.toLowerCase();
+    const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls');
+    const entries = isExcel
+      ? parseExcelEntries(req.file.buffer)
+      : await extractEntriesFromPDF(req.file.buffer);
+
+    if (!entries.length) return res.status(400).json({ error: 'No session entries found in file.' });
     const { matched, unmatched } = await matchEntries(entries);
     res.json({ matched, unmatched });
   } catch (err) {

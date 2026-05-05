@@ -37,6 +37,61 @@ async function uploadPayReport(file, supervisor_id, start_date, end_date) {
   return json;
 }
 
+function GroupCombobox({ groups, value, onChange }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen]   = useState(false);
+  const selected = groups.find(g => g.id === value);
+
+  const filtered = query.trim()
+    ? groups.filter(g =>
+        (g.internal_name || '').toLowerCase().includes(query.toLowerCase()) ||
+        (g.group_name    || '').toLowerCase().includes(query.toLowerCase())
+      )
+    : groups;
+
+  const displayLabel = g =>
+    g.internal_name + (g.group_name && g.group_name !== g.internal_name ? ` — ${g.group_name}` : '');
+
+  return (
+    <div style={{ position: 'relative', maxWidth: 300 }}>
+      <input
+        className="form-input"
+        style={{ fontSize: '0.82rem' }}
+        placeholder="Search groups…"
+        value={open ? query : (selected ? displayLabel(selected) : '')}
+        onChange={e => { setQuery(e.target.value); setOpen(true); onChange(''); }}
+        onFocus={() => { setQuery(''); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+      />
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.12)', maxHeight: 220, overflowY: 'auto',
+        }}>
+          {filtered.length === 0
+            ? <div style={{ padding: '8px 12px', fontSize: '0.8rem', color: 'var(--gray-400)' }}>No matches</div>
+            : filtered.map(g => (
+              <div key={g.id}
+                onMouseDown={() => { onChange(g.id); setOpen(false); setQuery(''); }}
+                style={{ padding: '8px 12px', cursor: 'pointer', fontSize: '0.82rem',
+                  background: value === g.id ? 'var(--gray-50)' : 'white' }}
+                onMouseEnter={e => e.currentTarget.style.background = 'var(--gray-50)'}
+                onMouseLeave={e => e.currentTarget.style.background = value === g.id ? 'var(--gray-50)' : 'white'}
+              >
+                <span style={{ fontWeight: 600, color: 'var(--navy)' }}>{g.internal_name}</span>
+                {g.group_name && g.group_name !== g.internal_name && (
+                  <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>— {g.group_name}</span>
+                )}
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
 function fmtDate(d) {
   if (!d) return '—';
   const [y, m, day] = d.split('-');
@@ -402,9 +457,9 @@ function PayPeriodRow({ period, supervisorId }) {
               {/* Upload stub */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: stubResult ? 20 : 0 }}>
                 <button className="btn btn-gold btn-sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
-                  {uploading ? 'Parsing…' : '📄 Upload Pay Stub (PDF)'}
+                  {uploading ? 'Parsing…' : '📄 Upload Pay Stub (PDF or Excel)'}
                 </button>
-                <input ref={fileRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={handleStubUpload} />
+                <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }} onChange={handleStubUpload} />
                 {stubResult && (
                   <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
                     {stubResult.matched.length} matched · {stubResult.unmatched.length} unrecognized
@@ -430,14 +485,11 @@ function PayPeriodRow({ period, supervisorId }) {
                             ({u.dates.map(fmtDate).join(', ')})
                           </span>
                         </div>
-                        <select className="form-select" style={{ maxWidth: 260, fontSize: '0.82rem' }}
+                        <GroupCombobox
+                          groups={allGroups}
                           value={pendingMappings[u.billingName] || ''}
-                          onChange={e => setPendingMappings(prev => ({ ...prev, [u.billingName]: e.target.value }))}>
-                          <option value="">— pick group —</option>
-                          {allGroups.map(g => (
-                            <option key={g.id} value={g.id}>{g.internal_name}{g.group_name && g.group_name !== g.internal_name ? ` — ${g.group_name}` : ''}</option>
-                          ))}
-                        </select>
+                          onChange={gid => setPendingMappings(prev => ({ ...prev, [u.billingName]: gid }))}
+                        />
                       </div>
                     ))}
                   </div>
