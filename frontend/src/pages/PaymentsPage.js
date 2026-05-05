@@ -199,45 +199,33 @@ const CONFIDENCE_STYLE = {
   low:    { background: '#ffedd5', color: '#9a3412', border: '1px solid #fdba74' },
 };
 
-function ReconcileTab() {
-  const [supervisors, setSupervisors]   = useState([]);
-  const [periods, setPeriods]           = useState([]);
-  const [supervisorId, setSupervisorId] = useState('');
-  const [periodId, setPeriodId]         = useState('');
-  const [sessions, setSessions]         = useState([]);
-  const [loadingSessions, setLoadingSessions] = useState(false);
+function PayPeriodRow({ period, supervisorId }) {
+  const [open, setOpen]             = useState(false);
+  const [sessions, setSessions]     = useState([]);
+  const [loading, setLoading]       = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
-  const [checkedIds, setCheckedIds]     = useState(new Set());
-  const [uploading, setUploading]       = useState(false);
-  const [confirming, setConfirming]     = useState(false);
-  const [error, setError]               = useState('');
+  const [checkedIds, setCheckedIds] = useState(new Set());
+  const [uploading, setUploading]   = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError]           = useState('');
   const fileRef = useRef();
 
-  const selectedPeriod = periods.find(p => p.id === periodId) || null;
-
   useEffect(() => {
-    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor' || x.role === 'admin')));
-    api.getPayPeriods().then(setPeriods);
-  }, []);
-
-  useEffect(() => {
-    if (!supervisorId || !selectedPeriod) { setSessions([]); setUploadResult(null); return; }
-    setLoadingSessions(true);
-    api.getPaymentSessions(supervisorId, selectedPeriod.start_date, selectedPeriod.end_date)
+    if (!open || !supervisorId) { setSessions([]); setUploadResult(null); setCheckedIds(new Set()); return; }
+    setLoading(true);
+    api.getPaymentSessions(supervisorId, period.start_date, period.end_date)
       .then(setSessions)
       .catch(e => setError(e.message))
-      .finally(() => setLoadingSessions(false));
-    setUploadResult(null);
-  }, [supervisorId, periodId]);
+      .finally(() => setLoading(false));
+  }, [open, supervisorId]);
 
   async function handleUpload(e) {
     const file = e.target.files?.[0];
-    if (!file || !supervisorId || !selectedPeriod) return;
+    if (!file) return;
     setUploading(true); setError(''); setUploadResult(null);
     try {
-      const result = await uploadPayReport(file, supervisorId, selectedPeriod.start_date, selectedPeriod.end_date);
+      const result = await uploadPayReport(file, supervisorId, period.start_date, period.end_date);
       setUploadResult(result);
-      // Pre-check high + medium confidence matches
       const preChecked = new Set(
         result.matches
           .filter(m => m.session && (m.confidence === 'high' || m.confidence === 'medium'))
@@ -253,11 +241,8 @@ function ReconcileTab() {
     setConfirming(true);
     try {
       await api.confirmPayment([...checkedIds]);
-      // Refresh sessions
-      if (supervisorId && selectedPeriod) {
-        const updated = await api.getPaymentSessions(supervisorId, selectedPeriod.start_date, selectedPeriod.end_date);
-        setSessions(updated);
-      }
+      const updated = await api.getPaymentSessions(supervisorId, period.start_date, period.end_date);
+      setSessions(updated);
       setUploadResult(null);
       setCheckedIds(new Set());
       alert(`Marked ${checkedIds.size} session(s) as paid.`);
@@ -269,56 +254,69 @@ function ReconcileTab() {
   const unpaidCount = sessions.length - paidCount;
 
   return (
-    <div>
-      {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
-
-      {/* Selectors */}
-      <div className="form-row" style={{ marginBottom: 16 }}>
-        <div className="form-group">
-          <label className="form-label">Supervisor</label>
-          <select className="form-select" value={supervisorId} onChange={e => setSupervisorId(e.target.value)}>
-            <option value="">— Select supervisor —</option>
-            {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
-          </select>
-        </div>
-        <div className="form-group">
-          <label className="form-label">Pay Period</label>
-          <select className="form-select" value={periodId} onChange={e => setPeriodId(e.target.value)}>
-            <option value="">— Select period —</option>
-            {periods.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-          </select>
-        </div>
-      </div>
-
-      {/* Summary cards */}
-      {supervisorId && selectedPeriod && (
-        <div className="stats-row" style={{ marginBottom: 20 }}>
-          <div className="stat-card">
-            <div className="stat-value">{sessions.length}</div>
-            <div className="stat-label">Completed Sessions</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value" style={{ color: '#059669' }}>{paidCount}</div>
-            <div className="stat-label">Paid</div>
-          </div>
-          <div className="stat-card">
-            <div className="stat-value" style={{ color: paidCount < sessions.length ? '#dc2626' : 'var(--navy)' }}>{unpaidCount}</div>
-            <div className="stat-label">Unpaid</div>
-          </div>
-          {selectedPeriod.gross_amount && (
-            <div className="stat-card">
-              <div className="stat-value">${parseFloat(selectedPeriod.gross_amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-              <div className="stat-label">Gross Paid</div>
-            </div>
+    <div style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', marginBottom: 6, overflow: 'hidden' }}>
+      {/* Accordion header */}
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px', background: open ? 'var(--navy)' : 'var(--gray-50)',
+          border: 'none', cursor: 'pointer', textAlign: 'left',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ color: open ? 'rgba(255,255,255,0.6)' : 'var(--gray-400)', fontSize: '0.7rem' }}>{open ? '▼' : '▶'}</span>
+          <span style={{ fontWeight: 600, color: open ? 'white' : 'var(--navy)', fontSize: '0.9rem' }}>
+            {period.label || `${fmtDate(period.start_date)} – ${fmtDate(period.end_date)}`}
+          </span>
+          {period.gross_amount && (
+            <span style={{ fontSize: '0.78rem', color: open ? 'rgba(255,255,255,0.6)' : 'var(--gray-400)' }}>
+              ${parseFloat(period.gross_amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            </span>
           )}
         </div>
-      )}
+        {open && sessions.length > 0 && (
+          <div style={{ display: 'flex', gap: 16, fontSize: '0.78rem' }}>
+            <span style={{ color: '#86efac' }}>{paidCount} paid</span>
+            <span style={{ color: unpaidCount > 0 ? '#fca5a5' : '#86efac' }}>{unpaidCount} unpaid</span>
+          </div>
+        )}
+      </button>
 
-      {/* Sessions table */}
-      {supervisorId && selectedPeriod && (
-        <>
-          {loadingSessions ? <div className="loading-screen"><div className="spinner" /></div> : (
+      {/* Accordion body */}
+      {open && (
+        <div style={{ padding: 16 }}>
+          {error && <div className="alert alert-error" style={{ marginBottom: 12 }}>{error}</div>}
+
+          {!supervisorId ? (
+            <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', margin: 0 }}>Select a supervisor above to view sessions.</p>
+          ) : loading ? (
+            <div className="loading-screen"><div className="spinner" /></div>
+          ) : (
             <>
+              {/* Stats */}
+              <div className="stats-row" style={{ marginBottom: 16 }}>
+                <div className="stat-card">
+                  <div className="stat-value">{sessions.length}</div>
+                  <div className="stat-label">Completed Sessions</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-value" style={{ color: '#059669' }}>{paidCount}</div>
+                  <div className="stat-label">Paid</div>
+                </div>
+                <div className="stat-card">
+                  <div className="stat-value" style={{ color: unpaidCount > 0 ? '#dc2626' : 'var(--navy)' }}>{unpaidCount}</div>
+                  <div className="stat-label">Unpaid</div>
+                </div>
+                {period.gross_amount && (
+                  <div className="stat-card">
+                    <div className="stat-value">${parseFloat(period.gross_amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
+                    <div className="stat-label">Gross Paid</div>
+                  </div>
+                )}
+              </div>
+
+              {/* Sessions table */}
               <div style={{ overflowX: 'auto', marginBottom: 16 }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
                   <thead>
@@ -350,23 +348,23 @@ function ReconcileTab() {
                 </table>
               </div>
 
-              {/* Upload section */}
+              {/* Upload */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
                 <button className="btn btn-gold btn-sm" onClick={() => fileRef.current?.click()} disabled={uploading}>
                   {uploading ? 'Processing…' : '📂 Upload Pay Report (Excel)'}
                 </button>
                 <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleUpload} />
-                {uploadResult && <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-                  {uploadResult.matches.length} Excel rows parsed · {uploadResult.matches.filter(m => m.session).length} matched
-                </span>}
+                {uploadResult && (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+                    {uploadResult.matches.length} Excel rows parsed · {uploadResult.matches.filter(m => m.session).length} matched
+                  </span>
+                )}
               </div>
 
               {/* Match results */}
               {uploadResult && (
                 <div>
                   <h4 style={{ fontSize: '0.9rem', fontWeight: 700, marginBottom: 12, color: 'var(--navy)' }}>Match Results</h4>
-
-                  {/* Matched rows */}
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', marginBottom: 20 }}>
                     <thead>
                       <tr style={{ borderBottom: '2px solid var(--gray-200)', textAlign: 'left' }}>
@@ -409,7 +407,6 @@ function ReconcileTab() {
                     </tbody>
                   </table>
 
-                  {/* Unmatched DB sessions — warning */}
                   {uploadResult.unmatchedSessions.length > 0 && (
                     <div style={{ background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 'var(--radius)', padding: '12px 16px', marginBottom: 16 }}>
                       <div style={{ fontWeight: 700, color: '#991b1b', marginBottom: 8, fontSize: '0.85rem' }}>
@@ -423,7 +420,6 @@ function ReconcileTab() {
                     </div>
                   )}
 
-                  {/* Confirm button */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <button className="btn btn-gold" onClick={handleConfirm} disabled={confirming || !checkedIds.size}>
                       {confirming ? 'Marking paid…' : `Mark ${checkedIds.size} Session(s) as Paid`}
@@ -434,8 +430,40 @@ function ReconcileTab() {
               )}
             </>
           )}
-        </>
+        </div>
       )}
+    </div>
+  );
+}
+
+function ReconcileTab() {
+  const [supervisors, setSupervisors]   = useState([]);
+  const [periods, setPeriods]           = useState([]);
+  const [supervisorId, setSupervisorId] = useState('');
+
+  useEffect(() => {
+    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor' || x.role === 'admin')));
+    api.getPayPeriods().then(setPeriods);
+  }, []);
+
+  return (
+    <div>
+      <div className="form-row" style={{ marginBottom: 20 }}>
+        <div className="form-group" style={{ maxWidth: 280 }}>
+          <label className="form-label">Supervisor</label>
+          <select className="form-select" value={supervisorId} onChange={e => setSupervisorId(e.target.value)}>
+            <option value="">— Select supervisor —</option>
+            {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div>
+        {periods.map(p => <PayPeriodRow key={p.id} period={p} supervisorId={supervisorId} />)}
+        {!periods.length && (
+          <p style={{ textAlign: 'center', color: 'var(--gray-400)', padding: 32 }}>No pay periods yet.</p>
+        )}
+      </div>
     </div>
   );
 }
