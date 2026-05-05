@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../../utils/api';
 
 function fmt12(t) {
@@ -20,6 +20,11 @@ export default function BulkImportModal({ onClose, onImported }) {
   const [groups,      setGroups]      = useState([]);
   const [results,     setResults]     = useState(null);
   const [confirming,  setConfirming]  = useState(false);
+  const [supervisors, setSupervisors] = useState([]);
+
+  useEffect(() => {
+    api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
+  }, []);
 
   async function handleParse() {
     if (!pasteText.trim()) { setError('Paste some rows first.'); return; }
@@ -119,7 +124,7 @@ export default function BulkImportModal({ onClose, onImported }) {
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                   <thead>
                     <tr style={{ background: 'var(--gray-50)', position: 'sticky', top: 0, zIndex: 1 }}>
-                      {['✓','Day / Time','Instructor','Dates','Sess.','Internal Name','Group Name','Description','Notes'].map(h => (
+                      {['✓','Day / Time','Instructor','Dates','Sess.','Internal Name','Group Name','Description','Supervisor'].map(h => (
                         <th key={h} style={th}>{h}</th>
                       ))}
                     </tr>
@@ -167,8 +172,15 @@ export default function BulkImportModal({ onClose, onImported }) {
                             value={g.description}
                             onChange={e => updateGroup(i, 'description', e.target.value)} />
                         </td>
-                        <td style={{ ...td, color: 'var(--gray-400)', fontSize: '0.75rem', maxWidth: 140 }}>
-                          {g.cancellations || ''}
+                        <td style={{ ...td, minWidth: 140 }}>
+                          <select className="form-select" style={inp}
+                            value={g.supervisor_id || ''}
+                            onChange={e => updateGroup(i, 'supervisor_id', e.target.value || null)}>
+                            <option value="">— none —</option>
+                            {supervisors.map(s => (
+                              <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>
+                            ))}
+                          </select>
                         </td>
                       </tr>
                     ))}
@@ -176,7 +188,7 @@ export default function BulkImportModal({ onClose, onImported }) {
                 </table>
               </div>
               <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--gray-400)' }}>
-                All groups import with 45 min duration, no supervisor. Edit individually after import. Skip dates must be added manually.
+                All groups import with 45 min duration. Skip dates must be added manually.
               </div>
             </>
           )}

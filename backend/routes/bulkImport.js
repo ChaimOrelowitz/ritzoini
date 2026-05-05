@@ -255,7 +255,7 @@ router.post('/confirm', requireAuth, requireAdmin, async (req, res) => {
           group_name:       g.suggestedName || g.internalName,
           name:             g.suggestedName || g.internalName,
           description:      g.description || null,
-          supervisor_id:    null,
+          supervisor_id:    g.supervisor_id || null,
           instructor_id:    instructorId,
           start_date:       g.startDate,
           end_date:         g.endDate,
