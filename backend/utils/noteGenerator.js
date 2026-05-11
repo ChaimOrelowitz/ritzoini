@@ -22,7 +22,7 @@ Session: ${sessionNumber} of ${totalSessions}
 ${stageHint}${prevContext}
 
 Write the complete SOAP note for Session ${sessionNumber}. Requirements:
-- Minimum 450 words total
+- 600–900 words total
 - SOAP format: Subjective, Objective, Assessment, Plan sections
 - Developmentally and therapeutically appropriate for this group
 - Natural progression and continuity from prior sessions
