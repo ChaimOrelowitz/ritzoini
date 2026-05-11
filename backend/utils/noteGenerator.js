@@ -3,8 +3,9 @@ const Anthropic = require('@anthropic-ai/sdk');
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function generateSessionNote(groupDescription, sessionNumber, totalSessions, previousNotes = []) {
-  const prevContext = previousNotes.length > 0
-    ? `\n\nPrevious session notes for context and continuity:\n${previousNotes.map((note, i) => `--- Week ${i + 1} ---\n${note}`).join('\n\n')}`
+  const recentNotes = previousNotes.slice(-2);
+  const prevContext = recentNotes.length > 0
+    ? `\n\nPrevious session notes for context and continuity:\n${recentNotes.map((note, i) => `--- Week ${sessionNumber - recentNotes.length + i} ---\n${note}`).join('\n\n')}`
     : '';
 
   const stageHint =
