@@ -43,7 +43,7 @@ export const api = {
     return authFetch(`/api/sessions/all${qs}`);
   },
   updateSession: (id, body) => authFetch(`/api/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
-  cancelSession:    (id) => authFetch(`/api/sessions/${id}/cancel`,         { method: 'POST' }),
+  cancelSession:    (id, add_session = true) => authFetch(`/api/sessions/${id}/cancel`, { method: 'POST', body: JSON.stringify({ add_session }) }),
   uncancelSession:  (id) => authFetch(`/api/sessions/${id}/uncancel`,      { method: 'POST' }),
   restoreSkip:      (id) => authFetch(`/api/sessions/${id}/restore-skip`,  { method: 'POST' }),
   returnToAuto:     (id) => authFetch(`/api/sessions/${id}/return-to-auto`, { method: 'POST' }),

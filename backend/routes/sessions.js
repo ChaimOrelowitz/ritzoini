@@ -353,25 +353,27 @@ router.patch('/:id', requireAuth, async (req, res) => {
  *   - do not move notes into locked sessions
  *   - do not move notes out of locked sessions
  */
-router.post('/:id/cancel', requireAuth, async (req, res) => {
+router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
   try {
+    const addSession = req.body.add_session !== false; // default true
+
     const { data: session, error: loadErr } = await supabase
-      .from('sessions')
+      .from(‘sessions’)
       .select(
-        'id, group_id, status, session_number, ' +
-        'group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)'
+        ‘id, group_id, status, session_number, ‘ +
+        ‘group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)’
       )
-      .eq('id', req.params.id)
+      .eq(‘id’, req.params.id)
       .single();
 
-    if (loadErr || !session) return res.status(404).json({ error: 'Session not found' });
-    if (session.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
-    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
-      return res.status(403).json({ error: 'Access denied' });
+    if (loadErr || !session) return res.status(404).json({ error: ‘Session not found’ });
+    if (session.status === ‘cancelled’) return res.status(400).json({ error: ‘Already cancelled’ });
+    if (req.user.role === ‘supervisor’ && session.group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: ‘Access denied’ });
 
     const g = session.group;
 
-    const sTime = (g.start_time || g.session_time || '09:00').slice(0, 5);
+    const sTime = (g.start_time || g.session_time || ‘09:00’).slice(0, 5);
     const dur = parseInt(g.default_duration, 10) || 45;
     const eTime = addMinutesToTime(sTime, dur);
     const ecwTime = (g.ecw_time || sTime).slice(0, 5);
@@ -379,122 +381,119 @@ router.post('/:id/cancel', requireAuth, async (req, res) => {
 
     // Fetch all sessions ascending, including notes and locked status
     const { data: allSessions, error: allErr } = await supabase
-      .from('sessions')
-      .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked, status')
-      .eq('group_id', session.group_id)
-      .order('session_number', { ascending: true });
+      .from(‘sessions’)
+      .select(‘id, session_number, session_date, scheduled_date, soap_note, notes, locked, status’)
+      .eq(‘group_id’, session.group_id)
+      .order(‘session_number’, { ascending: true });
 
     if (allErr) throw allErr;
-    if (!allSessions?.length) throw new Error('No sessions found for group');
+    if (!allSessions?.length) throw new Error(‘No sessions found for group’);
 
-    // Compute where the new replacement session will go
-    const lastSess = allSessions[allSessions.length - 1];
-    const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
-    if (!lastDateStr) throw new Error('Last session has no date');
+    let newSess = null;
 
-    const [y, m, d] = lastDateStr.split('-').map(Number);
-    const nextDate = new Date(y, m - 1, d);
-    nextDate.setDate(nextDate.getDate() + 7);
-    const nextDateStr = nextDate.toISOString().split('T')[0];
-    const newNum = (lastSess.session_number || 0) + 1;
+    if (addSession) {
+      // Compute where the new replacement session will go
+      const lastSess = allSessions[allSessions.length - 1];
+      const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
+      if (!lastDateStr) throw new Error(‘Last session has no date’);
 
-    // Create new blank session at the end
-    const { data: newSess, error: insertErr } = await supabase
-      .from('sessions')
-      .insert({
-        group_id: session.group_id,
-        session_number: newNum,
+      const [y, m, d] = lastDateStr.split(‘-’).map(Number);
+      const nextDate = new Date(y, m - 1, d);
+      nextDate.setDate(nextDate.getDate() + 7);
+      const nextDateStr = nextDate.toISOString().split(‘T’)[0];
+      const newNum = (lastSess.session_number || 0) + 1;
 
-        session_date: nextDateStr,
-        scheduled_date: nextDateStr,
+      const { data: inserted, error: insertErr } = await supabase
+        .from(‘sessions’)
+        .insert({
+          group_id: session.group_id,
+          session_number: newNum,
 
-        start_time: sTime,
-        scheduled_time: sTime,
-        end_time: eTime,
+          session_date: nextDateStr,
+          scheduled_date: nextDateStr,
 
-        ecw_time: ecwTime,
-        ecw_end_time: ecwEnd,
+          start_time: sTime,
+          scheduled_time: sTime,
+          end_time: eTime,
 
-        duration: dur,
-        session_day_of_week: nextDate.getDay(),
+          ecw_time: ecwTime,
+          ecw_end_time: ecwEnd,
 
-        status: 'scheduled',
-        status_manual_override: false,
+          duration: dur,
+          session_day_of_week: nextDate.getDay(),
 
-        soap_note: null,
-        notes: null,
-      })
-      .select()
-      .single();
-    if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
+          status: ‘scheduled’,
+          status_manual_override: false,
+
+          soap_note: null,
+          notes: null,
+        })
+        .select()
+        .single();
+      if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
+      newSess = inserted;
+    }
 
     // ── SHIFT NOTES FORWARD ───────────────────────────────────
-    // Build the chain of sessions affected by this cancel:
-    //  - start at the cancelled session’s number
-    //  - include sessions after it that are NOT already cancelled/group_ended
-    //  - append the new replacement session at the end
     const chainBase = allSessions
       .filter(s =>
         s.session_number >= session.session_number &&
-        s.status !== 'cancelled' &&
-        s.status !== 'group_ended'
+        s.status !== ‘cancelled’ &&
+        s.status !== ‘group_ended’
       )
       .sort((a, b) => a.session_number - b.session_number);
 
-    const chain = [...chainBase, newSess];
+    const chain = addSession ? [...chainBase, newSess] : [...chainBase];
 
-    // Safety: make sure the cancelled session is part of the chain
     const hasCancelledInChain = chain.some(s => s.id === session.id);
     if (!hasCancelledInChain) {
-      console.warn('[cancel] Cancelled session not found in shift chain, skipping note shift');
+      console.warn(‘[cancel] Cancelled session not found in shift chain, skipping note shift’);
     } else {
-      // Work backwards: move note from chain[i] -> chain[i+1] if BOTH are unlocked
       for (let i = chain.length - 2; i >= 0; i--) {
         const from = chain[i];
         const to = chain[i + 1];
 
-        // barrier-safe: never move into/out of locked
         if (from.locked || to.locked) continue;
 
         const note = getNote(from);
         if (!note || !String(note).trim()) continue;
 
-        // Write note onto the "next" session
         const { error: upToErr } = await supabase
-          .from('sessions')
+          .from(‘sessions’)
           .update({ soap_note: note, notes: note })
-          .eq('id', to.id);
+          .eq(‘id’, to.id);
         if (upToErr) throw upToErr;
 
-        // Clear note from the "from" session
         const { error: clearFromErr } = await supabase
-          .from('sessions')
+          .from(‘sessions’)
           .update({ soap_note: null, notes: null })
-          .eq('id', from.id);
+          .eq(‘id’, from.id);
         if (clearFromErr) throw clearFromErr;
       }
     }
 
-    // Cancel original + store replacement ref
+    // Cancel original
     const { error: cancelErr } = await supabase
-      .from('sessions')
+      .from(‘sessions’)
       .update({
-        status: 'cancelled',
+        status: ‘cancelled’,
         status_manual_override: true,
-        replacement_session_id: newSess.id,
+        ...(newSess ? { replacement_session_id: newSess.id } : {}),
       })
-      .eq('id', req.params.id);
+      .eq(‘id’, req.params.id);
     if (cancelErr) throw cancelErr;
 
-    // Keep total_sessions in groups aligned
-    await supabase
-      .from('groups')
-      .update({ total_sessions: newNum })
-      .eq('id', session.group_id);
+    // Bump total_sessions only if we added a makeup session
+    if (addSession && newSess) {
+      await supabase
+        .from(‘groups’)
+        .update({ total_sessions: newSess.session_number })
+        .eq(‘id’, session.group_id);
+    }
 
     res.json({ success: true, new_session: newSess });
   } catch (err) {
-    console.error('[cancel]', err.message);
+    console.error(‘[cancel]’, err.message);
     res.status(500).json({ error: err.message });
   }
 });

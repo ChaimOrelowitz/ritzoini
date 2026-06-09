@@ -404,6 +404,8 @@ export default function GroupDetailPage() {
   const [success,  setSuccess]  = useState('');
   const [showEdit, setShowEdit] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
+  const [cancelDialogResolve, setCancelDialogResolve] = useState(null);
   const sessionRefs = useRef({});
 
   const load = useCallback(async () => {
@@ -431,9 +433,21 @@ export default function GroupDetailPage() {
   }
 
   async function handleCancel(sessionId) {
-    if (!window.confirm('Cancel this session? A replacement will be added at the end.')) return;
-    try { await api.cancelSession(sessionId); setSuccess('Session cancelled — replacement added at end.'); load(); }
-    catch (err) { setError(err.message); }
+    const choice = await showCancelDialog();
+    if (choice === null) return;
+    const addSession = choice === 'makeup';
+    try {
+      await api.cancelSession(sessionId, addSession);
+      setSuccess(addSession ? 'Session cancelled — makeup session added at end.' : 'Session cancelled.');
+      load();
+    } catch (err) { setError(err.message); }
+  }
+
+  function showCancelDialog() {
+    return new Promise(resolve => {
+      setCancelDialogResolve(() => resolve);
+      setShowCancelDialog(true);
+    });
   }
 
   async function handleUncancel(sessionId) {
@@ -496,6 +510,26 @@ export default function GroupDetailPage() {
   return (
     <div>
       <button className="back-link" onClick={() => navigate('/')}>← Back to Groups</button>
+
+      {showCancelDialog && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: 'var(--white)', borderRadius: 10, padding: '28px 32px', maxWidth: 380, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}>
+            <h3 style={{ margin: '0 0 10px' }}>Cancel Session</h3>
+            <p style={{ margin: '0 0 22px', color: 'var(--gray-600)' }}>Would you like to add a makeup session at the end?</p>
+            <div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}>
+              <button className="btn btn-primary" onClick={() => { setShowCancelDialog(false); cancelDialogResolve('makeup'); }}>
+                Yes — add makeup session
+              </button>
+              <button className="btn btn-secondary" onClick={() => { setShowCancelDialog(false); cancelDialogResolve('no-makeup'); }}>
+                No — cancel only
+              </button>
+              <button className="btn btn-ghost" onClick={() => { setShowCancelDialog(false); cancelDialogResolve(null); }}>
+                Never mind
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="page-header">
         <div style={{ flex: 1 }}>
