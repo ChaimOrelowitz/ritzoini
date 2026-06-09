@@ -50,14 +50,17 @@ router.get('/unpaid', requireAuth, requireAdmin, async (req, res) => {
 // GET export all sessions by pay period as multi-sheet Excel
 router.get('/export', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { supervisor_id } = req.query;
+    const { supervisor_id, start_date, end_date } = req.query;
     if (!supervisor_id) return res.status(400).json({ error: 'supervisor_id required' });
 
-    // Load all pay periods
-    const { data: periods, error: pErr } = await supabase
+    // Load pay periods, optionally filtered by date range
+    let periodsQuery = supabase
       .from('pay_periods')
       .select('id, label, start_date, end_date')
       .order('start_date', { ascending: true });
+    if (start_date) periodsQuery = periodsQuery.gte('end_date', start_date);
+    if (end_date)   periodsQuery = periodsQuery.lte('start_date', end_date);
+    const { data: periods, error: pErr } = await periodsQuery;
     if (pErr) throw pErr;
 
     const wb = XLSX.utils.book_new();

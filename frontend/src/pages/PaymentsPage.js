@@ -4,10 +4,13 @@ import supabase from '../supabaseClient';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 
-async function exportPaymentsExcel(supervisor_id, supervisorName) {
+async function exportPaymentsExcel(supervisor_id, supervisorName, start_date, end_date) {
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
-  const res = await fetch(`${API}/api/payments/export?supervisor_id=${supervisor_id}`, {
+  const params = new URLSearchParams({ supervisor_id });
+  if (start_date) params.set('start_date', start_date);
+  if (end_date)   params.set('end_date', end_date);
+  const res = await fetch(`${API}/api/payments/export?${params}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {
@@ -626,6 +629,8 @@ function ReconcileTab() {
   const [supervisors, setSupervisors]   = useState([]);
   const [periods, setPeriods]           = useState([]);
   const [supervisorId, setSupervisorId] = useState('');
+  const [exportStart, setExportStart]   = useState('');
+  const [exportEnd, setExportEnd]       = useState('');
   const [exporting, setExporting]       = useState(false);
   const [exportError, setExportError]   = useState('');
 
@@ -640,7 +645,7 @@ function ReconcileTab() {
     try {
       const sup = supervisors.find(s => s.id === supervisorId);
       const name = sup ? `${sup.first_name} ${sup.last_name}` : 'export';
-      await exportPaymentsExcel(supervisorId, name);
+      await exportPaymentsExcel(supervisorId, name, exportStart, exportEnd);
     } catch (e) { setExportError(e.message); }
     finally { setExporting(false); }
   }
@@ -658,15 +663,29 @@ function ReconcileTab() {
       </div>
 
       {/* Export */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-        <button
-          className="btn btn-gold btn-sm"
-          onClick={handleExport}
-          disabled={exporting || !supervisorId}>
-          {exporting ? 'Exporting…' : '⬇ Export Excel'}
-        </button>
-        {!supervisorId && <span style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>Select a supervisor to export</span>}
-        {exportError && <span style={{ fontSize: '0.8rem', color: '#dc2626' }}>{exportError}</span>}
+      <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '14px 16px', marginBottom: 24 }}>
+        <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--navy)', marginBottom: 12 }}>Export to Excel</div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">From</label>
+            <input className="form-input" type="date" value={exportStart} onChange={e => setExportStart(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">To</label>
+            <input className="form-input" type="date" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
+          </div>
+          <button
+            className="btn btn-gold btn-sm"
+            onClick={handleExport}
+            disabled={exporting || !supervisorId}
+            style={{ marginBottom: 1 }}>
+            {exporting ? 'Exporting…' : '⬇ Export Excel'}
+          </button>
+        </div>
+        <div style={{ marginTop: 6, fontSize: '0.78rem', color: 'var(--gray-400)' }}>
+          Leave dates blank to export all periods.
+        </div>
+        {exportError && <div style={{ marginTop: 6, fontSize: '0.8rem', color: '#dc2626' }}>{exportError}</div>}
       </div>
 
       <div>
