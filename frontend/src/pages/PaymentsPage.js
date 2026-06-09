@@ -4,12 +4,13 @@ import supabase from '../supabaseClient';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 
-async function exportPaymentsExcel(supervisor_id, supervisorName, start_date, end_date) {
+async function exportPaymentsExcel(supervisor_id, supervisorName, start_date, end_date, unpaid_only = false) {
   const { data: { session } } = await supabase.auth.getSession();
   const token = session?.access_token;
   const params = new URLSearchParams({ supervisor_id });
-  if (start_date) params.set('start_date', start_date);
-  if (end_date)   params.set('end_date', end_date);
+  if (start_date)  params.set('start_date', start_date);
+  if (end_date)    params.set('end_date', end_date);
+  if (unpaid_only) params.set('unpaid_only', 'true');
   const res = await fetch(`${API}/api/payments/export?${params}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
@@ -639,13 +640,13 @@ function ReconcileTab() {
     api.getPayPeriods().then(setPeriods);
   }, []);
 
-  async function handleExport() {
+  async function handleExport(unpaidOnly = false) {
     if (!supervisorId) return;
     setExporting(true); setExportError('');
     try {
       const sup = supervisors.find(s => s.id === supervisorId);
       const name = sup ? `${sup.first_name} ${sup.last_name}` : 'export';
-      await exportPaymentsExcel(supervisorId, name, exportStart, exportEnd);
+      await exportPaymentsExcel(supervisorId, name, exportStart, exportEnd, unpaidOnly);
     } catch (e) { setExportError(e.message); }
     finally { setExporting(false); }
   }
@@ -676,10 +677,17 @@ function ReconcileTab() {
           </div>
           <button
             className="btn btn-gold btn-sm"
-            onClick={handleExport}
+            onClick={() => handleExport(false)}
             disabled={exporting || !supervisorId}
             style={{ marginBottom: 1 }}>
-            {exporting ? 'Exporting…' : '⬇ Export Excel'}
+            {exporting ? 'Exporting…' : '⬇ Export All'}
+          </button>
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => handleExport(true)}
+            disabled={exporting || !supervisorId}
+            style={{ marginBottom: 1 }}>
+            ⬇ Unpaid Only
           </button>
         </div>
         <div style={{ marginTop: 6, fontSize: '0.78rem', color: 'var(--gray-400)' }}>

@@ -50,7 +50,7 @@ router.get('/unpaid', requireAuth, requireAdmin, async (req, res) => {
 // GET export all sessions by pay period as multi-sheet Excel
 router.get('/export', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { supervisor_id, start_date, end_date } = req.query;
+    const { supervisor_id, start_date, end_date, unpaid_only } = req.query;
     if (!supervisor_id) return res.status(400).json({ error: 'supervisor_id required' });
 
     // Load pay periods, optionally filtered by date range
@@ -75,7 +75,8 @@ router.get('/export', requireAuth, requireAdmin, async (req, res) => {
         .order('session_date', { ascending: true });
       if (error) throw error;
 
-      const rows = (data || []).filter(s => s.group?.supervisor_id === supervisor_id);
+      let rows = (data || []).filter(s => s.group?.supervisor_id === supervisor_id);
+      if (unpaid_only === 'true') rows = rows.filter(s => !s.paid);
       if (!rows.length) continue;
 
       const sheetData = [
