@@ -433,7 +433,7 @@ export default function GroupDetailPage() {
   }
 
   async function handleCancel(sessionId) {
-    const choice = await showCancelDialog();
+    const choice = await promptCancelChoice();
     if (choice === null) return;
     const addSession = choice === 'makeup';
     try {
@@ -443,7 +443,7 @@ export default function GroupDetailPage() {
     } catch (err) { setError(err.message); }
   }
 
-  function showCancelDialog() {
+  function promptCancelChoice() {
     return new Promise(resolve => {
       setCancelDialogResolve(() => resolve);
       setShowCancelDialog(true);
