@@ -268,7 +268,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
             </button>
           ) : (
             <>
-              <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session.id)}>
+              <button type="button" className="btn btn-danger btn-xs" onClick={() => onCancel(session)}>
                 Cancel
               </button>
               <button type="button" className="btn btn-outline btn-xs"
@@ -406,6 +406,7 @@ export default function GroupDetailPage() {
   const [showBulk, setShowBulk] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [cancelDialogResolve, setCancelDialogResolve] = useState(null);
+  const [cancelingSession, setCancelingSession] = useState(null);
   const sessionRefs = useRef({});
 
   const load = useCallback(async () => {
@@ -432,19 +433,20 @@ export default function GroupDetailPage() {
     setSessions(prev => prev.map(s => s.id === updated.id ? { ...s, ...updated } : s));
   }
 
-  async function handleCancel(sessionId) {
-    const choice = await promptCancelChoice();
+  async function handleCancel(session) {
+    const choice = await promptCancelChoice(session);
     if (choice === null) return;
     const addSession = choice === 'makeup';
     try {
-      await api.cancelSession(sessionId, addSession);
+      await api.cancelSession(session.id, addSession);
       setSuccess(addSession ? 'Session cancelled — makeup session added at end.' : 'Session cancelled.');
       load();
     } catch (err) { setError(err.message); }
   }
 
-  function promptCancelChoice() {
+  function promptCancelChoice(session) {
     return new Promise(resolve => {
+      setCancelingSession(session);
       setCancelDialogResolve(() => resolve);
       setShowCancelDialog(true);
     });
@@ -511,11 +513,21 @@ export default function GroupDetailPage() {
     <div>
       <button className="back-link" onClick={() => navigate('/')}>← Back to Groups</button>
 
-      {showCancelDialog && (
+      {showCancelDialog && cancelingSession && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: 'var(--white)', borderRadius: 10, padding: '28px 32px', maxWidth: 380, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}>
-            <h3 style={{ margin: '0 0 10px' }}>Cancel Session</h3>
-            <p style={{ margin: '0 0 22px', color: 'var(--gray-600)' }}>Would you like to add a makeup session at the end?</p>
+          <div style={{ background: 'var(--white)', borderRadius: 10, padding: '28px 32px', maxWidth: 400, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}>
+            <h3 style={{ margin: '0 0 14px' }}>Cancel Session</h3>
+            <div style={{ background: 'var(--gray-50)', borderRadius: 6, padding: '10px 14px', marginBottom: 18, fontSize: '0.9rem' }}>
+              {group.group_name && <div><strong>{group.group_name}</strong></div>}
+              {group.internal_name && group.internal_name !== group.group_name && (
+                <div style={{ color: 'var(--gray-500)', fontSize: '0.82rem' }}>{group.internal_name}</div>
+              )}
+              <div style={{ marginTop: 4, color: 'var(--gray-600)' }}>
+                {fmtDate(cancelingSession.session_date || cancelingSession.scheduled_date)}
+                {cancelingSession.start_time && ` · ${fmt12(cancelingSession.start_time)}`}
+              </div>
+            </div>
+            <p style={{ margin: '0 0 20px', color: 'var(--gray-600)' }}>Would you like to add a makeup session at the end?</p>
             <div style={{ display: 'flex', gap: 10, flexDirection: 'column' }}>
               <button className="btn btn-primary" onClick={() => { setShowCancelDialog(false); cancelDialogResolve('makeup'); }}>
                 Yes — add makeup session
