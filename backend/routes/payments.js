@@ -16,7 +16,7 @@ router.get('/sessions', requireAuth, requireAdmin, async (req, res) => {
 
     const { data, error } = await supabase
       .from('sessions')
-      .select('id, session_number, session_date, scheduled_date, ecw_time, start_time, status, paid, group:groups!group_id(id, internal_name, group_name, supervisor_id)')
+      .select('id, session_number, session_date, scheduled_date, ecw_time, start_time, status, paid, group:groups!group_id(id, internal_name, group_name, billing_name, supervisor_id)')
       .eq('status', 'completed')
       .gte('session_date', start_date)
       .lte('session_date', end_date)
@@ -36,7 +36,7 @@ router.get('/unpaid', requireAuth, requireAdmin, async (req, res) => {
 
     const { data, error } = await supabase
       .from('sessions')
-      .select('id, session_date, ecw_time, group:groups!group_id(id, internal_name, group_name, supervisor_id)')
+      .select('id, session_date, ecw_time, group:groups!group_id(id, internal_name, group_name, billing_name, supervisor_id)')
       .eq('status', 'completed')
       .eq('paid', false)
       .order('session_date', { ascending: true });

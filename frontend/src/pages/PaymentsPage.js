@@ -428,6 +428,7 @@ function PayPeriodRow({ period, supervisorId }) {
                   <thead>
                     <tr style={{ borderBottom: '2px solid var(--gray-200)', textAlign: 'left' }}>
                       <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Group</th>
+                      <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Billing Name</th>
                       <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Date</th>
                       <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>ECW Time</th>
                       <th style={{ padding: '8px 12px', color: 'var(--gray-500)', fontWeight: 600 }}>Status</th>
@@ -437,6 +438,7 @@ function PayPeriodRow({ period, supervisorId }) {
                     {sessions.map(s => (
                       <tr key={s.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
                         <td style={{ padding: '10px 12px', fontWeight: 500 }}>{s.group?.internal_name || s.group?.group_name || '—'}</td>
+                        <td style={{ padding: '10px 12px', color: 'var(--gray-500)', fontSize: '0.8rem' }}>{s.group?.billing_name || '—'}</td>
                         <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmtDate(s.session_date)}</td>
                         <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmt12(s.ecw_time)}</td>
                         <td style={{ padding: '10px 12px' }}>
@@ -448,7 +450,7 @@ function PayPeriodRow({ period, supervisorId }) {
                       </tr>
                     ))}
                     {!sessions.length && (
-                      <tr><td colSpan={4} style={{ padding: 24, textAlign: 'center', color: 'var(--gray-400)' }}>No completed sessions in this period.</td></tr>
+                      <tr><td colSpan={5} style={{ padding: 24, textAlign: 'center', color: 'var(--gray-400)' }}>No completed sessions in this period.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -566,15 +568,52 @@ function PayPeriodRow({ period, supervisorId }) {
   );
 }
 
+function downloadCSV(rows, filename) {
+  const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const headers = ['Billing Name', 'Internal Name', 'Group Name', 'Date', 'ECW Time', 'Status'];
+  const lines = [
+    headers.join(','),
+    ...rows.map(s => [
+      s.group?.billing_name || '',
+      s.group?.internal_name || '',
+      s.group?.group_name || '',
+      s.session_date || '',
+      s.ecw_time ? fmt12(s.ecw_time) : '',
+      s.paid ? 'Paid' : 'Unpaid',
+    ].map(escape).join(',')),
+  ];
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function ReconcileTab() {
   const [supervisors, setSupervisors]   = useState([]);
   const [periods, setPeriods]           = useState([]);
   const [supervisorId, setSupervisorId] = useState('');
+  const [exportStart, setExportStart]   = useState('');
+  const [exportEnd, setExportEnd]       = useState('');
+  const [exporting, setExporting]       = useState(false);
+  const [exportError, setExportError]   = useState('');
 
   useEffect(() => {
     api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor' || x.role === 'admin')));
     api.getPayPeriods().then(setPeriods);
   }, []);
+
+  async function handleExport() {
+    if (!supervisorId || !exportStart || !exportEnd) return;
+    setExporting(true); setExportError('');
+    try {
+      const sessions = await api.getPaymentSessions(supervisorId, exportStart, exportEnd);
+      const sup = supervisors.find(s => s.id === supervisorId);
+      const name = sup ? `${sup.first_name}_${sup.last_name}` : 'export';
+      downloadCSV(sessions, `payments_${name}_${exportStart}_${exportEnd}.csv`);
+    } catch (e) { setExportError(e.message); }
+    finally { setExporting(false); }
+  }
 
   return (
     <div>
@@ -586,6 +625,29 @@ function ReconcileTab() {
             {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
           </select>
         </div>
+      </div>
+
+      {/* Export */}
+      <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '14px 16px', marginBottom: 24 }}>
+        <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--navy)', marginBottom: 12 }}>Export Sessions</div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">From</label>
+            <input className="form-input" type="date" value={exportStart} onChange={e => setExportStart(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">To</label>
+            <input className="form-input" type="date" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
+          </div>
+          <button
+            className="btn btn-gold btn-sm"
+            onClick={handleExport}
+            disabled={exporting || !supervisorId || !exportStart || !exportEnd}
+            style={{ marginBottom: 1 }}>
+            {exporting ? 'Exporting…' : '⬇ Export CSV'}
+          </button>
+        </div>
+        {exportError && <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#dc2626' }}>{exportError}</div>}
       </div>
 
       <div>
