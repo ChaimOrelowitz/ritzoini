@@ -281,7 +281,19 @@ function PayPeriodRow({ period, supervisorId }) {
   const [savingMappings, setSavingMappings] = useState(false);
   const [confirming, setConfirming]   = useState(false);
   const [error, setError]             = useState('');
+  const [editingBilling, setEditingBilling] = useState(null); // { groupId, value }
   const fileRef = useRef();
+
+  async function saveBillingName(groupId, value) {
+    const trimmed = value.trim();
+    try {
+      await api.updateGroup(groupId, { billing_name: trimmed || null });
+      setSessions(prev => prev.map(s =>
+        s.group?.id === groupId ? { ...s, group: { ...s.group, billing_name: trimmed || null } } : s
+      ));
+    } catch (e) { setError(e.message); }
+    setEditingBilling(null);
+  }
 
   useEffect(() => {
     if (!open || !supervisorId) { setSessions([]); setStubResult(null); setCheckedIds(new Set()); return; }
@@ -438,7 +450,29 @@ function PayPeriodRow({ period, supervisorId }) {
                     {sessions.map(s => (
                       <tr key={s.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
                         <td style={{ padding: '10px 12px', fontWeight: 500 }}>{s.group?.internal_name || s.group?.group_name || '—'}</td>
-                        <td style={{ padding: '10px 12px', color: 'var(--gray-500)', fontSize: '0.8rem' }}>{s.group?.billing_name || '—'}</td>
+                        <td style={{ padding: '6px 12px' }}>
+                          {editingBilling?.groupId === s.group?.id ? (
+                            <input
+                              autoFocus
+                              className="form-input"
+                              style={{ fontSize: '0.8rem', padding: '3px 7px', minWidth: 200 }}
+                              value={editingBilling.value}
+                              onChange={e => setEditingBilling(prev => ({ ...prev, value: e.target.value }))}
+                              onBlur={() => saveBillingName(s.group.id, editingBilling.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') saveBillingName(s.group.id, editingBilling.value);
+                                if (e.key === 'Escape') setEditingBilling(null);
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => setEditingBilling({ groupId: s.group?.id, value: s.group?.billing_name || '' })}
+                              title="Click to edit billing name"
+                              style={{ color: s.group?.billing_name ? 'var(--gray-500)' : 'var(--gray-300)', fontSize: '0.8rem', cursor: 'pointer', borderBottom: '1px dashed var(--gray-300)' }}>
+                              {s.group?.billing_name || 'Set billing name…'}
+                            </span>
+                          )}
+                        </td>
                         <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmtDate(s.session_date)}</td>
                         <td style={{ padding: '10px 12px', color: 'var(--gray-600)' }}>{fmt12(s.ecw_time)}</td>
                         <td style={{ padding: '10px 12px' }}>
