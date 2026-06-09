@@ -161,8 +161,10 @@ export default function CalendarPage() {
           height="auto"
           eventDisplay="block"
           dayMaxEvents={4}
-          slotMinTime="07:00:00"
-          slotMaxTime="23:00:00"
+          slotDuration="00:15:00"
+          slotLabelInterval="01:00:00"
+          slotMinTime="10:30:00"
+          slotMaxTime="22:30:00"
         />
       </div>
     </div>
