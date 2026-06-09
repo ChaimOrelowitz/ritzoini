@@ -48,6 +48,7 @@ export default function CalendarPage() {
   const events = sessions.map(s => {
     const date = s.session_date || s.scheduled_date;
     const time = s.ecw_time || s.start_time || s.scheduled_time;
+    const endTime = s.ecw_end_time || s.end_time;
     const colors = STATUS_COLORS[s.status] || STATUS_COLORS.scheduled;
     const g = s.groups;
     const title = [g?.internal_name, g?.group_name].filter(Boolean).join(' · ');
@@ -56,6 +57,7 @@ export default function CalendarPage() {
       id: s.id,
       title,
       start: time ? `${date}T${time}` : date,
+      end: time && endTime ? `${date}T${endTime}` : undefined,
       allDay: !time,
       backgroundColor: colors.bg,
       borderColor: colors.border,
@@ -162,9 +164,14 @@ export default function CalendarPage() {
           eventDisplay="block"
           dayMaxEvents={4}
           slotDuration="00:15:00"
-          slotLabelInterval="01:00:00"
-          slotMinTime="10:30:00"
+          slotLabelInterval="00:15:00"
+          slotMinTime="07:00:00"
           slotMaxTime="22:30:00"
+          slotLabelContent={arg => {
+            const mins = arg.date.getMinutes();
+            if (mins === 0) return { html: `<span style="font-size:0.8rem;font-weight:600">${arg.text}</span>` };
+            return { html: `<span style="font-size:0.65rem;color:#aaa">:${String(mins).padStart(2,'0')}</span>` };
+          }}
         />
       </div>
     </div>
