@@ -47,6 +47,69 @@ router.get('/unpaid', requireAuth, requireAdmin, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET export all sessions by pay period as multi-sheet Excel
+router.get('/export', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { supervisor_id } = req.query;
+    if (!supervisor_id) return res.status(400).json({ error: 'supervisor_id required' });
+
+    // Load all pay periods
+    const { data: periods, error: pErr } = await supabase
+      .from('pay_periods')
+      .select('id, label, start_date, end_date')
+      .order('start_date', { ascending: true });
+    if (pErr) throw pErr;
+
+    const wb = XLSX.utils.book_new();
+
+    for (const period of (periods || [])) {
+      const { data, error } = await supabase
+        .from('sessions')
+        .select('id, session_date, ecw_time, paid, group:groups!group_id(id, internal_name, group_name, billing_name, supervisor_id)')
+        .eq('status', 'completed')
+        .gte('session_date', period.start_date)
+        .lte('session_date', period.end_date)
+        .order('session_date', { ascending: true });
+      if (error) throw error;
+
+      const rows = (data || []).filter(s => s.group?.supervisor_id === supervisor_id);
+      if (!rows.length) continue;
+
+      const sheetData = [
+        ['Billing Name', 'Internal Name', 'Group Name', 'Date', 'ECW Time', 'Status'],
+        ...rows.map(s => [
+          s.group?.billing_name || '',
+          s.group?.internal_name || '',
+          s.group?.group_name || '',
+          s.session_date || '',
+          s.ecw_time ? s.ecw_time.slice(0, 5) : '',
+          s.paid ? 'Paid' : 'Unpaid',
+        ]),
+      ];
+
+      const ws = XLSX.utils.aoa_to_sheet(sheetData);
+      ws['!cols'] = [40, 28, 28, 14, 12, 10].map(wch => ({ wch }));
+
+      const label = period.label || `${period.start_date} – ${period.end_date}`;
+      // Sheet names max 31 chars, no special chars
+      const sheetName = label.replace(/[\/\\?*\[\]]/g, '-').slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    }
+
+    if (wb.SheetNames.length === 0) {
+      return res.status(404).json({ error: 'No sessions found for this supervisor.' });
+    }
+
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Disposition', 'attachment; filename="payments_export.xlsx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.send(buf);
+  } catch (err) {
+    console.error('[payments export]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST upload Excel pay report and match against DB sessions
 router.post('/upload', requireAuth, requireAdmin, upload.single('file'), async (req, res) => {
   try {
