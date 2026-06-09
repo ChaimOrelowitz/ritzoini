@@ -50,6 +50,11 @@ function GroupCard({ group, onClick, onEndGroup, onToggleAi }) {
         <div style={{ fontWeight: 600, color: 'var(--navy)', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           {group.group_name || group.name}
         </div>
+        {group.internal_name && group.internal_name !== (group.group_name || group.name) && (
+          <div style={{ fontSize: '0.75rem', color: 'var(--gray-400)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {group.internal_name}
+          </div>
+        )}
         <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', marginTop: 2 }}>
           {fmt12(group.ecw_time || group.start_time || group.session_time)}
           {group.ecw_end_time && ` – ${fmt12(group.ecw_end_time)}`}
