@@ -166,7 +166,7 @@ export default function CalendarPage() {
           slotDuration="00:15:00"
           slotLabelInterval="00:15:00"
           slotMinTime="07:00:00"
-          slotMaxTime="22:30:00"
+          slotMaxTime="23:00:00"
           slotLabelContent={arg => {
             const mins = arg.date.getMinutes();
             if (mins === 0) return { html: `<span style="font-size:0.8rem;font-weight:600">${arg.text}</span>` };
