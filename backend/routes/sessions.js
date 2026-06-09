@@ -66,7 +66,7 @@ async function autoCompleteSessions(groupId) {
     if (group?.ai_notes) {
       const existingNote = s.soap_note || s.notes;
       if (existingNote?.trim()) {
-        // Note already exists (e.g. shifted from a cancelled session) — just email it
+        // Note already exists (e.g. shifted from a cancelled session) -- just email it
         shouldEmail = true;
       } else {
         // Generate a new note
@@ -133,7 +133,7 @@ async function checkGroupAutoComplete(groupId) {
     .neq('status', 'completed');
 }
 
-// GET /api/sessions/calendar — all sessions across all groups, with group info
+// GET /api/sessions/calendar -- all sessions across all groups, with group info
 router.get('/calendar', requireAuth, async (req, res) => {
   try {
     const { supervisor_id, include_archived } = req.query;
@@ -167,7 +167,7 @@ router.get('/calendar', requireAuth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// GET /api/sessions/all — sessions dashboard across all groups
+// GET /api/sessions/all -- sessions dashboard across all groups
 router.get('/all', requireAuth, async (req, res) => {
   try {
     const { supervisor_id } = req.query;
@@ -348,32 +348,32 @@ router.patch('/:id', requireAuth, async (req, res) => {
  * Behavior:
  * - Creates a new session at the end (next week from last session)
  * - Shifts notes forward "down the chain"
- *   so the cancelled session’s SOAP note moves to the next session, etc.
+ *   so the cancelled session's SOAP note moves to the next session, etc.
  * - LOCKED sessions are treated as barriers:
  *   - do not move notes into locked sessions
  *   - do not move notes out of locked sessions
  */
-router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
+router.post('/:id/cancel', requireAuth, async (req, res) => {
   try {
     const addSession = req.body.add_session !== false; // default true
 
     const { data: session, error: loadErr } = await supabase
-      .from(‘sessions’)
+      .from('sessions')
       .select(
-        ‘id, group_id, status, session_number, ‘ +
-        ‘group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)’
+        'id, group_id, status, session_number, ' +
+        'group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)'
       )
-      .eq(‘id’, req.params.id)
+      .eq('id', req.params.id)
       .single();
 
-    if (loadErr || !session) return res.status(404).json({ error: ‘Session not found’ });
-    if (session.status === ‘cancelled’) return res.status(400).json({ error: ‘Already cancelled’ });
-    if (req.user.role === ‘supervisor’ && session.group.supervisor_id !== req.user.id)
-      return res.status(403).json({ error: ‘Access denied’ });
+    if (loadErr || !session) return res.status(404).json({ error: 'Session not found' });
+    if (session.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
+    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
+      return res.status(403).json({ error: 'Access denied' });
 
     const g = session.group;
 
-    const sTime = (g.start_time || g.session_time || ‘09:00’).slice(0, 5);
+    const sTime = (g.start_time || g.session_time || '09:00').slice(0, 5);
     const dur = parseInt(g.default_duration, 10) || 45;
     const eTime = addMinutesToTime(sTime, dur);
     const ecwTime = (g.ecw_time || sTime).slice(0, 5);
@@ -381,13 +381,13 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
 
     // Fetch all sessions ascending, including notes and locked status
     const { data: allSessions, error: allErr } = await supabase
-      .from(‘sessions’)
-      .select(‘id, session_number, session_date, scheduled_date, soap_note, notes, locked, status’)
-      .eq(‘group_id’, session.group_id)
-      .order(‘session_number’, { ascending: true });
+      .from('sessions')
+      .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked, status')
+      .eq('group_id', session.group_id)
+      .order('session_number', { ascending: true });
 
     if (allErr) throw allErr;
-    if (!allSessions?.length) throw new Error(‘No sessions found for group’);
+    if (!allSessions?.length) throw new Error('No sessions found for group');
 
     let newSess = null;
 
@@ -395,16 +395,16 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
       // Compute where the new replacement session will go
       const lastSess = allSessions[allSessions.length - 1];
       const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
-      if (!lastDateStr) throw new Error(‘Last session has no date’);
+      if (!lastDateStr) throw new Error('Last session has no date');
 
-      const [y, m, d] = lastDateStr.split(‘-’).map(Number);
+      const [y, m, d] = lastDateStr.split('-').map(Number);
       const nextDate = new Date(y, m - 1, d);
       nextDate.setDate(nextDate.getDate() + 7);
-      const nextDateStr = nextDate.toISOString().split(‘T’)[0];
+      const nextDateStr = nextDate.toISOString().split('T')[0];
       const newNum = (lastSess.session_number || 0) + 1;
 
       const { data: inserted, error: insertErr } = await supabase
-        .from(‘sessions’)
+        .from('sessions')
         .insert({
           group_id: session.group_id,
           session_number: newNum,
@@ -422,7 +422,7 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
           duration: dur,
           session_day_of_week: nextDate.getDay(),
 
-          status: ‘scheduled’,
+          status: 'scheduled',
           status_manual_override: false,
 
           soap_note: null,
@@ -438,8 +438,8 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
     const chainBase = allSessions
       .filter(s =>
         s.session_number >= session.session_number &&
-        s.status !== ‘cancelled’ &&
-        s.status !== ‘group_ended’
+        s.status !== 'cancelled' &&
+        s.status !== 'group_ended'
       )
       .sort((a, b) => a.session_number - b.session_number);
 
@@ -447,7 +447,7 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
 
     const hasCancelledInChain = chain.some(s => s.id === session.id);
     if (!hasCancelledInChain) {
-      console.warn(‘[cancel] Cancelled session not found in shift chain, skipping note shift’);
+      console.warn('[cancel] Cancelled session not found in shift chain, skipping note shift');
     } else {
       for (let i = chain.length - 2; i >= 0; i--) {
         const from = chain[i];
@@ -459,41 +459,41 @@ router.post(‘/:id/cancel’, requireAuth, async (req, res) => {
         if (!note || !String(note).trim()) continue;
 
         const { error: upToErr } = await supabase
-          .from(‘sessions’)
+          .from('sessions')
           .update({ soap_note: note, notes: note })
-          .eq(‘id’, to.id);
+          .eq('id', to.id);
         if (upToErr) throw upToErr;
 
         const { error: clearFromErr } = await supabase
-          .from(‘sessions’)
+          .from('sessions')
           .update({ soap_note: null, notes: null })
-          .eq(‘id’, from.id);
+          .eq('id', from.id);
         if (clearFromErr) throw clearFromErr;
       }
     }
 
     // Cancel original
     const { error: cancelErr } = await supabase
-      .from(‘sessions’)
+      .from('sessions')
       .update({
-        status: ‘cancelled’,
+        status: 'cancelled',
         status_manual_override: true,
         ...(newSess ? { replacement_session_id: newSess.id } : {}),
       })
-      .eq(‘id’, req.params.id);
+      .eq('id', req.params.id);
     if (cancelErr) throw cancelErr;
 
     // Bump total_sessions only if we added a makeup session
     if (addSession && newSess) {
       await supabase
-        .from(‘groups’)
+        .from('groups')
         .update({ total_sessions: newSess.session_number })
-        .eq(‘id’, session.group_id);
+        .eq('id', session.group_id);
     }
 
     res.json({ success: true, new_session: newSess });
   } catch (err) {
-    console.error(‘[cancel]’, err.message);
+    console.error('[cancel]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
