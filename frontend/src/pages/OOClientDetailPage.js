@@ -43,13 +43,30 @@ export default function OOClientDetailPage() {
   const [client, setClient] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showRaw, setShowRaw] = useState(false);
+  const [syncingFs, setSyncingFs] = useState(false);
+  const [fsMsg, setFsMsg] = useState('');
+
+  function loadClient() {
+    return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
+  }
 
   useEffect(() => {
-    api.get(`/oo/clients/${id}`)
-      .then(setClient)
-      .catch(() => navigate('/oo/clients'))
-      .finally(() => setLoading(false));
-  }, [id, navigate]);
+    loadClient().finally(() => setLoading(false));
+  }, [id]); // eslint-disable-line
+
+  async function syncFacesheet() {
+    setSyncingFs(true);
+    setFsMsg('');
+    try {
+      const r = await api.post(`/oo/clients/${id}/sync-facesheet`, {});
+      setFsMsg(`Synced ${r.count} diagnosis${r.count !== 1 ? 'es' : ''}`);
+      await loadClient();
+    } catch (ex) {
+      setFsMsg(ex.message);
+    } finally {
+      setSyncingFs(false);
+    }
+  }
 
   if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
   if (!client) return null;
@@ -117,6 +134,54 @@ export default function OOClientDetailPage() {
         <Field label="Eligibility"        value={client.eligibility_result} />
       </Section>
 
+      {/* Diagnoses */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+            Diagnoses (Problem List)
+            {raw.facesheet_synced_at && (
+              <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 8, fontSize: '0.7rem' }}>
+                synced {new Date(raw.facesheet_synced_at).toLocaleDateString()}
+              </span>
+            )}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {fsMsg && <span style={{ fontSize: '0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('Error') ? 'var(--danger)' : 'var(--success, #16a34a)' }}>{fsMsg}</span>}
+            {client.insync_patient_id && (
+              <button className="btn-ghost" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={syncFacesheet} disabled={syncingFs}>
+                {syncingFs ? 'Syncing…' : 'Sync from InSync'}
+              </button>
+            )}
+          </div>
+        </div>
+        {raw.diagnoses?.length > 0 ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--gray-50)' }}>
+                <th style={thSt}>ICD-10</th>
+                <th style={thSt}>Problem</th>
+                <th style={thSt}>Onset</th>
+                <th style={thSt}>Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {raw.diagnoses.map((d, i) => (
+                <tr key={i} style={{ borderBottom: '1px solid var(--gray-100)' }}>
+                  <td style={tdSt}><strong>{d.icd_10}</strong></td>
+                  <td style={tdSt}>{d.problem}</td>
+                  <td style={{ ...tdSt, color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>{d.date_onset || '—'}</td>
+                  <td style={{ ...tdSt, color: 'var(--gray-400)' }}>{d.notes || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p style={{ color: 'var(--gray-300)', fontSize: '0.85rem', margin: 0 }}>
+            {client.insync_patient_id ? 'No diagnoses synced yet — click "Sync from InSync"' : 'Sync client from InSync to enable facesheet sync.'}
+          </p>
+        )}
+      </div>
+
       {/* Insurance */}
       <Section title="Insurance">
         <Field label="Current Payer" value={client.payer_plan_name} />
@@ -154,3 +219,6 @@ export default function OOClientDetailPage() {
     </div>
   );
 }
+
+const thSt = { padding: '6px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--gray-200)' };
+const tdSt = { padding: '8px 10px', verticalAlign: 'top' };

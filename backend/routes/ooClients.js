@@ -512,6 +512,106 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
   res.json({ ok: true, created, updated, skipped, total: rows.length });
 });
 
+// ── Facesheet sync (diagnoses / problem list) ─────────────────────────────
+
+function parseProblemList(html) {
+  const idx = html.indexOf('id="dvFSProblemList"');
+  if (idx === -1) return [];
+  const section = html.slice(idx, idx + 15000);
+
+  const tbodyMatch = section.match(/<tbody>([\s\S]*?)<\/tbody>/);
+  if (!tbodyMatch) return [];
+  const tbody = tbodyMatch[1];
+
+  const diagnoses = [];
+  const rowRegex = /<tr>([\s\S]*?)<\/tr>/g;
+  let m;
+  while ((m = rowRegex.exec(tbody)) !== null) {
+    const row = m[1];
+    const tds = [...row.matchAll(/<td([^>]*)>([\s\S]*?)<\/td>/g)].map(t => ({ attrs: t[1], inner: t[2] }));
+    if (tds.length < 3) continue;
+
+    const dateOnset  = tds[0].inner.replace(/<[^>]+>/g, '').trim();
+    const problem    = tds[1].attrs.match(/title="([^"]+)"/)?.[1]?.trim();
+    const icd        = tds[2].attrs.match(/title="([^"]+)"/)?.[1]?.trim();
+    const notes      = tds[3]?.attrs.match(/title="([^"]*)"/)?.[1]?.trim() || null;
+
+    if (icd && problem) {
+      diagnoses.push({ date_onset: dateOnset || null, problem, icd_10: icd, notes: notes || null });
+    }
+  }
+  return diagnoses;
+}
+
+router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
+  const { data: client, error: clientErr } = await supabase
+    .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
+  if (clientErr) return res.status(404).json({ error: 'Client not found' });
+  if (!client.insync_patient_id) return res.status(400).json({ error: 'No InSync Patient ID on file — sync from InSync first.' });
+
+  const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+  ]);
+  const username = userSetting?.value || process.env.INSYNC_USERNAME;
+  const password = passSetting?.value || process.env.INSYNC_PASSWORD;
+  if (!username || !password) return res.status(400).json({ error: 'InSync credentials not configured.' });
+
+  let cookie;
+  try { cookie = await inSyncLogin(username, password); }
+  catch (err) { return res.status(401).json({ error: err.message }); }
+
+  const patientId = client.insync_patient_id;
+  const priPhyId  = client.insync_data?.PrimaryPhysician || 0;
+  const headers   = {
+    'User-Agent': INSYNC_UA,
+    'Cookie': cookie,
+    'Origin': INSYNC_BASE,
+    'Referer': `${INSYNC_BASE}/Dashboard/dashboard`,
+    'X-Requested-With': 'XMLHttpRequest',
+  };
+
+  try {
+    // Step 1: set patient context
+    await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+    });
+
+    await fetch(`${INSYNC_BASE}/PatientSearch/SaveVisitedPatientLog`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `patientID=${patientId}`,
+    });
+
+    // Step 2: fetch facesheet HTML
+    const fsRes = await fetch(`${INSYNC_BASE}/facesheet`, {
+      headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
+    });
+    if (!fsRes.ok) return res.status(502).json({ error: `Facesheet returned ${fsRes.status}` });
+
+    const html = await fsRes.text();
+    if (html.includes('SIGN IN') && html.includes('Password')) {
+      return res.status(401).json({ error: 'InSync session expired during facesheet load.' });
+    }
+
+    const diagnoses = parseProblemList(html);
+
+    // Merge into insync_data
+    const updatedInsyncData = {
+      ...(client.insync_data || {}),
+      diagnoses,
+      facesheet_synced_at: new Date().toISOString(),
+    };
+    await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
+
+    res.json({ ok: true, diagnoses, count: diagnoses.length });
+  } catch (err) {
+    res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
+  }
+});
+
 router.get('/:id', requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('oo_clients')
