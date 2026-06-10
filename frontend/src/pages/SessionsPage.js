@@ -31,10 +31,16 @@ const STATUS_LABEL = {
   skipped:   'Skipped',
 };
 
-function CheckCell({ checked, onChange }) {
+function fmtDateTime(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
+function CheckCell({ checked, onChange, timestamp, messageId }) {
   return (
     <td
-      style={{ textAlign: 'center', padding: '8px 12px' }}
+      style={{ textAlign: 'center', padding: '6px 12px', verticalAlign: 'middle' }}
       onClick={e => e.stopPropagation()}
     >
       <input
@@ -43,6 +49,17 @@ function CheckCell({ checked, onChange }) {
         onChange={e => onChange(e.target.checked)}
         style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--gold)' }}
       />
+      {timestamp && (
+        <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 2, whiteSpace: 'nowrap' }}>
+          {fmtDateTime(timestamp)}
+          {messageId && (
+            <a href={`https://resend.com/emails/${messageId}`} target="_blank" rel="noreferrer"
+              style={{ marginLeft: 4, color: 'var(--navy)', textDecoration: 'underline' }}>
+              view
+            </a>
+          )}
+        </div>
+      )}
     </td>
   );
 }
@@ -88,9 +105,9 @@ function SessionRow({ session, onToggle }) {
           {STATUS_LABEL[session.status] || session.status}
         </span>
       </td>
-      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)} />
-      <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} />
-      <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)} />
+      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} />
+      <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} timestamp={session.ready_to_lock_at} />
+      <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)}        timestamp={session.locked_at} />
     </tr>
   );
 }
