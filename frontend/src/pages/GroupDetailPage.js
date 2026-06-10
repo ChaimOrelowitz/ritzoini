@@ -236,19 +236,32 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
           )}
         </div>
 
-        {/* Checkboxes */}
-        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginLeft: 'auto' }}>
+        {/* Checkboxes + timestamps */}
+        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginLeft: 'auto' }}>
           {[
-            { field: 'email_sent',    label: 'Email Sent' },
-            { field: 'ready_to_lock', label: 'Ready to Lock' },
-            { field: 'locked',        label: 'Locked (ECW)' },
-          ].map(({ field, label }) => (
-            <label key={field} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-700)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={!!session[field]}
-                onChange={e => handleCheckbox(field, e.target.checked)}
-                style={{ width: 14, height: 14, accentColor: 'var(--navy)' }} />
-              {label}
-            </label>
+            { field: 'email_sent',    label: 'Email Sent',    tsField: 'email_sent_at',    messageId: session.email_message_id },
+            { field: 'ready_to_lock', label: 'Ready to Lock', tsField: 'ready_to_lock_at', messageId: null },
+            { field: 'locked',        label: 'Locked (ECW)',  tsField: 'locked_at',         messageId: null },
+          ].map(({ field, label, tsField, messageId }) => (
+            <div key={field} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-700)', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!session[field]}
+                  onChange={e => handleCheckbox(field, e.target.checked)}
+                  style={{ width: 14, height: 14, accentColor: 'var(--navy)' }} />
+                {label}
+              </label>
+              {session[tsField] && (
+                <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>
+                  {fmtDateTime(session[tsField])}
+                  {messageId && (
+                    <a href={`https://resend.com/emails/${messageId}`} target="_blank" rel="noreferrer"
+                      style={{ marginLeft: 4, color: 'var(--navy)', textDecoration: 'underline' }}>
+                      view
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
           ))}
         </div>
 
@@ -287,35 +300,6 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
         </div>
       </div>
 
-      {/* Timestamps */}
-      {(session.email_sent_at || session.ready_to_lock_at || session.locked_at) && (
-        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--gray-100)', fontSize: '0.75rem', color: 'var(--gray-400)' }}>
-          {session.email_sent_at && (
-            <span>
-              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Email sent:</span>{' '}
-              {fmtDateTime(session.email_sent_at)}
-              {session.email_message_id && (
-                <a href={`https://resend.com/emails/${session.email_message_id}`} target="_blank" rel="noreferrer"
-                  style={{ marginLeft: 6, color: 'var(--navy)', textDecoration: 'underline', fontSize: '0.72rem' }}>
-                  view
-                </a>
-              )}
-            </span>
-          )}
-          {session.ready_to_lock_at && (
-            <span>
-              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Ready to lock:</span>{' '}
-              {fmtDateTime(session.ready_to_lock_at)}
-            </span>
-          )}
-          {session.locked_at && (
-            <span>
-              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Locked:</span>{' '}
-              {fmtDateTime(session.locked_at)}
-            </span>
-          )}
-        </div>
-      )}
 
       {/* SOAP Note */}
       <div style={{ marginTop: 10 }}>
