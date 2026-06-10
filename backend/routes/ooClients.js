@@ -267,10 +267,7 @@ router.post('/assign-referral', requireAuth, async (req, res) => {
     const hit = allClients.find(c => {
       const cfn = (c.first_name || '').toLowerCase().trim();
       const cln = (c.last_name  || '').toLowerCase().trim();
-      const nameMatch = cfn === fn && cln === ln;
-      if (!nameMatch) return false;
-      if (dob && c.dob) return c.dob === dob;
-      return nameMatch;
+      return cfn === fn && cln === ln;
     });
 
     if (hit) {
