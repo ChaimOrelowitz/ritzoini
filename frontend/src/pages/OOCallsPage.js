@@ -44,7 +44,7 @@ function NewApptModal({ client, onClose, onCreated }) {
     setSaving(true);
     setErr('');
     try {
-      await api.post('/api/oo/appointments', { client_id: client.id, date, time, duration, repeat_weeks: repeatWeeks });
+      await api.post('/oo/appointments', { client_id: client.id, date, time, duration, repeat_weeks: repeatWeeks });
       onCreated();
     } catch (ex) {
       setErr(ex.message);
@@ -100,7 +100,7 @@ function NotesModal({ client, appt, onClose, onSaved }) {
     setSaving(true);
     setErr('');
     try {
-      await api.patch(`/api/oo/appointments/${appt.id}`, { raw_notes: notes });
+      await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: notes });
       onSaved();
     } catch (ex) {
       setErr(ex.message);
@@ -217,7 +217,7 @@ export default function OOCallsPage() {
     setLoading(true);
     setErr('');
     try {
-      const d = await api.get('/api/oo/appointments/calls');
+      const d = await api.get('/oo/appointments/calls');
       setData(d);
     } catch (ex) {
       setErr(ex.message);
