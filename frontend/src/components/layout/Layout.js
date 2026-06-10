@@ -102,33 +102,9 @@ export default function Layout() {
       <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={closeNav} />
       <aside className={`sidebar${sidebarOpen ? ' open' : ''}`}>
 
-        {/* Section switcher */}
-        <div style={{
-          display: 'flex', gap: 12, padding: '14px 16px 10px',
-          borderBottom: '1px solid var(--gray-100)',
-        }}>
-          {SECTIONS.map(s => (
-            <button
-              key={s.key}
-              onClick={() => switchSection(s.key)}
-              style={{
-                background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0',
-                fontSize: '0.72rem', fontWeight: section === s.key ? 700 : 400,
-                color: section === s.key ? 'var(--navy)' : 'var(--gray-400)',
-                borderBottom: section === s.key ? '2px solid var(--navy)' : '2px solid transparent',
-                transition: 'color 0.15s, border-color 0.15s',
-              }}
-              onMouseEnter={e => { if (section !== s.key) e.currentTarget.style.color = 'var(--gray-600)'; }}
-              onMouseLeave={e => { if (section !== s.key) e.currentTarget.style.color = 'var(--gray-400)'; }}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-
         <div className="sidebar-logo">
-          <h1>{section === 'ritzoini' ? 'Ritzoini' : section === 'one-on-one' ? 'One-On-One' : 'Peer Supervision'}</h1>
-          <span>{section === 'ritzoini' ? 'Group Management' : section === 'one-on-one' ? 'Individual Therapy' : 'Supervision'}</span>
+          <h1>Ritzoini</h1>
+          <span>Practice Management</span>
         </div>
 
         <nav className="sidebar-nav" onClick={closeNav}>
@@ -148,6 +124,33 @@ export default function Layout() {
       </aside>
 
       <main className="main-content">
+        {/* Section switcher */}
+        <div style={{
+          display: 'flex', justifyContent: 'center', gap: 28,
+          padding: '12px 0 10px',
+          borderBottom: '1px solid var(--gray-100)',
+          marginBottom: 0,
+        }}>
+          {SECTIONS.map(s => (
+            <button
+              key={s.key}
+              onClick={() => switchSection(s.key)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: '2px 0',
+                fontSize: '0.8rem', fontWeight: section === s.key ? 700 : 400,
+                color: section === s.key ? 'var(--navy)' : 'var(--gray-400)',
+                borderBottom: section === s.key ? '2px solid var(--navy)' : '2px solid transparent',
+                transition: 'color 0.15s, border-color 0.15s',
+                letterSpacing: '0.01em',
+              }}
+              onMouseEnter={e => { if (section !== s.key) e.currentTarget.style.color = 'var(--gray-600)'; }}
+              onMouseLeave={e => { if (section !== s.key) e.currentTarget.style.color = 'var(--gray-400)'; }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
         <Outlet />
       </main>
     </div>
