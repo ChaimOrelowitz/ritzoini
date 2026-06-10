@@ -94,7 +94,7 @@ async function sendSoapNoteEmail(sessionId) {
 
     const html = `<p><strong>GROUP NAME:</strong> ${groupName}</p><p>${formattedNote}</p>`;
 
-    await resend.emails.send({
+    const result = await resend.emails.send({
       from: process.env.FROM_EMAIL,
       to: process.env.TO_EMAIL,
       reply_to: supervisorEmail || process.env.FROM_EMAIL,
@@ -102,7 +102,12 @@ async function sendSoapNoteEmail(sessionId) {
       html,
     });
 
-    await supabase.from('sessions').update({ email_sent: true }).eq('id', sessionId);
+    const emailId = result?.data?.id || result?.id || null;
+    await supabase.from('sessions').update({
+      email_sent: true,
+      email_sent_at: new Date().toISOString(),
+      email_message_id: emailId,
+    }).eq('id', sessionId);
 
     console.log(`[mailer] Sent SOAP note email for session ${sessionId}`);
   } catch (err) {

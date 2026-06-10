@@ -782,7 +782,8 @@ router.post('/:id/submit-notes', requireAuth, async (req, res) => {
         notes: note,
         status: 'completed',
         status_manual_override: true,
-        ready_to_lock: true
+        ready_to_lock: true,
+        ready_to_lock_at: new Date().toISOString(),
       })
       .eq('id', req.params.id).select().single();
     if (error) throw error;

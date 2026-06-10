@@ -12,6 +12,12 @@ function fmt12(t) {
   return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
 }
 
+function fmtDateTime(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+}
+
 function fmtPhone(raw) {
   if (!raw) return '';
   const d = (raw + '').replace(/\D/g, '').slice(0, 10);
@@ -280,6 +286,36 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
           )}
         </div>
       </div>
+
+      {/* Timestamps */}
+      {(session.email_sent_at || session.ready_to_lock_at || session.locked_at) && (
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--gray-100)', fontSize: '0.75rem', color: 'var(--gray-400)' }}>
+          {session.email_sent_at && (
+            <span>
+              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Email sent:</span>{' '}
+              {fmtDateTime(session.email_sent_at)}
+              {session.email_message_id && (
+                <a href={`https://resend.com/emails/${session.email_message_id}`} target="_blank" rel="noreferrer"
+                  style={{ marginLeft: 6, color: 'var(--navy)', textDecoration: 'underline', fontSize: '0.72rem' }}>
+                  view
+                </a>
+              )}
+            </span>
+          )}
+          {session.ready_to_lock_at && (
+            <span>
+              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Ready to lock:</span>{' '}
+              {fmtDateTime(session.ready_to_lock_at)}
+            </span>
+          )}
+          {session.locked_at && (
+            <span>
+              <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Locked:</span>{' '}
+              {fmtDateTime(session.locked_at)}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* SOAP Note */}
       <div style={{ marginTop: 10 }}>

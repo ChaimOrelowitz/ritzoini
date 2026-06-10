@@ -115,7 +115,7 @@ router.post('/check-replies', async (req, res) => {
       if (!match) { skipped++; continue; }
       if (match.ready_to_lock) { skipped++; continue; }
 
-      await supabase.from('sessions').update({ ready_to_lock: true }).eq('id', match.id);
+      await supabase.from('sessions').update({ ready_to_lock: true, ready_to_lock_at: new Date().toISOString() }).eq('id', match.id);
       processed++;
       console.log(`[email] Marked ready_to_lock for session ${match.id}`);
     }

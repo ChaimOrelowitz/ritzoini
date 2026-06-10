@@ -66,6 +66,7 @@ CREATE TABLE sessions (
     CHECK (status IN ('scheduled', 'completed', 'cancelled')),
   notes TEXT,
   email_sent_at TIMESTAMPTZ,
+  email_message_id TEXT,
   ready_to_lock_at TIMESTAMPTZ,
   locked_at TIMESTAMPTZ,
   locked_by UUID REFERENCES profiles(id),
