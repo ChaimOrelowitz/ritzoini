@@ -238,7 +238,16 @@ export default function OOClientsPage() {
           </div>
 
           {assignPreview && !assignPreview.error && (
-            <div style={{ marginTop: 14, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginBottom: 10 }}>
+                Parsed {assignPreview.total} entr{assignPreview.total === 1 ? 'y' : 'ies'} from paste:
+                {assignPreview.parsed?.map((c, i) => (
+                  <span key={i} style={{ marginLeft: 8, color: 'var(--gray-500)' }}>
+                    {c.first_name} {c.last_name}{c.dob ? ` (${fmtDob(c.dob)})` : ''}
+                  </span>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
               {assignPreview.matched.length > 0 && (
                 <div>
                   <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
@@ -254,7 +263,7 @@ export default function OOClientsPage() {
               {assignPreview.unmatched.length > 0 && (
                 <div>
                   <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                    Not found ({assignPreview.unmatched.length}) — add them manually
+                    Not found in system ({assignPreview.unmatched.length})
                   </div>
                   {assignPreview.unmatched.map((c, i) => (
                     <div key={i} style={{ fontSize: '0.8rem', color: '#92400e', padding: '2px 0' }}>
@@ -263,6 +272,7 @@ export default function OOClientsPage() {
                   ))}
                 </div>
               )}
+              </div>
             </div>
           )}
           {assignPreview?.error && (

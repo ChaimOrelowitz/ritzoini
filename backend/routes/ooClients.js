@@ -280,7 +280,7 @@ router.post('/assign-referral', requireAuth, async (req, res) => {
     }
   }
 
-  res.json({ matched, unmatched, total: parsed.length });
+  res.json({ matched, unmatched, parsed, total: parsed.length });
 });
 
 router.post('/assign-referral/confirm', requireAuth, async (req, res) => {
