@@ -12,6 +12,7 @@ import PaymentsPage from './pages/PaymentsPage';
 import SessionsPage from './pages/SessionsPage';
 import ComingSoonPage from './pages/ComingSoonPage';
 import OOClientsPage from './pages/OOClientsPage';
+import OOClientDetailPage from './pages/OOClientDetailPage';
 import OOReferralSourcesPage from './pages/OOReferralSourcesPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
@@ -50,6 +51,7 @@ export default function App() {
           {/* One-On-One section */}
           <Route path="oo" element={<OOClientsPage />} />
           <Route path="oo/clients"          element={<OOClientsPage />} />
+          <Route path="oo/clients/:id"      element={<OOClientDetailPage />} />
           <Route path="oo/referral-sources" element={<OOReferralSourcesPage />} />
           <Route path="oo/sessions" element={<ComingSoonPage title="One-On-One Sessions" />} />
           <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />

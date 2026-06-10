@@ -488,7 +488,17 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
       existing = data;
     }
 
-    const payload = { first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email, status, updated_at: new Date().toISOString() };
+    const payload = {
+      first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email, status,
+      insync_patient_id: row.PatientId || null,
+      address:           (row.Address || '').trim() || null,
+      payer_plan_name:   (row.PayerPlanName || '').trim() || null,
+      eligibility_result:(row.EligibilityResult || '').trim() || null,
+      referring_provider:(row.ReferringProviderName || '').trim() || null,
+      counselor:         (row.Counselor || '').trim() || null,
+      insync_data:       row,
+      updated_at:        new Date().toISOString(),
+    };
 
     if (existing) {
       const { error } = await supabase.from('oo_clients').update(payload).eq('id', existing.id);
@@ -500,6 +510,16 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
   }
 
   res.json({ ok: true, created, updated, skipped, total: rows.length });
+});
+
+router.get('/:id', requireAuth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('oo_clients')
+    .select('*, oo_referral_sources(id, name, notes_email)')
+    .eq('id', req.params.id)
+    .single();
+  if (error) return res.status(404).json({ error: 'Client not found' });
+  res.json(data);
 });
 
 module.exports = router;

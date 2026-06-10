@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
 function fmtDob(d) {
@@ -13,6 +14,7 @@ const EMPTY_FORM = {
 };
 
 export default function OOClientsPage() {
+  const navigate = useNavigate();
   const [clients, setClients] = useState([]);
   const [sources, setSources] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -361,7 +363,7 @@ export default function OOClientsPage() {
             </thead>
             <tbody>
               {filtered.map(c => (
-                <tr key={c.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
+                <tr key={c.id} onClick={() => navigate(`/oo/clients/${c.id}`)} style={{ borderBottom: '1px solid var(--gray-100)', cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background='var(--gray-50)'} onMouseLeave={e => e.currentTarget.style.background=''}>
                   <td style={{ padding: '7px 10px', fontWeight: 600, color: 'var(--navy)', whiteSpace: 'nowrap' }}>{c.last_name || '—'}</td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>{c.first_name || '—'}</td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>{fmtDob(c.dob) || '—'}</td>
@@ -383,8 +385,8 @@ export default function OOClientsPage() {
                     }}>{c.status || 'active'}</span>
                   </td>
                   <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
-                    <button className="btn btn-outline btn-xs" onClick={() => openEdit(c)} style={{ marginRight: 6 }}>Edit</button>
-                    <button className="btn btn-outline btn-xs" onClick={() => handleDelete(c.id)} style={{ color: '#dc2626', borderColor: '#fca5a5' }}>Delete</button>
+                    <button className="btn btn-outline btn-xs" onClick={e => { e.stopPropagation(); openEdit(c); }} style={{ marginRight: 6 }}>Edit</button>
+                    <button className="btn btn-outline btn-xs" onClick={e => { e.stopPropagation(); handleDelete(c.id); }} style={{ color: '#dc2626', borderColor: '#fca5a5' }}>Delete</button>
                   </td>
                 </tr>
               ))}
