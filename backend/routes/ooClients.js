@@ -293,4 +293,185 @@ router.post('/assign-referral/confirm', requireAuth, async (req, res) => {
   res.json({ ok: true, updated: client_ids.length });
 });
 
+// ── InSync Live Sync ─────────────────────────────────────────────
+
+const INSYNC_BASE   = 'https://thedscenter.insynchcs.com';
+const INSYNC_URL    = `${INSYNC_BASE}/PatientSearch/BindPatientList`;
+const INSYNC_UA     = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
+
+async function inSyncLogin(username, password) {
+  // Step 1: GET /account — grab initial session cookie
+  const step1 = await fetch(`${INSYNC_BASE}/account`, {
+    headers: { 'User-Agent': INSYNC_UA, 'Accept': 'text/html,application/xhtml+xml,*/*' },
+    redirect: 'follow',
+  });
+  const cookies1 = (step1.headers.getSetCookie?.() || []).map(c => c.split(';')[0]);
+
+  // Step 2: POST / — submit credentials
+  const loginBody = new URLSearchParams({
+    UserName: username,
+    Password: password,
+    PageID: 'PatientSearch',
+    hdnPageListVal: 'PatientSearch',
+    IsAzureAd: 'False',
+    IsAutoLoginWithCookie: 'False',
+    GeoLocation: '',
+    GeoErrorCode: '',
+    GeoErrorMessage: '',
+  });
+
+  const step2 = await fetch(`${INSYNC_BASE}/`, {
+    method: 'POST',
+    headers: {
+      'User-Agent': INSYNC_UA,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Origin': INSYNC_BASE,
+      'Referer': `${INSYNC_BASE}/account`,
+      'Cookie': cookies1.join('; '),
+      'Accept': 'text/html,application/xhtml+xml,*/*',
+    },
+    body: loginBody.toString(),
+    redirect: 'follow',
+  });
+
+  const cookies2 = (step2.headers.getSetCookie?.() || []).map(c => c.split(';')[0]);
+  const allCookies = [...cookies1, ...cookies2].join('; ');
+
+  // Check we're not back on the login page
+  const text = await step2.text();
+  if (text.includes('SIGN IN') && text.includes('Password')) {
+    throw new Error('InSync login failed — check username/password');
+  }
+
+  return allCookies;
+}
+
+const INSYNC_BODY = {
+  draw: 1,
+  columns: [
+    { data: 'PatientId',          name: 'PatientId',          searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'BlankData',          name: 'Icons',              searchable: true, orderable: false, visible: true,  search: { value: '', regex: false } },
+    { data: 'LastName',           name: 'LastName',           searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'FirstName',          name: 'FirstName',          searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'MRNNumber',          name: 'MRNNumber',          searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'DOB',                name: 'DOB',                searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'Gender',             name: 'Gender',             searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'PrimaryProviderName',name: 'PrimaryProvider',    searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'Address',            name: 'Address',            searchable: true, orderable: true,  visible: true,  search: { value: '', regex: false } },
+    { data: 'MobileNo',           name: 'MobileNo',           searchable: true, orderable: true,  visible: false, search: { value: '', regex: false } },
+    { data: 'PatientEmail',       name: 'PatientEmail',       searchable: true, orderable: true,  visible: false, search: { value: '', regex: false } },
+    { data: 'BlankData',          name: 'Notes',              searchable: true, orderable: false, visible: true,  search: { value: '', regex: false } },
+  ],
+  order: [{ column: 0, dir: 'desc' }],
+  start: 0,
+  length: 500,
+  search: { value: '', regex: false },
+  SearchText: '',
+  PatientDetails: JSON.stringify({
+    IsAllowToSearchPatientOutsideOfBedBoard: 'True',
+    IsAdvanceSearch: true,
+    ServiceProvider: 0,
+    PayerPlanId: 0,
+    PatientStatus: '9,53,54',
+    PrimaryProvider: '2317',
+    PrimaryFacility: '199',
+    IsSearchedWithSavedQuery: true,
+    OrderingProviderID: 0,
+    FamilyMemberID: 0,
+    FamilyMemberName: '',
+  }),
+  PageName: '',
+  IsIncludeInActive: false,
+};
+
+function parseDobMDY(raw) {
+  if (!raw) return null;
+  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return null;
+  return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+}
+
+router.post('/sync-insync', requireAuth, async (req, res) => {
+  // Load credentials from app_settings
+  const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+  ]);
+
+  const username = userSetting?.value || process.env.INSYNC_USERNAME;
+  const password = passSetting?.value || process.env.INSYNC_PASSWORD;
+  if (!username || !password) return res.status(400).json({ error: 'InSync credentials not configured. Click ⚙ to set them.' });
+
+  let cookie;
+  try {
+    cookie = await inSyncLogin(username, password);
+  } catch (err) {
+    return res.status(401).json({ error: err.message });
+  }
+
+  let insyncData;
+  try {
+    const response = await fetch(INSYNC_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Cookie': cookie,
+        'Origin': INSYNC_BASE,
+        'Referer': `${INSYNC_BASE}/PatientSearch/Index?PageName=caseloadexpand&caseLoadProvider=0&caseLoadFacility=199&caseLoadStatus=0`,
+        'User-Agent': INSYNC_UA,
+      },
+      body: JSON.stringify(INSYNC_BODY),
+    });
+    if (!response.ok) return res.status(502).json({ error: `InSync returned ${response.status}` });
+    insyncData = await response.json();
+  } catch (err) {
+    return res.status(502).json({ error: `Failed to reach InSync: ${err.message}` });
+  }
+
+  const rows = insyncData?.data;
+  if (!Array.isArray(rows)) return res.status(502).json({ error: 'Unexpected InSync response — login may have failed' });
+
+  let created = 0, updated = 0, skipped = 0;
+
+  for (const row of rows) {
+    const first = (row.FirstName || '').trim() || null;
+    const last  = (row.LastName  || '').trim() || null;
+    const dob   = parseDobMDY(row.DOB) || null;
+    const mrn   = (row.MRNNumber || '').trim() || null;
+    const sex   = row.Gender === 'F' ? 'F' : row.Gender === 'M' ? 'M' : null;
+    const phone  = (row.PhoneNumber || '').trim() || null;
+    const mobile = (row.MobileNumber || row.MobileNo || '').trim() || null;
+    const email  = (row.Email || row.PatientEmail || '').trim() || null;
+    const status = row.PatientActive === false ? 'inactive' : 'active';
+
+    if (!first && !last) { skipped++; continue; }
+
+    // Match by MRN first, then first+last+dob, then first+last
+    let existing = null;
+    if (mrn) {
+      const { data } = await supabase.from('oo_clients').select('id').eq('mrn', mrn).maybeSingle();
+      existing = data;
+    }
+    if (!existing && first && last) {
+      let q = supabase.from('oo_clients').select('id').eq('first_name', first).eq('last_name', last);
+      if (dob) q = q.eq('dob', dob);
+      const { data } = await q.maybeSingle();
+      existing = data;
+    }
+
+    const payload = { first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email, status, updated_at: new Date().toISOString() };
+
+    if (existing) {
+      const { error } = await supabase.from('oo_clients').update(payload).eq('id', existing.id);
+      if (error) skipped++; else updated++;
+    } else {
+      const { error } = await supabase.from('oo_clients').insert({ ...payload });
+      if (error) skipped++; else created++;
+    }
+  }
+
+  res.json({ ok: true, created, updated, skipped, total: rows.length });
+});
+
 module.exports = router;

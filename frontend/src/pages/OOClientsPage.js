@@ -26,6 +26,13 @@ export default function OOClientsPage() {
   const [importing, setImporting] = useState(false);
   const fileRef = useRef();
 
+  // InSync sync
+  const [showInSyncSettings, setShowInSyncSettings] = useState(false);
+  const [inSyncUser, setInSyncUser] = useState('');
+  const [inSyncPass, setInSyncPass] = useState('');
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState(null);
+
   // Assign referral source
   const [showAssign, setShowAssign] = useState(false);
   const [assignSourceId, setAssignSourceId] = useState('');
@@ -95,6 +102,28 @@ export default function OOClientsPage() {
     if (!window.confirm('Delete this client?')) return;
     await api.delete(`/oo/clients/${id}`);
     setClients(cs => cs.filter(c => c.id !== id));
+  }
+
+  async function handleSaveInSyncCreds() {
+    await Promise.all([
+      api.post('/settings/insync_username', { value: inSyncUser }),
+      api.post('/settings/insync_password', { value: inSyncPass }),
+    ]);
+    setShowInSyncSettings(false);
+  }
+
+  async function handleSync() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const result = await api.post('/oo/clients/sync-insync', {});
+      setSyncResult(result);
+      await loadAll();
+    } catch (err) {
+      setSyncResult({ error: err.message });
+    } finally {
+      setSyncing(false);
+    }
   }
 
   async function handleAssignPreview() {
@@ -174,10 +203,44 @@ export default function OOClientsPage() {
           onChange={e => setSearch(e.target.value)}
           style={{ width: 240, fontSize: '0.85rem' }}
         />
-        <button className="btn btn-outline btn-sm" onClick={() => setShowImport(s => !s)}>Import from InSync</button>
+        <button className="btn btn-outline btn-sm" onClick={() => { setSyncing(false); setSyncResult(null); handleSync(); }} disabled={syncing}>
+          {syncing ? 'Syncing…' : 'Sync from InSync'}
+        </button>
+        <button className="btn btn-outline btn-sm" onClick={() => setShowInSyncSettings(s => !s)} title="Configure InSync cookie">⚙</button>
+        <button className="btn btn-outline btn-sm" onClick={() => setShowImport(s => !s)}>Import Excel</button>
         <button className="btn btn-outline btn-sm" onClick={() => { setShowAssign(s => !s); setAssignPreview(null); }}>Assign Referral Source</button>
         <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Client</button>
       </div>
+
+      {/* InSync cookie settings */}
+      {showInSyncSettings && (
+        <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: '14px 20px', marginBottom: 16, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '0 0 200px' }}>
+            <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>InSync Username</label>
+            <input className="input" value={inSyncUser} onChange={e => setInSyncUser(e.target.value)} placeholder="Corelowitz" style={{ fontSize: '0.85rem' }} autoComplete="off" />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '0 0 200px' }}>
+            <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>InSync Password</label>
+            <input className="input" type="password" value={inSyncPass} onChange={e => setInSyncPass(e.target.value)} style={{ fontSize: '0.85rem' }} autoComplete="new-password" />
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-primary btn-sm" onClick={handleSaveInSyncCreds} disabled={!inSyncUser.trim() || !inSyncPass.trim()}>Save</button>
+            <button className="btn btn-outline btn-sm" onClick={() => setShowInSyncSettings(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Sync result */}
+      {syncResult && (
+        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: '0.82rem',
+          background: syncResult.error ? '#fef2f2' : '#f0fdf4',
+          border: `1px solid ${syncResult.error ? '#fca5a5' : '#86efac'}`,
+          color: syncResult.error ? '#dc2626' : '#166534' }}>
+          {syncResult.error
+            ? `Error: ${syncResult.error}`
+            : `Sync complete — ${syncResult.created} created, ${syncResult.updated} updated${syncResult.skipped > 0 ? `, ${syncResult.skipped} skipped` : ''} (${syncResult.total} total from InSync)`}
+        </div>
+      )}
 
       {/* Import panel */}
       {showImport && (
