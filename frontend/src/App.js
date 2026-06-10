@@ -10,6 +10,7 @@ import CalendarPage from './pages/CalendarPage';
 import SetPasswordPage from './pages/SetPasswordPage';
 import PaymentsPage from './pages/PaymentsPage';
 import SessionsPage from './pages/SessionsPage';
+import ComingSoonPage from './pages/ComingSoonPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -43,6 +44,16 @@ export default function App() {
           } />
           {/* Legacy redirect */}
           <Route path="users" element={<Navigate to="/supervisors" replace />} />
+
+          {/* One-On-One section */}
+          <Route path="oo" element={<ComingSoonPage title="One-On-One" />} />
+          <Route path="oo/clients"  element={<ComingSoonPage title="Clients" />} />
+          <Route path="oo/sessions" element={<ComingSoonPage title="One-On-One Sessions" />} />
+          <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />
+
+          {/* Peer Supervision section */}
+          <Route path="ps" element={<ComingSoonPage title="Peer Supervision" />} />
+          <Route path="ps/sessions" element={<ComingSoonPage title="Peer Supervision Sessions" />} />
         </Route>
       </Routes>
     </BrowserRouter>
