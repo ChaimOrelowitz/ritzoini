@@ -17,6 +17,15 @@ function Field({ label, value }) {
   );
 }
 
+function FieldWide({ label, value }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
+      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+      <span style={{ fontSize: '0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-300)' }}>{value || '—'}</span>
+    </div>
+  );
+}
+
 function Section({ title, children }) {
   return (
     <div style={{ marginBottom: 28 }}>
@@ -45,7 +54,13 @@ export default function OOClientDetailPage() {
   if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
   if (!client) return null;
 
-  const rs = client.oo_referral_sources;
+  const rs  = client.oo_referral_sources;
+  const raw = client.insync_data || {};
+
+  // Parse PrimaryPayers: "PAYER A (dates)!@#PAYER B (dates)"
+  const primaryPayers = raw.PrimaryPayers
+    ? raw.PrimaryPayers.split('!@#').map(s => s.trim()).filter(Boolean)
+    : [];
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 900 }}>
@@ -85,19 +100,34 @@ export default function OOClientDetailPage() {
 
       {/* Contact */}
       <Section title="Contact">
-        <Field label="Phone"  value={client.phone} />
-        <Field label="Mobile" value={client.mobile} />
-        <Field label="Email"  value={client.email} />
-        <Field label="Address" value={client.address} />
+        <Field label="Phone"   value={client.phone} />
+        <Field label="Mobile"  value={client.mobile} />
+        <Field label="Email"   value={client.email || raw.PatientEmail || null} />
+        <Field label="Age"     value={raw.PatientAge || null} />
+        <FieldWide label="Address" value={client.address} />
       </Section>
 
       {/* InSync info */}
       <Section title="InSync">
-        <Field label="Payer"              value={client.payer_plan_name} />
-        <Field label="Eligibility"        value={client.eligibility_result} />
-        <Field label="Referring Provider" value={client.referring_provider} />
+        <Field label="Primary Provider"   value={raw.PrimaryProviderName || null} />
+        <Field label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
         <Field label="Counselor"          value={client.counselor} />
-        <Field label="Program"            value={client.program} />
+        <Field label="Patient Note"       value={raw.PatientNote || null} />
+        <Field label="Created By"         value={raw.Created_By ? `${raw.Created_By} on ${raw.Created_On || ''}` : null} />
+        <Field label="Eligibility"        value={client.eligibility_result} />
+      </Section>
+
+      {/* Insurance */}
+      <Section title="Insurance">
+        <Field label="Current Payer" value={client.payer_plan_name} />
+        {primaryPayers.length > 1 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
+            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Payer History</span>
+            {primaryPayers.map((p, i) => (
+              <span key={i} style={{ fontSize: '0.85rem', color: 'var(--gray-700)' }}>{p}</span>
+            ))}
+          </div>
+        ) : null}
       </Section>
 
       {/* Referral source */}
