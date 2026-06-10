@@ -11,6 +11,8 @@ import SetPasswordPage from './pages/SetPasswordPage';
 import PaymentsPage from './pages/PaymentsPage';
 import SessionsPage from './pages/SessionsPage';
 import ComingSoonPage from './pages/ComingSoonPage';
+import OOClientsPage from './pages/OOClientsPage';
+import OOReferralSourcesPage from './pages/OOReferralSourcesPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -46,8 +48,9 @@ export default function App() {
           <Route path="users" element={<Navigate to="/supervisors" replace />} />
 
           {/* One-On-One section */}
-          <Route path="oo" element={<ComingSoonPage title="One-On-One" />} />
-          <Route path="oo/clients"  element={<ComingSoonPage title="Clients" />} />
+          <Route path="oo" element={<OOClientsPage />} />
+          <Route path="oo/clients"          element={<OOClientsPage />} />
+          <Route path="oo/referral-sources" element={<OOReferralSourcesPage />} />
           <Route path="oo/sessions" element={<ComingSoonPage title="One-On-One Sessions" />} />
           <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />
 

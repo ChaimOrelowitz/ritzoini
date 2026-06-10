@@ -88,6 +88,25 @@ export const api = {
   // Billing / Pay Stub
   saveBillingMappings: (mappings, entries) => authFetch('/api/billing/save-mappings', { method: 'POST', body: JSON.stringify({ mappings, entries }) }),
 
+  // Generic helpers (used by OO / PS sections)
+  get:    (path)        => authFetch(`/api${path}`),
+  post:   (path, body)  => authFetch(`/api${path}`, { method: 'POST',   body: JSON.stringify(body) }),
+  put:    (path, body)  => authFetch(`/api${path}`, { method: 'PUT',    body: JSON.stringify(body) }),
+  patch:  (path, body)  => authFetch(`/api${path}`, { method: 'PATCH',  body: JSON.stringify(body) }),
+  delete: (path)        => authFetch(`/api${path}`, { method: 'DELETE' }),
+  postForm: async (path, formData) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    const res = await fetch(`${API}/api${path}`, {
+      method: 'POST',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+      body: formData,
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.error || 'Upload failed');
+    return json;
+  },
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),

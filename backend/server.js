@@ -30,6 +30,7 @@ app.use('/api/bulk-import',  require('./routes/bulkImport'));
 app.use('/api/billing',      require('./routes/billing'));
 app.use('/api/cron',         require('./routes/cron'));
 app.use('/api/email',        require('./routes/email'));
+app.use('/api/oo/clients',   require('./routes/ooClients'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });
