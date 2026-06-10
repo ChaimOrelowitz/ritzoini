@@ -197,4 +197,103 @@ router.post('/import/insync', requireAuth, upload.single('file'), async (req, re
   res.json({ ok: true, created, updated, skipped, total: clients.length });
 });
 
+// ── Assign Referral Source from Pasted List ──────────────────────
+
+function parseDobStr(s) {
+  if (!s) return null;
+  s = s.trim();
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+  if (m) {
+    const yr = m[3].length === 2 ? '20' + m[3] : m[3];
+    return `${yr}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  }
+  return null;
+}
+
+function parseReferralPaste(text) {
+  const DATE_RE = /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/;
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const results = [];
+  let pendingFirst = null;
+
+  for (const line of lines) {
+    const dateMatch = line.match(DATE_RE);
+    if (dateMatch) {
+      const dob = parseDobStr(dateMatch[1]);
+      const namePart = line.replace(dateMatch[0], '').trim();
+      const words = namePart.split(/\s+/).filter(Boolean);
+      let first = null, last = null;
+      if (words.length >= 2) {
+        first = words[0];
+        last = words.slice(1).join(' ');
+        pendingFirst = null;
+      } else if (words.length === 1) {
+        last = words[0];
+        first = pendingFirst;
+        pendingFirst = null;
+      } else {
+        pendingFirst = null;
+        continue;
+      }
+      if (first || last) results.push({ first_name: first || '', last_name: last || '', dob });
+    } else {
+      const words = line.split(/\s+/).filter(Boolean);
+      pendingFirst = words.length >= 1 ? line : null;
+    }
+  }
+  return results;
+}
+
+router.post('/assign-referral', requireAuth, async (req, res) => {
+  const { referral_source_id, paste_text } = req.body;
+  if (!referral_source_id) return res.status(400).json({ error: 'referral_source_id required' });
+  if (!paste_text)         return res.status(400).json({ error: 'paste_text required' });
+
+  const parsed = parseReferralPaste(paste_text);
+  if (!parsed.length) return res.status(400).json({ error: 'No clients found in pasted text' });
+
+  const { data: allClients } = await supabase
+    .from('oo_clients')
+    .select('id, first_name, last_name, dob');
+
+  const matched = [];
+  const unmatched = [];
+
+  for (const p of parsed) {
+    const fn = (p.first_name || '').toLowerCase().trim();
+    const ln = (p.last_name  || '').toLowerCase().trim();
+    const dob = p.dob;
+
+    const hit = allClients.find(c => {
+      const cfn = (c.first_name || '').toLowerCase().trim();
+      const cln = (c.last_name  || '').toLowerCase().trim();
+      const nameMatch = cfn === fn && cln === ln;
+      if (!nameMatch) return false;
+      if (dob && c.dob) return c.dob === dob;
+      return nameMatch;
+    });
+
+    if (hit) {
+      matched.push({ ...hit, parsed_dob: dob });
+    } else {
+      unmatched.push(p);
+    }
+  }
+
+  res.json({ matched, unmatched, total: parsed.length });
+});
+
+router.post('/assign-referral/confirm', requireAuth, async (req, res) => {
+  const { referral_source_id, client_ids } = req.body;
+  if (!referral_source_id || !client_ids?.length)
+    return res.status(400).json({ error: 'referral_source_id and client_ids required' });
+
+  const { error } = await supabase
+    .from('oo_clients')
+    .update({ referral_source_id, updated_at: new Date().toISOString() })
+    .in('id', client_ids);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ ok: true, updated: client_ids.length });
+});
+
 module.exports = router;

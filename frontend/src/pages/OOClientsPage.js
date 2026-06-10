@@ -26,6 +26,13 @@ export default function OOClientsPage() {
   const [importing, setImporting] = useState(false);
   const fileRef = useRef();
 
+  // Assign referral source
+  const [showAssign, setShowAssign] = useState(false);
+  const [assignSourceId, setAssignSourceId] = useState('');
+  const [assignPaste, setAssignPaste] = useState('');
+  const [assignPreview, setAssignPreview] = useState(null); // { matched, unmatched }
+  const [assignLoading, setAssignLoading] = useState(false);
+
   useEffect(() => { loadAll(); }, []);
 
   async function loadAll() {
@@ -90,6 +97,41 @@ export default function OOClientsPage() {
     setClients(cs => cs.filter(c => c.id !== id));
   }
 
+  async function handleAssignPreview() {
+    if (!assignSourceId || !assignPaste.trim()) return;
+    setAssignLoading(true);
+    setAssignPreview(null);
+    try {
+      const result = await api.post('/oo/clients/assign-referral', {
+        referral_source_id: assignSourceId,
+        paste_text: assignPaste,
+      });
+      setAssignPreview(result);
+    } catch (err) {
+      setAssignPreview({ error: err.message });
+    } finally {
+      setAssignLoading(false);
+    }
+  }
+
+  async function handleAssignConfirm() {
+    if (!assignPreview?.matched?.length) return;
+    setAssignLoading(true);
+    try {
+      await api.post('/oo/clients/assign-referral/confirm', {
+        referral_source_id: assignSourceId,
+        client_ids: assignPreview.matched.map(c => c.id),
+      });
+      await loadAll();
+      setShowAssign(false);
+      setAssignPaste('');
+      setAssignPreview(null);
+      setAssignSourceId('');
+    } finally {
+      setAssignLoading(false);
+    }
+  }
+
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -133,6 +175,7 @@ export default function OOClientsPage() {
           style={{ width: 240, fontSize: '0.85rem' }}
         />
         <button className="btn btn-outline btn-sm" onClick={() => setShowImport(s => !s)}>Import from InSync</button>
+        <button className="btn btn-outline btn-sm" onClick={() => { setShowAssign(s => !s); setAssignPreview(null); }}>Assign Referral Source</button>
         <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Client</button>
       </div>
 
@@ -152,6 +195,78 @@ export default function OOClientsPage() {
           )}
           {importResult?.error && (
             <span style={{ fontSize: '0.8rem', color: '#dc2626' }}>{importResult.error}</span>
+          )}
+        </div>
+      )}
+
+      {/* Assign Referral Source panel */}
+      {showAssign && (
+        <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: '16px 20px', marginBottom: 20 }}>
+          <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--gray-600)', marginBottom: 12 }}>Assign Referral Source</div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+              <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Referral Source</label>
+              <select className="input" value={assignSourceId} onChange={e => { setAssignSourceId(e.target.value); setAssignPreview(null); }} style={{ fontSize: '0.85rem' }}>
+                <option value="">— Select —</option>
+                {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 300px' }}>
+              <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Paste Client List</label>
+              <textarea
+                className="input"
+                value={assignPaste}
+                onChange={e => { setAssignPaste(e.target.value); setAssignPreview(null); }}
+                rows={6}
+                placeholder={"Mendel\nTaub   11/13/2025\n\nMoshe Gutman   03/11/2013"}
+                style={{ fontSize: '0.82rem', fontFamily: 'monospace', resize: 'vertical' }}
+              />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary btn-sm" onClick={handleAssignPreview} disabled={assignLoading || !assignSourceId || !assignPaste.trim()}>
+              {assignLoading ? 'Matching…' : 'Preview Matches'}
+            </button>
+            {assignPreview?.matched?.length > 0 && (
+              <button className="btn btn-primary btn-sm" onClick={handleAssignConfirm} disabled={assignLoading}
+                style={{ background: '#166534', borderColor: '#166534' }}>
+                Confirm — assign {assignPreview.matched.length} client{assignPreview.matched.length !== 1 ? 's' : ''}
+              </button>
+            )}
+            <button className="btn btn-outline btn-sm" onClick={() => { setShowAssign(false); setAssignPaste(''); setAssignPreview(null); setAssignSourceId(''); }}>Close</button>
+          </div>
+
+          {assignPreview && !assignPreview.error && (
+            <div style={{ marginTop: 14, display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+              {assignPreview.matched.length > 0 && (
+                <div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                    Matched ({assignPreview.matched.length})
+                  </div>
+                  {assignPreview.matched.map((c, i) => (
+                    <div key={i} style={{ fontSize: '0.8rem', color: '#166534', padding: '2px 0' }}>
+                      ✓ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {assignPreview.unmatched.length > 0 && (
+                <div>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                    Not found ({assignPreview.unmatched.length}) — add them manually
+                  </div>
+                  {assignPreview.unmatched.map((c, i) => (
+                    <div key={i} style={{ fontSize: '0.8rem', color: '#92400e', padding: '2px 0' }}>
+                      ✗ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          {assignPreview?.error && (
+            <div style={{ marginTop: 10, fontSize: '0.8rem', color: '#dc2626' }}>{assignPreview.error}</div>
           )}
         </div>
       )}
