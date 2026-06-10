@@ -300,14 +300,29 @@ const INSYNC_URL    = `${INSYNC_BASE}/PatientSearch/BindPatientList`;
 const INSYNC_UA     = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
 async function inSyncLogin(username, password) {
-  // Step 1: GET /account — grab initial session cookie
-  const step1 = await fetch(`${INSYNC_BASE}/account`, {
-    headers: { 'User-Agent': INSYNC_UA, 'Accept': 'text/html,application/xhtml+xml,*/*' },
-    redirect: 'follow',
-  });
-  const cookies1 = (step1.headers.getSetCookie?.() || []).map(c => c.split(';')[0]);
+  const cookieJar = new Map();
 
-  // Step 2: POST / — submit credentials
+  function addCookies(response) {
+    for (const raw of (response.headers.getSetCookie?.() || [])) {
+      const pair = raw.split(';')[0];
+      const eq = pair.indexOf('=');
+      if (eq === -1) continue;
+      cookieJar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
+    }
+  }
+
+  function cookieStr() {
+    return [...cookieJar.entries()].map(([k, v]) => `${k}=${v}`).join('; ');
+  }
+
+  // Step 1: GET /account — collect initial cookies
+  const step1 = await fetch(`${INSYNC_BASE}/account`, {
+    headers: { 'User-Agent': INSYNC_UA, 'Accept': 'text/html,*/*' },
+    redirect: 'manual',
+  });
+  addCookies(step1);
+
+  // Step 2: POST / then follow all redirects manually, collecting cookies at each hop
   const loginBody = new URLSearchParams({
     UserName: username,
     Password: password,
@@ -320,30 +335,43 @@ async function inSyncLogin(username, password) {
     GeoErrorMessage: '',
   });
 
-  const step2 = await fetch(`${INSYNC_BASE}/`, {
-    method: 'POST',
-    headers: {
-      'User-Agent': INSYNC_UA,
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Origin': INSYNC_BASE,
-      'Referer': `${INSYNC_BASE}/account`,
-      'Cookie': cookies1.join('; '),
-      'Accept': 'text/html,application/xhtml+xml,*/*',
-    },
-    body: loginBody.toString(),
-    redirect: 'follow',
-  });
+  let url    = `${INSYNC_BASE}/`;
+  let method = 'POST';
+  let body   = loginBody.toString();
 
-  const cookies2 = (step2.headers.getSetCookie?.() || []).map(c => c.split(';')[0]);
-  const allCookies = [...cookies1, ...cookies2].join('; ');
+  for (let hop = 0; hop < 10; hop++) {
+    const res = await fetch(url, {
+      method,
+      headers: {
+        'User-Agent': INSYNC_UA,
+        'Content-Type': method === 'POST' ? 'application/x-www-form-urlencoded' : undefined,
+        'Origin': INSYNC_BASE,
+        'Referer': `${INSYNC_BASE}/account`,
+        'Cookie': cookieStr(),
+        'Accept': 'text/html,*/*',
+      },
+      body: method === 'POST' ? body : undefined,
+      redirect: 'manual',
+    });
 
-  // Check we're not back on the login page
-  const text = await step2.text();
-  if (text.includes('SIGN IN') && text.includes('Password')) {
-    throw new Error('InSync login failed — check username/password');
+    addCookies(res);
+
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location') || '';
+      url    = loc.startsWith('http') ? loc : `${INSYNC_BASE}${loc}`;
+      method = 'GET';
+      body   = undefined;
+    } else {
+      const text = await res.text();
+      if (text.includes('SIGN IN') && text.includes('Password')) {
+        throw new Error('InSync login failed — check username/password in ⚙ settings');
+      }
+      break;
+    }
   }
 
-  return allCookies;
+  if (!cookieJar.size) throw new Error('InSync login returned no cookies — login may have failed');
+  return cookieStr();
 }
 
 const INSYNC_BODY = {
