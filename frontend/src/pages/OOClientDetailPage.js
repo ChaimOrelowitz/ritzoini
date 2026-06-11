@@ -74,7 +74,7 @@ function buildPreviewText(client, appt, fields, tp) {
   ].filter(l => l !== null).join('\n');
 }
 
-// ── Right-column components ───────────────────────────────────────────────────
+// ── Right column components ───────────────────────────────────────────────────
 
 function RField({ label, value }) {
   if (!value) return null;
@@ -86,11 +86,12 @@ function RField({ label, value }) {
   );
 }
 
-function RSection({ title, children }) {
+function RSection({ title, action, children }) {
   return (
-    <div style={{ marginBottom: 22 }}>
-      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
-        {title}
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
+        <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', flex: 1 }}>{title}</span>
+        {action}
       </div>
       {children}
     </div>
@@ -235,7 +236,6 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
       borderLeft: `5px solid ${style.border}`, borderRadius: 'var(--radius)',
       padding: '14px 18px', marginBottom: 10,
     }}>
-      {/* Top row */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         <div style={{ minWidth: 160 }}>
           {editDate ? (
@@ -271,13 +271,13 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
           <div style={{
-            padding: '5px 10px', fontSize: '0.82rem', width: 120, borderRadius: 'var(--radius)',
+            padding: '5px 10px', fontSize: '0.82rem', width: 110, borderRadius: 'var(--radius)',
             border: `1.5px solid ${style.border}`, background: style.bg, color: style.color,
             fontWeight: 600, textTransform: 'capitalize', boxSizing: 'border-box',
           }}>{appt.status}</div>
         </div>
 
-        <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', marginLeft: 'auto', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', marginLeft: 'auto', flexWrap: 'wrap' }}>
           {[{ field: 'note_sent_at', label: 'Note Sent' }, { field: 'note_done_at', label: 'Done' }].map(({ field, label }) => (
             <div key={field} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-800)', cursor: 'pointer' }}>
@@ -295,7 +295,6 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         </button>
       </div>
 
-      {/* Notes */}
       <div style={{ marginTop: 14 }}>
         <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
           Session Notes
@@ -317,7 +316,6 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         </div>
       </div>
 
-      {/* AI fields */}
       {fields && (
         <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--gray-100)' }}>
           <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>AI-Generated Fields</div>
@@ -405,24 +403,22 @@ export default function OOClientDetailPage() {
   const [loading,  setLoading]  = useState(true);
   const [showRaw,  setShowRaw]  = useState(false);
 
-  // Edit client modal
   const [showEditModal, setShowEditModal] = useState(false);
   const [editForm,      setEditForm]      = useState(EMPTY_EDIT_FORM);
   const [savingClient,  setSavingClient]  = useState(false);
+  const [clientSaveErr, setClientSaveErr] = useState('');
 
-  // Add session
-  const [showAddAppt, setShowAddAppt] = useState(false);
-  const [addForm,     setAddForm]     = useState(EMPTY_ADD_FORM);
-  const [addingAppt,  setAddingAppt]  = useState(false);
+  const [showAddAppt,  setShowAddAppt]  = useState(false);
+  const [addForm,      setAddForm]      = useState(EMPTY_ADD_FORM);
+  const [addingAppt,   setAddingAppt]   = useState(false);
   const [addConflicts, setAddConflicts] = useState([]);
 
-  // InSync / debug
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
-  const [debugHtml,       setDebugHtml]       = useState('');
-  const [debugging,       setDebugging]       = useState(false);
   const [debugFields,     setDebugFields]     = useState(null);
   const [debuggingFields, setDebuggingFields] = useState(false);
+  const [debugHtml,       setDebugHtml]       = useState('');
+  const [debugging,       setDebugging]       = useState(false);
 
   function loadClientData() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
@@ -445,9 +441,8 @@ export default function OOClientDetailPage() {
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
-  // ── Edit client ──
-
   function openEditClient() {
+    setClientSaveErr('');
     setEditForm({
       first_name:   client.first_name   || '',
       last_name:    client.last_name    || '',
@@ -469,16 +464,16 @@ export default function OOClientDetailPage() {
 
   async function handleSaveClient(e) {
     e.preventDefault();
-    setSavingClient(true);
+    setSavingClient(true); setClientSaveErr('');
     try {
       const payload = { ...editForm, referral_source_id: editForm.referral_source_id || null };
       const updated = await api.put(`/oo/clients/${id}`, payload);
       setClient(updated);
       setShowEditModal(false);
+    } catch (ex) {
+      setClientSaveErr(ex.message || 'Save failed');
     } finally { setSavingClient(false); }
   }
-
-  // ── Add session ──
 
   async function handleAddAppt(e) {
     e.preventDefault();
@@ -507,8 +502,6 @@ export default function OOClientDetailPage() {
     finally { setAddingAppt(false); }
   }
 
-  // ── InSync / debug ──
-
   async function syncFacesheet() {
     setSyncingFs(true); setFsMsg('');
     try {
@@ -519,20 +512,18 @@ export default function OOClientDetailPage() {
     finally { setSyncingFs(false); }
   }
 
-  async function debugEncounter() {
-    setDebugging(true); setDebugHtml('');
-    try {
-      const r = await api.get(`/oo/clients/${id}/debug-encounter-html`);
-      setDebugHtml(JSON.stringify(r, null, 2));
-    } catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
-    finally { setDebugging(false); }
-  }
-
   async function debugNoteFields() {
     setDebuggingFields(true); setDebugFields(null);
     try { setDebugFields(await api.get(`/oo/clients/${id}/debug-note-fields`)); }
     catch (ex) { setDebugFields({ error: ex.message }); }
     finally { setDebuggingFields(false); }
+  }
+
+  async function debugEncounter() {
+    setDebugging(true); setDebugHtml('');
+    try { setDebugHtml(JSON.stringify(await api.get(`/oo/clients/${id}/debug-encounter-html`), null, 2)); }
+    catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
+    finally { setDebugging(false); }
   }
 
   function handleApptUpdate(updated) {
@@ -542,14 +533,13 @@ export default function OOClientDetailPage() {
     setAppts(prev => prev.filter(a => a.id !== apptId));
   }
 
-  // ── Render ──
-
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!client) return null;
 
   const rs  = client.oo_referral_sources;
   const raw = client.insync_data || {};
   const age = calcAge(client.dob);
+  const sexLabel = client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex || null;
 
   const primaryPayers = raw.PrimaryPayers
     ? raw.PrimaryPayers.split('!@#').map(s => s.trim()).filter(Boolean)
@@ -562,109 +552,119 @@ export default function OOClientDetailPage() {
     done:      appts.filter(a => a.note_done_at).length,
   };
 
-  const sexLabel = client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex || null;
+  const lastNote = [...appts].reverse().find(a => a.raw_notes?.trim());
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 1280 }}>
+    <div style={{ padding: '24px 32px 48px', maxWidth: 1280 }}>
       <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
 
-      {/* ── Header ── */}
+      {/* ── Header (full width) ── */}
       <div style={{ marginBottom: 20 }}>
-        {/* Name row */}
+        {/* Name + badges + Edit button (all on left) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
           <span className={`badge badge-${client.status}`}>{client.status}</span>
           {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
-          <button className="btn btn-outline btn-sm" onClick={openEditClient} style={{ marginLeft: 'auto' }}>
-            Edit Client
-          </button>
+          <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
         </div>
 
-        {/* Info rows */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-          {/* Row 1: Sex · DOB (age) */}
-          {(sexLabel || client.dob) && (
-            <div style={{ display: 'flex', gap: 16, fontSize: '0.85rem', color: 'var(--gray-700)' }}>
-              {sexLabel && <span>{sexLabel}</span>}
-              {client.dob && (
-                <span>{fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}</span>
-              )}
-            </div>
-          )}
+        {/* Sex · DOB (age) */}
+        {(sexLabel || client.dob) && (
+          <div style={{ display: 'flex', gap: 16, fontSize: '0.85rem', color: 'var(--gray-700)', marginBottom: 4 }}>
+            {sexLabel && <span>{sexLabel}</span>}
+            {client.dob && <span>{fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}</span>}
+          </div>
+        )}
 
-          {/* Row 2: Mobile · Phone (if present) · Email */}
-          {(client.mobile || client.phone || client.email || raw.PatientEmail) && (
-            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)' }}>
-              {client.mobile && <span>{client.mobile}</span>}
-              {client.phone  && <span>{client.phone}</span>}
-              {(client.email || raw.PatientEmail) && <span>{client.email || raw.PatientEmail}</span>}
-            </div>
-          )}
+        {/* Mobile · Phone · Email */}
+        {(client.mobile || client.phone || client.email || raw.PatientEmail) && (
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 4 }}>
+            {client.mobile && <span>{client.mobile}</span>}
+            {client.phone  && <span>{client.phone}</span>}
+            {(client.email || raw.PatientEmail) && <span>{client.email || raw.PatientEmail}</span>}
+          </div>
+        )}
 
-          {/* Row 3: Mother / Father */}
-          {(client.mother_name || client.father_name) && (
-            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)' }}>
-              {client.mother_name && (
-                <span>
-                  <strong style={{ color: 'var(--gray-500)' }}>Mother:</strong>{' '}
-                  {client.mother_name}
-                  {client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}
-                </span>
-              )}
-              {client.father_name && (
-                <span>
-                  <strong style={{ color: 'var(--gray-500)' }}>Father:</strong>{' '}
-                  {client.father_name}
-                  {client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}
-                </span>
-              )}
-            </div>
-          )}
+        {/* Mother / Father */}
+        {(client.mother_name || client.father_name) && (
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)', marginBottom: 4 }}>
+            {client.mother_name && (
+              <span>
+                <strong style={{ color: 'var(--gray-500)' }}>Mother:</strong>{' '}
+                {client.mother_name}
+                {client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}
+              </span>
+            )}
+            {client.father_name && (
+              <span>
+                <strong style={{ color: 'var(--gray-500)' }}>Father:</strong>{' '}
+                {client.father_name}
+                {client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}
+              </span>
+            )}
+          </div>
+        )}
 
-          {/* Row 4: DX badges */}
-          {raw.diagnoses?.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
-              {raw.diagnoses.map((d, i) => (
-                <span key={i} title={d.problem} style={{
-                  background: '#fef9c3', color: '#92400e', border: '1px solid #fde68a',
-                  borderRadius: 4, padding: '2px 7px', fontSize: '0.72rem', fontWeight: 600,
-                  cursor: 'default',
-                }}>
-                  {d.icd_10}
-                </span>
-              ))}
-            </div>
+        {/* DX badges + Sync */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
+          {raw.diagnoses?.map((d, i) => (
+            <span key={i} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              background: '#fef9c3', color: '#78350f', border: '1px solid #fde68a',
+              borderRadius: 4, padding: '2px 8px', fontSize: '0.75rem',
+            }}>
+              <strong style={{ fontSize: '0.7rem', fontWeight: 700 }}>{d.icd_10}</strong>
+              <span>{d.problem}</span>
+            </span>
+          ))}
+          {client.insync_patient_id && (
+            <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}
+              style={{ fontSize: '0.72rem' }}>
+              {syncingFs ? 'Syncing…' : 'Sync DX'}
+            </button>
+          )}
+          {fsMsg && (
+            <span style={{ fontSize: '0.72rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a' }}>{fsMsg}</span>
           )}
         </div>
-      </div>
-
-      {/* ── Stats ── */}
-      <div className="stats-row" style={{ marginBottom: 24 }}>
-        <div className="stat-card"><div className="stat-value">{stats.total}</div><div className="stat-label">Total</div></div>
-        <div className="stat-card"><div className="stat-value" style={{ color: '#1e40af' }}>{stats.scheduled}</div><div className="stat-label">Scheduled</div></div>
-        <div className="stat-card"><div className="stat-value" style={{ color: '#166534' }}>{stats.sent}</div><div className="stat-label">Note Sent</div></div>
-        <div className="stat-card"><div className="stat-value" style={{ color: 'var(--gold)' }}>{stats.done}</div><div className="stat-label">Done</div></div>
       </div>
 
       {/* ── 2-column body ── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start' }}>
 
-        {/* Left 2/3 — sessions + treatment plan */}
+        {/* Left 2/3 — stats + sessions */}
         <div style={{ flex: 2, paddingRight: 32, minWidth: 0 }}>
+
+          {/* Stats — compact row */}
+          <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+            {[
+              { label: 'Total',     value: stats.total,     color: 'var(--navy)' },
+              { label: 'Scheduled', value: stats.scheduled, color: '#1e40af' },
+              { label: 'Note Sent', value: stats.sent,      color: '#166534' },
+              { label: 'Done',      value: stats.done,      color: 'var(--gold)' },
+            ].map(({ label, value, color }) => (
+              <div key={label} style={{
+                flex: '1 1 80px', background: 'white', border: '1px solid var(--gray-100)',
+                borderRadius: 8, padding: '10px 14px', textAlign: 'center',
+              }}>
+                <div style={{ fontSize: '1.4rem', fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
+                <div style={{ fontSize: '0.65rem', fontWeight: 600, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 3 }}>{label}</div>
+              </div>
+            ))}
+          </div>
 
           {/* Sessions card */}
           <div className="card" style={{ marginBottom: 24 }}>
             <div className="card-header">
               <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <span style={{ fontSize: '0.73rem', color: 'var(--gray-400)' }}>Click date/time to edit</span>
+                <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>Click date/time to edit</span>
                 <button className="btn btn-gold btn-xs" onClick={() => { setShowAddAppt(s => !s); setAddConflicts([]); }}>
                   + Add Session
                 </button>
               </div>
             </div>
 
-            {/* Add session form */}
             {showAddAppt && (
               <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--gray-100)', background: 'var(--gray-50)' }}>
                 <form onSubmit={handleAddAppt}>
@@ -721,73 +721,74 @@ export default function OOClientDetailPage() {
               ))}
             </div>
           </div>
-
-          {/* Treatment Plan */}
-          {raw.treatment_plan?.length > 0 && (
-            <div style={{ marginBottom: 24 }}>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-                Treatment Plan
-              </div>
-              {raw.treatment_plan.map((p, i) => (
-                <div key={i} style={{ marginBottom: 16, padding: '14px 16px', background: 'var(--gray-50)', borderRadius: 8, border: '1px solid var(--gray-100)' }}>
-                  <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--navy)', marginBottom: 8 }}>{p.problem}</div>
-                  {p.long_term_goals?.map((g, j) => (
-                    <div key={j} style={{ marginBottom: 4 }}>
-                      <span style={tpLabelSt}>LTG {j + 1}</span>
-                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
-                    </div>
-                  ))}
-                  {p.short_term_goals?.map((g, j) => (
-                    <div key={j} style={{ marginBottom: 4 }}>
-                      <span style={tpLabelSt}>STG {j + 1}</span>
-                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
-                    </div>
-                  ))}
-                  {p.interventions?.length > 0 && (
-                    <div style={{ marginTop: 4 }}>
-                      <span style={tpLabelSt}>Interventions</span>
-                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-600)' }}>{p.interventions.join(' · ')}</span>
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* Vertical divider */}
         <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
 
-        {/* Right 1/3 — reference info */}
-        <div style={{ flex: 1, paddingLeft: 28, minWidth: 0 }}>
+        {/* Right 1/3 — sticky, independent scroll */}
+        <div style={{
+          flex: 1, paddingLeft: 28, minWidth: 0,
+          position: 'sticky', top: 0,
+          maxHeight: '100vh', overflowY: 'auto',
+          paddingTop: 4, paddingBottom: 32,
+        }}>
+
+          {/* Treatment Plan — FIRST */}
+          {raw.treatment_plan?.length > 0 && (
+            <RSection title="Treatment Plan">
+              {raw.treatment_plan.map((p, i) => (
+                <div key={i} style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--navy)', marginBottom: 6 }}>{p.problem}</div>
+                  {p.long_term_goals?.map((g, j) => (
+                    <div key={j} style={{ marginBottom: 4, display: 'flex', gap: 6 }}>
+                      <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>LTG {j + 1}</span>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{g}</span>
+                    </div>
+                  ))}
+                  {p.short_term_goals?.map((g, j) => (
+                    <div key={j} style={{ marginBottom: 4, display: 'flex', gap: 6 }}>
+                      <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>STG {j + 1}</span>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{g}</span>
+                    </div>
+                  ))}
+                  {p.interventions?.length > 0 && (
+                    <div style={{ marginTop: 4, display: 'flex', gap: 6 }}>
+                      <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>Interventions</span>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-600)', lineHeight: 1.4 }}>{p.interventions.join(' · ')}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </RSection>
+          )}
+
+          {/* Last written note */}
+          {lastNote && (
+            <RSection title="Last Note">
+              <div style={{ fontSize: '0.7rem', color: 'var(--gray-400)', marginBottom: 6 }}>
+                {fmtDate(lastNote.date)} · {fmt12(lastNote.time)}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', whiteSpace: 'pre-wrap', lineHeight: 1.6, background: 'var(--gray-50)', borderRadius: 6, padding: '8px 10px', border: '1px solid var(--gray-100)' }}>
+                {lastNote.raw_notes}
+              </div>
+            </RSection>
+          )}
 
           {/* Diagnoses */}
-          <RSection title={
-            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              Diagnoses
-              {client.insync_patient_id && (
-                <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}
-                  style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, fontSize: '0.72rem' }}>
-                  {syncingFs ? 'Syncing…' : 'Sync'}
-                </button>
-              )}
-              {fsMsg && <span style={{ fontSize: '0.7rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>{fsMsg}</span>}
-            </span>
-          }>
+          <RSection title="Diagnoses">
             {raw.diagnoses?.length > 0 ? (
-              <div>
-                {raw.diagnoses.map((d, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 7, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#92400e', background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                      {d.icd_10}
-                    </span>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{d.problem}</span>
-                  </div>
-                ))}
-              </div>
+              raw.diagnoses.map((d, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 7, alignItems: 'flex-start' }}>
+                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#78350f', background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                    {d.icd_10}
+                  </span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{d.problem}</span>
+                </div>
+              ))
             ) : (
               <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>
-                {client.insync_patient_id ? 'Click Sync to load' : 'No InSync ID linked'}
+                {client.insync_patient_id ? 'Click "Sync DX" above to load' : 'No InSync ID linked'}
               </div>
             )}
           </RSection>
@@ -795,9 +796,14 @@ export default function OOClientDetailPage() {
           {/* Insurance */}
           <RSection title="Insurance">
             <RField label="Current Payer" value={client.payer_plan_name} />
-            {primaryPayers.slice(0, 3).map((p, i) => (
-              <RField key={i} label={i === 0 ? 'Payer History' : ''} value={p} />
-            ))}
+            {primaryPayers.length > 0 && (
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Payer History</div>
+                {primaryPayers.slice(0, 4).map((p, i) => (
+                  <div key={i} style={{ fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: 2 }}>{p}</div>
+                ))}
+              </div>
+            )}
           </RSection>
 
           {/* Referral Source */}
@@ -816,31 +822,26 @@ export default function OOClientDetailPage() {
             <RField label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
             <RField label="Counselor"         value={client.counselor} />
             <RField label="Address"           value={client.address} />
-            {raw.facesheet_synced_at && (
-              <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 4 }}>
-                Facesheet synced {new Date(raw.facesheet_synced_at).toLocaleDateString()}
-              </div>
-            )}
           </RSection>
 
           {/* Debug */}
           {client.insync_patient_id && (
             <div style={{ marginTop: 4 }}>
               <button onClick={debugNoteFields} disabled={debuggingFields}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 6 }}>
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
                 {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
               </button>
               {debugFields && (
-                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 12, fontSize: '0.65rem', overflowX: 'auto', maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
                   {JSON.stringify(debugFields, null, 2)}
                 </pre>
               )}
               <button onClick={debugEncounter} disabled={debugging}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 6 }}>
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
                 {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
               </button>
               {debugHtml && (
-                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 12, fontSize: '0.65rem', overflowX: 'auto', maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
                   {debugHtml}
                 </pre>
               )}
@@ -851,11 +852,11 @@ export default function OOClientDetailPage() {
           {client.insync_data && (
             <div style={{ marginTop: 8 }}>
               <button onClick={() => setShowRaw(s => !s)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--gray-400)', padding: 0 }}>
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: 'var(--gray-400)', padding: 0 }}>
                 {showRaw ? '▾' : '▸'} Raw InSync data
               </button>
               {showRaw && (
-                <pre style={{ marginTop: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 12, fontSize: '0.68rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
+                <pre style={{ marginTop: 6, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 10, fontSize: '0.65rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
                   {JSON.stringify(client.insync_data, null, 2)}
                 </pre>
               )}
@@ -927,6 +928,9 @@ export default function OOClientDetailPage() {
 
                   <div style={{ gridColumn: 'span 2', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)', marginTop: 4 }}>
                     Parents / Guardians
+                    <span style={{ fontSize: '0.65rem', fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 8, color: '#f59e0b' }}>
+                      requires DB migration (see chat)
+                    </span>
                   </div>
 
                   {[
@@ -943,6 +947,12 @@ export default function OOClientDetailPage() {
                     </div>
                   ))}
                 </div>
+
+                {clientSaveErr && (
+                  <div style={{ marginTop: 12, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, fontSize: '0.8rem', color: '#dc2626' }}>
+                    {clientSaveErr}
+                  </div>
+                )}
               </form>
             </div>
             <div className="modal-footer">

@@ -5,8 +5,8 @@ const { requireAuth } = require('../middleware/auth');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Resend } = require('resend');
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-const resend    = new Resend(process.env.RESEND_API_KEY);
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+const resend    = process.env.RESEND_API_KEY    ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const MODALITIES = ['CBT','EMDR','Sand Tray','Solution Focused','Client Centered','DBT','Art Therapy','Strength Based','Family Systems','Trauma Focused','Play Therapy','Mindfulness','Behavioral Role Play','Guided Imagery','Motivational Interviewing'];
 
@@ -190,6 +190,7 @@ router.post('/bulk-schedule', requireAuth, async (req, res) => {
 // POST /:id/process-note — run raw_notes through Claude, return structured fields
 router.post('/:id/process-note', requireAuth, async (req, res) => {
   try {
+    if (!anthropic) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured on server' });
     const { raw_notes, treatment_plan } = req.body;
     if (!raw_notes?.trim()) return res.status(400).json({ error: 'raw_notes required' });
 
@@ -248,6 +249,7 @@ Return exactly this JSON structure:
 // POST /:id/send-note — build email from processed fields, send to secretary
 router.post('/:id/send-note', requireAuth, async (req, res) => {
   try {
+    if (!resend) return res.status(500).json({ error: 'RESEND_API_KEY not configured on server' });
     const { fields, treatment_plan } = req.body;
     if (!fields) return res.status(400).json({ error: 'fields required' });
 
