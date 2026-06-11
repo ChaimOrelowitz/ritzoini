@@ -48,7 +48,6 @@ function buildPreviewText(client, appt, fields, tp) {
   const initials = `${client.first_name[0]}${client.last_name[0]}`.toUpperCase();
   const mrn      = client.mrn || '—';
   const modStr   = (fields.modalities || []).join(', ') || '—';
-
   return [
     `Client: ${initials} (MRN: ${mrn})`,
     `Date: ${appt.date || '—'}`,
@@ -75,33 +74,25 @@ function buildPreviewText(client, appt, fields, tp) {
   ].filter(l => l !== null).join('\n');
 }
 
-// ── Shared components ─────────────────────────────────────────────────────────
+// ── Right-column components ───────────────────────────────────────────────────
 
-function Field({ label, value }) {
+function RField({ label, value }) {
+  if (!value) return null;
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
-      <span style={{ fontSize: '0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-400)' }}>{value || '—'}</span>
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>{label}</div>
+      <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{value}</div>
     </div>
   );
 }
 
-function FieldWide({ label, value }) {
+function RSection({ title, children }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
-      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
-      <span style={{ fontSize: '0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-400)' }}>{value || '—'}</span>
-    </div>
-  );
-}
-
-function InfoSection({ title, children }) {
-  return (
-    <div style={{ marginBottom: 28 }}>
-      <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>{title}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '14px 24px' }}>
-        {children}
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
+        {title}
       </div>
+      {children}
     </div>
   );
 }
@@ -125,6 +116,8 @@ const EMPTY_EDIT_FORM = {
   mother_name: '', mother_phone: '', father_name: '', father_phone: '',
 };
 
+const EMPTY_ADD_FORM = { date: '', time: '', duration: '45', repeat_weeks: '1' };
+
 // ── Appointment Card ──────────────────────────────────────────────────────────
 
 function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
@@ -135,11 +128,9 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   const [localDate, setLocalDate] = useState(initialAppt.date || '');
   const [localTime, setLocalTime] = useState((initialAppt.time || '').slice(0, 5));
   const [localDur,  setLocalDur]  = useState(String(initialAppt.duration || 45));
-
   const [rawNotes,  setRawNotes]  = useState(initialAppt.raw_notes || '');
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
-
   const [processing, setProcessing] = useState(false);
   const [fields,     setFields]     = useState(null);
   const [sending,    setSending]    = useState(false);
@@ -178,9 +169,7 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
       const updated = await api.patch(`/oo/appointments/${appt.id}`, { [field]: val });
       setAppt(prev => ({ ...prev, ...updated }));
       onUpdate({ ...appt, ...updated, [field]: val });
-    } catch {
-      setAppt(prev => ({ ...prev, [field]: appt[field] }));
-    }
+    } catch { setAppt(prev => ({ ...prev, [field]: appt[field] })); }
   }
 
   async function saveDate() {
@@ -194,8 +183,7 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   async function saveTime() {
     setEditTime(false);
     const updated = await api.patch(`/oo/appointments/${appt.id}`, {
-      time: localTime + ':00',
-      duration: parseInt(localDur) || 45,
+      time: localTime + ':00', duration: parseInt(localDur) || 45,
     });
     setAppt(prev => ({ ...prev, ...updated }));
     onUpdate({ ...appt, ...updated });
@@ -243,17 +231,12 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
 
   return (
     <div style={{
-      background: 'white',
-      border: `1px solid ${style.border}`,
-      borderLeft: `5px solid ${style.border}`,
-      borderRadius: 'var(--radius)',
-      padding: '14px 18px',
-      marginBottom: 10,
+      background: 'white', border: `1px solid ${style.border}`,
+      borderLeft: `5px solid ${style.border}`, borderRadius: 'var(--radius)',
+      padding: '14px 18px', marginBottom: 10,
     }}>
       {/* Top row */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-
-        {/* Date + time */}
         <div style={{ minWidth: 160 }}>
           {editDate ? (
             <div style={{ display: 'flex', gap: 4, marginBottom: 4 }}>
@@ -265,11 +248,9 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
           ) : (
             <div onClick={() => setEditDate(true)}
               style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.95rem', cursor: 'pointer', marginBottom: 3 }}>
-              {fmtDate(appt.date)}
-              <span style={{ color: 'var(--gray-400)', marginLeft: 5, fontSize: '0.68rem' }}>✏</span>
+              {fmtDate(appt.date)}<span style={{ color: 'var(--gray-400)', marginLeft: 5, fontSize: '0.68rem' }}>✏</span>
             </div>
           )}
-
           {editTime ? (
             <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
               <input type="time" className="form-input" style={{ padding: '3px 6px', fontSize: '0.78rem', width: 100 }}
@@ -282,51 +263,33 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
           ) : (
             <div onClick={() => setEditTime(true)}
               style={{ fontSize: '0.75rem', color: 'var(--gray-400)', cursor: 'pointer', marginTop: 2 }}>
-              {fmt12(appt.time)} · {appt.duration || 45} min
-              <span style={{ color: 'var(--gray-400)', marginLeft: 4, fontSize: '0.68rem' }}>✏</span>
+              {fmt12(appt.time)} · {appt.duration || 45} min<span style={{ marginLeft: 4, fontSize: '0.68rem' }}>✏</span>
             </div>
           )}
         </div>
 
-        {/* Status badge */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
           <div style={{
-            padding: '5px 10px', fontSize: '0.82rem', width: 120,
-            borderRadius: 'var(--radius)', border: `1.5px solid ${style.border}`,
-            background: style.bg, color: style.color, fontWeight: 600,
-            textTransform: 'capitalize', boxSizing: 'border-box',
-          }}>
-            {appt.status}
-          </div>
+            padding: '5px 10px', fontSize: '0.82rem', width: 120, borderRadius: 'var(--radius)',
+            border: `1.5px solid ${style.border}`, background: style.bg, color: style.color,
+            fontWeight: 600, textTransform: 'capitalize', boxSizing: 'border-box',
+          }}>{appt.status}</div>
         </div>
 
-        {/* Checkboxes */}
         <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {[
-            { field: 'note_sent_at', label: 'Note Sent' },
-            { field: 'note_done_at', label: 'Done' },
-          ].map(({ field, label }) => (
+          {[{ field: 'note_sent_at', label: 'Note Sent' }, { field: 'note_done_at', label: 'Done' }].map(({ field, label }) => (
             <div key={field} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-800)', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={!!appt[field]}
-                  onChange={e => handleCheckbox(field, e.target.checked)}
-                  style={{ width: 15, height: 15, accentColor: 'var(--navy)' }}
-                />
+                <input type="checkbox" checked={!!appt[field]} onChange={e => handleCheckbox(field, e.target.checked)}
+                  style={{ width: 15, height: 15, accentColor: 'var(--navy)' }} />
                 {label}
               </label>
-              {appt[field] && (
-                <div style={{ fontSize: '0.65rem', color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>
-                  {fmtDateTime(appt[field])}
-                </div>
-              )}
+              {appt[field] && <div style={{ fontSize: '0.65rem', color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>{fmtDateTime(appt[field])}</div>}
             </div>
           ))}
         </div>
 
-        {/* Delete */}
         <button className="btn btn-danger btn-xs" type="button" onClick={handleDelete} disabled={deleting}>
           {deleting ? '…' : 'Delete'}
         </button>
@@ -339,17 +302,11 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
           {saveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.72rem' }}>Saving…</span>}
           {saveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.72rem' }}>✓ Saved</span>}
         </div>
-        <textarea
-          className="form-textarea"
-          value={rawNotes}
-          onChange={e => handleNoteChange(e.target.value)}
-          placeholder="Session notes…"
-          style={{ minHeight: 72, fontSize: '0.875rem' }}
-        />
+        <textarea className="form-textarea" value={rawNotes} onChange={e => handleNoteChange(e.target.value)}
+          placeholder="Session notes…" style={{ minHeight: 72, fontSize: '0.875rem' }} />
         {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
         <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-outline btn-xs" type="button"
-            onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
+          <button className="btn btn-outline btn-xs" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
             {processing ? 'Processing…' : fields ? 'Re-process with AI' : 'Process with AI'}
           </button>
           {fields && (
@@ -360,25 +317,19 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         </div>
       </div>
 
-      {/* AI fields + preview */}
+      {/* AI fields */}
       {fields && (
         <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--gray-100)' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>
-            AI-Generated Fields
-          </div>
-
+          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>AI-Generated Fields</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div>
               <label style={fldLabel}>Location of Meeting</label>
-              <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'}
-                readOnly style={{ background: 'var(--gray-50)', fontSize: '0.85rem' }} />
+              <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'} readOnly style={{ background: 'var(--gray-50)', fontSize: '0.85rem' }} />
             </div>
             <div>
               <label style={fldLabel}>Additional Person(s) Present</label>
-              <input className="form-input" style={{ fontSize: '0.85rem' }}
-                value={fields.additional_persons_present || ''}
-                onChange={e => updateField('additional_persons_present', e.target.value)}
-                placeholder="Leave blank if none" />
+              <input className="form-input" style={{ fontSize: '0.85rem' }} value={fields.additional_persons_present || ''}
+                onChange={e => updateField('additional_persons_present', e.target.value)} placeholder="Leave blank if none" />
             </div>
             <div>
               <label style={fldLabel}>Content Discussed</label>
@@ -399,9 +350,7 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
                     <button key={m} type="button" onClick={() => toggleModality(m)} style={{
                       padding: '3px 9px', fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, cursor: 'pointer',
                       border: `1.5px solid ${on ? 'var(--navy)' : 'var(--gray-200)'}`,
-                      background: on ? 'var(--navy)' : 'transparent',
-                      color: on ? '#fff' : 'var(--gray-400)',
-                      transition: 'background 0.1s',
+                      background: on ? 'var(--navy)' : 'transparent', color: on ? '#fff' : 'var(--gray-400)',
                     }}>{m}</button>
                   );
                 })}
@@ -427,20 +376,13 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
               <textarea className="form-textarea" style={{ minHeight: 40, fontSize: '0.85rem' }}
                 value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} />
             </div>
-
             <div>
               <label style={fldLabel}>Email Preview</label>
-              <pre style={{
-                background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 6,
-                padding: '12px 14px', fontSize: '0.78rem', lineHeight: 1.7,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit',
-                margin: 0, color: 'var(--gray-600)',
-              }}>
+              <pre style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 6, padding: '12px 14px', fontSize: '0.78rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, color: 'var(--gray-600)' }}>
                 {buildPreviewText(client, appt, fields, tp)}
               </pre>
             </div>
           </div>
-
           <div style={{ marginTop: 14 }}>
             <button className="btn btn-gold btn-sm" type="button" onClick={handleSend} disabled={sending}>
               {sending ? 'Sending…' : 'Send to Secretary'}
@@ -463,12 +405,18 @@ export default function OOClientDetailPage() {
   const [loading,  setLoading]  = useState(true);
   const [showRaw,  setShowRaw]  = useState(false);
 
-  // Edit Client modal
-  const [showEditModal,  setShowEditModal]  = useState(false);
-  const [editForm,       setEditForm]       = useState(EMPTY_EDIT_FORM);
-  const [savingClient,   setSavingClient]   = useState(false);
+  // Edit client modal
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editForm,      setEditForm]      = useState(EMPTY_EDIT_FORM);
+  const [savingClient,  setSavingClient]  = useState(false);
 
-  // Debug/sync
+  // Add session
+  const [showAddAppt, setShowAddAppt] = useState(false);
+  const [addForm,     setAddForm]     = useState(EMPTY_ADD_FORM);
+  const [addingAppt,  setAddingAppt]  = useState(false);
+  const [addConflicts, setAddConflicts] = useState([]);
+
+  // InSync / debug
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
   const [debugHtml,       setDebugHtml]       = useState('');
@@ -497,7 +445,7 @@ export default function OOClientDetailPage() {
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
-  // ── Edit Client modal ──
+  // ── Edit client ──
 
   function openEditClient() {
     setEditForm({
@@ -530,13 +478,42 @@ export default function OOClientDetailPage() {
     } finally { setSavingClient(false); }
   }
 
-  // ── Appointment handlers ──
+  // ── Add session ──
+
+  async function handleAddAppt(e) {
+    e.preventDefault();
+    if (!addForm.date || !addForm.time) return;
+    setAddingAppt(true); setAddConflicts([]);
+    try {
+      const result = await api.post('/oo/appointments', {
+        client_id:    id,
+        date:         addForm.date,
+        time:         addForm.time,
+        duration:     parseInt(addForm.duration) || 45,
+        repeat_weeks: parseInt(addForm.repeat_weeks) || 1,
+      });
+      const newAppts = result.appointments || [];
+      setAppts(prev => [...prev, ...newAppts].sort((a, b) => {
+        if (a.date !== b.date) return a.date.localeCompare(b.date);
+        return a.time.localeCompare(b.time);
+      }));
+      if (result.conflicts?.length) {
+        setAddConflicts(result.conflicts);
+      } else {
+        setShowAddAppt(false);
+        setAddForm(EMPTY_ADD_FORM);
+      }
+    } catch (ex) { alert(ex.message); }
+    finally { setAddingAppt(false); }
+  }
+
+  // ── InSync / debug ──
 
   async function syncFacesheet() {
     setSyncingFs(true); setFsMsg('');
     try {
       const r = await api.post(`/oo/clients/${id}/sync-facesheet`, {});
-      setFsMsg(`${r.diagnoses_count ?? 0} dx · ${r.tp_count ?? 0} TP problem${(r.tp_count ?? 0) !== 1 ? 's' : ''} synced`);
+      setFsMsg(`${r.diagnoses_count ?? 0} dx · ${r.tp_count ?? 0} TP synced`);
       await loadClientData();
     } catch (ex) { setFsMsg(ex.message); }
     finally { setSyncingFs(false); }
@@ -546,24 +523,21 @@ export default function OOClientDetailPage() {
     setDebugging(true); setDebugHtml('');
     try {
       const r = await api.get(`/oo/clients/${id}/debug-encounter-html`);
-      setDebugHtml(r.html_preview);
+      setDebugHtml(JSON.stringify(r, null, 2));
     } catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
     finally { setDebugging(false); }
   }
 
   async function debugNoteFields() {
     setDebuggingFields(true); setDebugFields(null);
-    try {
-      const r = await api.get(`/oo/clients/${id}/debug-note-fields`);
-      setDebugFields(r);
-    } catch (ex) { setDebugFields({ error: ex.message }); }
+    try { setDebugFields(await api.get(`/oo/clients/${id}/debug-note-fields`)); }
+    catch (ex) { setDebugFields({ error: ex.message }); }
     finally { setDebuggingFields(false); }
   }
 
   function handleApptUpdate(updated) {
     setAppts(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a));
   }
-
   function handleApptDelete(apptId) {
     setAppts(prev => prev.filter(a => a.id !== apptId));
   }
@@ -575,12 +549,11 @@ export default function OOClientDetailPage() {
 
   const rs  = client.oo_referral_sources;
   const raw = client.insync_data || {};
+  const age = calcAge(client.dob);
 
   const primaryPayers = raw.PrimaryPayers
     ? raw.PrimaryPayers.split('!@#').map(s => s.trim()).filter(Boolean)
     : [];
-
-  const age = calcAge(client.dob);
 
   const stats = {
     total:     appts.length,
@@ -589,263 +562,307 @@ export default function OOClientDetailPage() {
     done:      appts.filter(a => a.note_done_at).length,
   };
 
-  // Info strip items
-  const infoItems = [
-    client.dob ? `${fmtDob(client.dob)}${age !== null ? ` (${age}y)` : ''}` : null,
-    client.sex ? (client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex) : null,
-    client.phone || null,
-    client.email || raw.PatientEmail || null,
-  ].filter(Boolean);
+  const sexLabel = client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex || null;
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 960 }}>
+    <div style={{ padding: '24px 32px', maxWidth: 1280 }}>
       <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
 
       {/* ── Header ── */}
-      <div className="page-header" style={{ marginBottom: 8 }}>
-        <div style={{ flex: 1 }}>
+      <div style={{ marginBottom: 20 }}>
+        {/* Name row */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+          <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
+          <span className={`badge badge-${client.status}`}>{client.status}</span>
+          {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
+          <button className="btn btn-outline btn-sm" onClick={openEditClient} style={{ marginLeft: 'auto' }}>
+            Edit Client
+          </button>
+        </div>
 
-          {/* Name row */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-            <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
-            <span className={`badge badge-${client.status}`}>{client.status}</span>
-            {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={openEditClient}
-              style={{ marginLeft: 'auto' }}
-            >
-              Edit Client
-            </button>
-          </div>
-
-          {/* Info strip */}
-          {infoItems.length > 0 && (
-            <div style={{
-              display: 'flex', flexWrap: 'wrap',
-              background: 'var(--gray-50)', borderRadius: 8,
-              border: '1px solid var(--gray-100)', overflow: 'hidden',
-              marginBottom: 8,
-            }}>
-              {infoItems.map((val, i) => (
-                <div key={i} style={{
-                  padding: '8px 16px', fontSize: '0.82rem', color: 'var(--gray-700)',
-                  borderRight: i < infoItems.length - 1 ? '1px solid var(--gray-200)' : 'none',
-                }}>
-                  {val}
-                </div>
-              ))}
+        {/* Info rows */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          {/* Row 1: Sex · DOB (age) */}
+          {(sexLabel || client.dob) && (
+            <div style={{ display: 'flex', gap: 16, fontSize: '0.85rem', color: 'var(--gray-700)' }}>
+              {sexLabel && <span>{sexLabel}</span>}
+              {client.dob && (
+                <span>{fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}</span>
+              )}
             </div>
           )}
 
-          {/* Mother / Father */}
+          {/* Row 2: Mobile · Phone (if present) · Email */}
+          {(client.mobile || client.phone || client.email || raw.PatientEmail) && (
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)' }}>
+              {client.mobile && <span>{client.mobile}</span>}
+              {client.phone  && <span>{client.phone}</span>}
+              {(client.email || raw.PatientEmail) && <span>{client.email || raw.PatientEmail}</span>}
+            </div>
+          )}
+
+          {/* Row 3: Mother / Father */}
           {(client.mother_name || client.father_name) && (
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 6 }}>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)' }}>
               {client.mother_name && (
-                <div style={{ fontSize: '0.82rem', color: 'var(--gray-600)' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Mother:</span>{' '}
+                <span>
+                  <strong style={{ color: 'var(--gray-500)' }}>Mother:</strong>{' '}
                   {client.mother_name}
                   {client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}
-                </div>
+                </span>
               )}
               {client.father_name && (
-                <div style={{ fontSize: '0.82rem', color: 'var(--gray-600)' }}>
-                  <span style={{ fontWeight: 600, color: 'var(--gray-500)' }}>Father:</span>{' '}
+                <span>
+                  <strong style={{ color: 'var(--gray-500)' }}>Father:</strong>{' '}
                   {client.father_name}
                   {client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}
-                </div>
+                </span>
               )}
+            </div>
+          )}
+
+          {/* Row 4: DX badges */}
+          {raw.diagnoses?.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 2 }}>
+              {raw.diagnoses.map((d, i) => (
+                <span key={i} title={d.problem} style={{
+                  background: '#fef9c3', color: '#92400e', border: '1px solid #fde68a',
+                  borderRadius: 4, padding: '2px 7px', fontSize: '0.72rem', fontWeight: 600,
+                  cursor: 'default',
+                }}>
+                  {d.icd_10}
+                </span>
+              ))}
             </div>
           )}
         </div>
       </div>
 
       {/* ── Stats ── */}
-      <div className="stats-row" style={{ marginBottom: 28 }}>
+      <div className="stats-row" style={{ marginBottom: 24 }}>
         <div className="stat-card"><div className="stat-value">{stats.total}</div><div className="stat-label">Total</div></div>
         <div className="stat-card"><div className="stat-value" style={{ color: '#1e40af' }}>{stats.scheduled}</div><div className="stat-label">Scheduled</div></div>
         <div className="stat-card"><div className="stat-value" style={{ color: '#166534' }}>{stats.sent}</div><div className="stat-label">Note Sent</div></div>
         <div className="stat-card"><div className="stat-value" style={{ color: 'var(--gold)' }}>{stats.done}</div><div className="stat-label">Done</div></div>
       </div>
 
-      {/* ── Diagnoses (moved up) ── */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-            Diagnoses
-            {raw.facesheet_synced_at && (
-              <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 8, fontSize: '0.7rem' }}>
-                synced {new Date(raw.facesheet_synced_at).toLocaleDateString()}
-              </span>
-            )}
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {fsMsg && <span style={{ fontSize: '0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a' }}>{fsMsg}</span>}
-            {client.insync_patient_id && (
-              <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}>
-                {syncingFs ? 'Syncing…' : 'Sync from InSync'}
-              </button>
-            )}
-          </div>
-        </div>
-        {raw.diagnoses?.length > 0 ? (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-            <thead>
-              <tr style={{ background: 'var(--gray-50)' }}>
-                {['ICD-10', 'Problem', 'Onset', 'Notes'].map(h => (
-                  <th key={h} style={thSt}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {raw.diagnoses.map((d, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid var(--gray-100)' }}>
-                  <td style={tdSt}><strong>{d.icd_10}</strong></td>
-                  <td style={tdSt}>{d.problem}</td>
-                  <td style={{ ...tdSt, color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>{d.date_onset || '—'}</td>
-                  <td style={{ ...tdSt, color: 'var(--gray-400)' }}>{d.notes || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : (
-          <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', margin: 0 }}>
-            {client.insync_patient_id ? 'No diagnoses synced — click "Sync from InSync"' : 'No InSync ID linked.'}
-          </p>
-        )}
-      </div>
+      {/* ── 2-column body ── */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
 
-      {/* ── Sessions ── */}
-      <div className="card" style={{ marginBottom: 28 }}>
-        <div className="card-header">
-          <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
-          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>Notes auto-save · Click date/time to edit</span>
-        </div>
-        <div style={{ padding: '16px 20px' }}>
-          {appts.length === 0 ? (
-            <div className="empty-state" style={{ padding: '40px 20px' }}>
-              <div className="empty-icon">📅</div>
-              <p>No appointments yet.</p>
+        {/* Left 2/3 — sessions + treatment plan */}
+        <div style={{ flex: 2, paddingRight: 32, minWidth: 0 }}>
+
+          {/* Sessions card */}
+          <div className="card" style={{ marginBottom: 24 }}>
+            <div className="card-header">
+              <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                <span style={{ fontSize: '0.73rem', color: 'var(--gray-400)' }}>Click date/time to edit</span>
+                <button className="btn btn-gold btn-xs" onClick={() => { setShowAddAppt(s => !s); setAddConflicts([]); }}>
+                  + Add Session
+                </button>
+              </div>
             </div>
-          ) : appts.map(a => (
-            <ApptCard
-              key={a.id}
-              appt={a}
-              client={client}
-              onUpdate={handleApptUpdate}
-              onDelete={handleApptDelete}
-            />
-          ))}
-        </div>
-      </div>
 
-      {/* ── Treatment Plan ── */}
-      {raw.treatment_plan?.length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-            Treatment Plan
+            {/* Add session form */}
+            {showAddAppt && (
+              <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--gray-100)', background: 'var(--gray-50)' }}>
+                <form onSubmit={handleAddAppt}>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <label style={fldLabel}>Date</label>
+                      <input type="date" className="form-input" value={addForm.date} required
+                        onChange={e => setAddForm(f => ({ ...f, date: e.target.value }))}
+                        style={{ fontSize: '0.85rem', width: 150 }} />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <label style={fldLabel}>Time</label>
+                      <input type="time" className="form-input" value={addForm.time} required
+                        onChange={e => setAddForm(f => ({ ...f, time: e.target.value }))}
+                        style={{ fontSize: '0.85rem', width: 115 }} />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <label style={fldLabel}>Duration (min)</label>
+                      <input type="number" className="form-input" value={addForm.duration} min="15" max="180"
+                        onChange={e => setAddForm(f => ({ ...f, duration: e.target.value }))}
+                        style={{ fontSize: '0.85rem', width: 72 }} />
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <label style={fldLabel}>Repeat (weeks)</label>
+                      <input type="number" className="form-input" value={addForm.repeat_weeks} min="1" max="52"
+                        onChange={e => setAddForm(f => ({ ...f, repeat_weeks: e.target.value }))}
+                        style={{ fontSize: '0.85rem', width: 72 }} />
+                    </div>
+                    <button type="submit" className="btn btn-gold btn-sm" disabled={addingAppt}>
+                      {addingAppt ? 'Adding…' : 'Add'}
+                    </button>
+                    <button type="button" className="btn btn-outline btn-sm"
+                      onClick={() => { setShowAddAppt(false); setAddForm(EMPTY_ADD_FORM); setAddConflicts([]); }}>
+                      Cancel
+                    </button>
+                  </div>
+                  {addConflicts.length > 0 && (
+                    <div style={{ marginTop: 8, fontSize: '0.78rem', color: '#92400e' }}>
+                      ⚠ {addConflicts.length} conflict{addConflicts.length !== 1 ? 's' : ''}: {addConflicts.join(' · ')}
+                    </div>
+                  )}
+                </form>
+              </div>
+            )}
+
+            <div style={{ padding: '16px 20px' }}>
+              {appts.length === 0 ? (
+                <div className="empty-state" style={{ padding: '40px 20px' }}>
+                  <div className="empty-icon">📅</div>
+                  <p>No appointments yet. Click "+ Add Session" to create one.</p>
+                </div>
+              ) : appts.map(a => (
+                <ApptCard key={a.id} appt={a} client={client} onUpdate={handleApptUpdate} onDelete={handleApptDelete} />
+              ))}
+            </div>
           </div>
-          {raw.treatment_plan.map((p, i) => (
-            <div key={i} style={{ marginBottom: 18, padding: '14px 16px', background: 'var(--gray-50)', borderRadius: 8, border: '1px solid var(--gray-100)' }}>
-              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--navy)', marginBottom: 10 }}>{p.problem}</div>
-              {p.long_term_goals?.map((g, j) => (
-                <div key={j} style={{ marginBottom: 5 }}>
-                  <span style={tpLabelSt}>LTG {j + 1}</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
+
+          {/* Treatment Plan */}
+          {raw.treatment_plan?.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+                Treatment Plan
+              </div>
+              {raw.treatment_plan.map((p, i) => (
+                <div key={i} style={{ marginBottom: 16, padding: '14px 16px', background: 'var(--gray-50)', borderRadius: 8, border: '1px solid var(--gray-100)' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--navy)', marginBottom: 8 }}>{p.problem}</div>
+                  {p.long_term_goals?.map((g, j) => (
+                    <div key={j} style={{ marginBottom: 4 }}>
+                      <span style={tpLabelSt}>LTG {j + 1}</span>
+                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
+                    </div>
+                  ))}
+                  {p.short_term_goals?.map((g, j) => (
+                    <div key={j} style={{ marginBottom: 4 }}>
+                      <span style={tpLabelSt}>STG {j + 1}</span>
+                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
+                    </div>
+                  ))}
+                  {p.interventions?.length > 0 && (
+                    <div style={{ marginTop: 4 }}>
+                      <span style={tpLabelSt}>Interventions</span>
+                      <span style={{ fontSize: '0.84rem', color: 'var(--gray-600)' }}>{p.interventions.join(' · ')}</span>
+                    </div>
+                  )}
                 </div>
               ))}
-              {p.short_term_goals?.map((g, j) => (
-                <div key={j} style={{ marginBottom: 5 }}>
-                  <span style={tpLabelSt}>STG {j + 1}</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-800)' }}>{g}</span>
-                </div>
-              ))}
-              {p.interventions?.length > 0 && (
-                <div style={{ marginTop: 6 }}>
-                  <span style={tpLabelSt}>Interventions</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-600)' }}>{p.interventions.join(' · ')}</span>
-                </div>
+            </div>
+          )}
+        </div>
+
+        {/* Vertical divider */}
+        <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
+
+        {/* Right 1/3 — reference info */}
+        <div style={{ flex: 1, paddingLeft: 28, minWidth: 0 }}>
+
+          {/* Diagnoses */}
+          <RSection title={
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              Diagnoses
+              {client.insync_patient_id && (
+                <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}
+                  style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, fontSize: '0.72rem' }}>
+                  {syncingFs ? 'Syncing…' : 'Sync'}
+                </button>
+              )}
+              {fsMsg && <span style={{ fontSize: '0.7rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>{fsMsg}</span>}
+            </span>
+          }>
+            {raw.diagnoses?.length > 0 ? (
+              <div>
+                {raw.diagnoses.map((d, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 7, alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#92400e', background: '#fef9c3', border: '1px solid #fde68a', borderRadius: 3, padding: '1px 5px', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                      {d.icd_10}
+                    </span>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{d.problem}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>
+                {client.insync_patient_id ? 'Click Sync to load' : 'No InSync ID linked'}
+              </div>
+            )}
+          </RSection>
+
+          {/* Insurance */}
+          <RSection title="Insurance">
+            <RField label="Current Payer" value={client.payer_plan_name} />
+            {primaryPayers.slice(0, 3).map((p, i) => (
+              <RField key={i} label={i === 0 ? 'Payer History' : ''} value={p} />
+            ))}
+          </RSection>
+
+          {/* Referral Source */}
+          {rs && (
+            <RSection title="Referral Source">
+              <RField label="Name"        value={rs.name} />
+              <RField label="Notes Email" value={rs.notes_email} />
+            </RSection>
+          )}
+
+          {/* Client Info */}
+          <RSection title="Client Info">
+            <RField label="MRN"               value={client.mrn} />
+            <RField label="InSync ID"         value={client.insync_patient_id ? String(client.insync_patient_id) : null} />
+            <RField label="Primary Provider"  value={raw.PrimaryProviderName || null} />
+            <RField label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
+            <RField label="Counselor"         value={client.counselor} />
+            <RField label="Address"           value={client.address} />
+            {raw.facesheet_synced_at && (
+              <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 4 }}>
+                Facesheet synced {new Date(raw.facesheet_synced_at).toLocaleDateString()}
+              </div>
+            )}
+          </RSection>
+
+          {/* Debug */}
+          {client.insync_patient_id && (
+            <div style={{ marginTop: 4 }}>
+              <button onClick={debugNoteFields} disabled={debuggingFields}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 6 }}>
+                {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
+              </button>
+              {debugFields && (
+                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 12, fontSize: '0.65rem', overflowX: 'auto', maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                  {JSON.stringify(debugFields, null, 2)}
+                </pre>
+              )}
+              <button onClick={debugEncounter} disabled={debugging}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 6 }}>
+                {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
+              </button>
+              {debugHtml && (
+                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 12, fontSize: '0.65rem', overflowX: 'auto', maxHeight: 200, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                  {debugHtml}
+                </pre>
               )}
             </div>
-          ))}
-        </div>
-      )}
+          )}
 
-      {/* ── Insurance ── */}
-      <InfoSection title="Insurance">
-        <Field label="Current Payer" value={client.payer_plan_name} />
-        {primaryPayers.length > 1 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
-            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Payer History</span>
-            {primaryPayers.map((p, i) => (
-              <span key={i} style={{ fontSize: '0.85rem', color: 'var(--gray-800)' }}>{p}</span>
-            ))}
-          </div>
-        )}
-      </InfoSection>
-
-      {/* ── Referral Source ── */}
-      {rs && (
-        <InfoSection title="Referral Source">
-          <Field label="Name"        value={rs.name} />
-          <Field label="Notes Email" value={rs.notes_email} />
-        </InfoSection>
-      )}
-
-      {/* ── Client Info (MRN, InSync ID — secondary) ── */}
-      <InfoSection title="Client Info">
-        <Field label="MRN"              value={client.mrn} />
-        <Field label="InSync ID"        value={client.insync_patient_id ? String(client.insync_patient_id) : null} />
-        <Field label="Mobile"           value={client.mobile} />
-        <Field label="Primary Provider" value={raw.PrimaryProviderName || null} />
-        <Field label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
-        <Field label="Counselor"        value={client.counselor} />
-        <Field label="Eligibility"      value={client.eligibility_result} />
-        <FieldWide label="Address"      value={client.address} />
-      </InfoSection>
-
-      {/* ── Debug ── */}
-      {client.insync_patient_id && (
-        <div style={{ marginTop: 8 }}>
-          <button onClick={debugNoteFields} disabled={debuggingFields}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
-            {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
-          </button>
-          {debugFields && (
-            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-              {JSON.stringify(debugFields, null, 2)}
-            </pre>
+          {/* Raw InSync */}
+          {client.insync_data && (
+            <div style={{ marginTop: 8 }}>
+              <button onClick={() => setShowRaw(s => !s)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.72rem', color: 'var(--gray-400)', padding: 0 }}>
+                {showRaw ? '▾' : '▸'} Raw InSync data
+              </button>
+              {showRaw && (
+                <pre style={{ marginTop: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 12, fontSize: '0.68rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 300, overflowY: 'auto' }}>
+                  {JSON.stringify(client.insync_data, null, 2)}
+                </pre>
+              )}
+            </div>
           )}
         </div>
-      )}
-      {client.insync_patient_id && (
-        <div style={{ marginTop: 8, marginBottom: 16 }}>
-          <button onClick={debugEncounter} disabled={debugging}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
-            {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
-          </button>
-          {debugHtml && (
-            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-              {debugHtml}
-            </pre>
-          )}
-        </div>
-      )}
-
-      {/* ── Raw InSync data ── */}
-      {client.insync_data && (
-        <div style={{ marginTop: 8 }}>
-          <button onClick={() => setShowRaw(s => !s)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--gray-400)', padding: 0 }}>
-            {showRaw ? '▾' : '▸'} Raw InSync data
-          </button>
-          {showRaw && (
-            <pre style={{ marginTop: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 14, fontSize: '0.72rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
-              {JSON.stringify(client.insync_data, null, 2)}
-            </pre>
-          )}
-        </div>
-      )}
+      </div>
 
       {/* ── Edit Client Modal ── */}
       {showEditModal && (
@@ -861,8 +878,7 @@ export default function OOClientDetailPage() {
               <form id="edit-client-form" onSubmit={handleSaveClient}>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px 20px' }}>
 
-                  {/* Basic info */}
-                  <div style={{ gridColumn: 'span 2', fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+                  <div style={{ gridColumn: 'span 2', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
                     Basic Info
                   </div>
 
@@ -877,13 +893,9 @@ export default function OOClientDetailPage() {
                   ].map(({ key, label, type = 'text', span }) => (
                     <div key={key} style={{ gridColumn: span ? `span ${span}` : undefined, display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <label style={modalLabelSt}>{label}</label>
-                      <input
-                        className="form-input"
-                        type={type}
-                        value={editForm[key]}
+                      <input className="form-input" type={type} value={editForm[key]}
                         onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
-                        style={{ fontSize: '0.85rem' }}
-                      />
+                        style={{ fontSize: '0.85rem' }} />
                     </div>
                   ))}
 
@@ -913,8 +925,7 @@ export default function OOClientDetailPage() {
                     </select>
                   </div>
 
-                  {/* Parents */}
-                  <div style={{ gridColumn: 'span 2', fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)', marginTop: 4 }}>
+                  <div style={{ gridColumn: 'span 2', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)', marginTop: 4 }}>
                     Parents / Guardians
                   </div>
 
@@ -926,13 +937,9 @@ export default function OOClientDetailPage() {
                   ].map(({ key, label, type = 'text' }) => (
                     <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <label style={modalLabelSt}>{label}</label>
-                      <input
-                        className="form-input"
-                        type={type}
-                        value={editForm[key]}
+                      <input className="form-input" type={type} value={editForm[key]}
                         onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
-                        style={{ fontSize: '0.85rem' }}
-                      />
+                        style={{ fontSize: '0.85rem' }} />
                     </div>
                   ))}
                 </div>
@@ -951,6 +958,4 @@ export default function OOClientDetailPage() {
   );
 }
 
-const thSt = { padding: '6px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--gray-200)' };
-const tdSt = { padding: '8px 10px', verticalAlign: 'top' };
 const tpLabelSt = { display: 'inline-block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', minWidth: 80, marginRight: 8 };
