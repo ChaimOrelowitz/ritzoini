@@ -428,6 +428,8 @@ export default function OOClientDetailPage() {
   const [debuggingFields, setDebuggingFields] = useState(false);
   const [debugHtml,       setDebugHtml]       = useState('');
   const [debugging,       setDebugging]       = useState(false);
+  const [debugTpRaw,      setDebugTpRaw]      = useState(null);
+  const [debuggingTp,     setDebuggingTp]     = useState(false);
 
   function loadClientData() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
@@ -533,6 +535,13 @@ export default function OOClientDetailPage() {
     try { setDebugHtml(JSON.stringify(await api.get(`/oo/clients/${id}/debug-encounter-html`), null, 2)); }
     catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
     finally { setDebugging(false); }
+  }
+
+  async function debugTpRawFn() {
+    setDebuggingTp(true); setDebugTpRaw(null);
+    try { setDebugTpRaw(await api.get(`/oo/clients/${id}/debug-tp-raw`)); }
+    catch (ex) { setDebugTpRaw({ error: ex.message }); }
+    finally { setDebuggingTp(false); }
   }
 
   function handleApptUpdate(updated) {
@@ -862,6 +871,15 @@ export default function OOClientDetailPage() {
               {debugHtml && (
                 <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
                   {debugHtml}
+                </pre>
+              )}
+              <button onClick={debugTpRawFn} disabled={debuggingTp}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
+                {debuggingTp ? 'Fetching…' : '⚙ Debug: TP raw text + brackets'}
+              </button>
+              {debugTpRaw && (
+                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                  {JSON.stringify(debugTpRaw, null, 2)}
                 </pre>
               )}
             </div>

@@ -870,6 +870,75 @@ router.get('/:id/debug-note-fields', requireAuth, async (req, res) => {
   res.json({ fields, input_names: inputNames, html_length: html.length });
 });
 
+router.get('/:id/debug-tp-raw', requireAuth, async (req, res) => {
+  const { data: client, error: clientErr } = await supabase
+    .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
+  if (clientErr || !client) return res.status(404).json({ error: 'Client not found' });
+  if (!client.insync_patient_id) return res.status(400).json({ error: 'No InSync Patient ID' });
+
+  const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+  ]);
+  if (!userSetting?.value || !passSetting?.value) return res.status(400).json({ error: 'InSync credentials not configured' });
+
+  const cookie = await inSyncLogin(userSetting.value, passSetting.value);
+  const patientId = client.insync_patient_id;
+  const priPhyId  = client.insync_data?.PrimaryPhysician || 0;
+  const headers   = { 'User-Agent': INSYNC_UA, 'Cookie': cookie, 'Origin': INSYNC_BASE, 'Referer': `${INSYNC_BASE}/Dashboard/dashboard`, 'X-Requested-With': 'XMLHttpRequest' };
+
+  await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ intpatientid: patientId, PageTitle: 'encounter', PriPhyId: priPhyId }),
+  });
+
+  // Get encounter list
+  const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `PatientID=${patientId}&PageSize=20&SortBy=VisitDateNTime+DESC`,
+  });
+  const encHtml = encRes.ok ? await encRes.text() : '';
+  const encounterIds = parseEncounterIds(encHtml);
+
+  for (const encId of encounterIds.slice(0, 5)) {
+    const gdnRes = await fetch(`${INSYNC_BASE}/EncounterNote/GetDefaultNote`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
+      body: new URLSearchParams({ 'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true', 'EncounterNoteBaseData[EncounterID]': String(encId), 'EncounterNoteBaseData[PatientID]': String(patientId), 'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true', 'EncounterNoteBaseData[PracticeId]': '200', 'EncounterNoteBaseData[ConfigType]': '0', 'EncounterNoteBaseData[TPChartingElementName]': '', 'EncounterNoteBaseData[isFromCarePlan]': 'false' }).toString(),
+    });
+    if (!gdnRes.ok) continue;
+    const gdnJson = await gdnRes.json().catch(() => ({}));
+    const notesId = gdnJson.EncounterNoteStyle?.EncNotelist?.[0]?.NotesId || 0;
+    if (!notesId) continue;
+
+    const genRes = await fetch(`${INSYNC_BASE}/EncounterNote/GenerateEncounterNote`, {
+      method: 'POST', headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
+      body: new URLSearchParams({ 'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true', 'EncounterNoteBaseData[EncounterID]': String(encId), 'EncounterNoteBaseData[PatientID]': String(patientId), 'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true', 'EncounterNoteBaseData[PracticeId]': '200', 'EncounterNoteBaseData[ConfigType]': '0', 'EncounterNoteBaseData[TPChartingElementName]': '', 'EncounterNoteBaseData[isFromCarePlan]': 'false', 'EncounterNoteBaseData[FilePath]': '', 'EncounterNoteBaseData[HTMLFontSize]': '11px', 'EncounterNoteBaseData[HTMLFontName]': 'Arial', 'EncounterNoteBaseData[ReferingPhyID]': '0', 'EncounterNoteBaseData[IsEncounterClose]': 'false', 'EncounterNoteBaseData[NotesID]': String(notesId) }).toString(),
+    });
+    if (!genRes.ok) continue;
+    const genJson = await genRes.json().catch(() => ({}));
+    const noteHtml = genJson.StrEncounterNote || '';
+    if (!noteHtml) continue;
+
+    const stripped = noteHtml
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const markers = [...stripped.matchAll(/\bTreatment Plan\b/g)];
+    const tpRaw = markers.length ? stripped.slice(markers[markers.length - 1].index) : '(Treatment Plan marker not found)';
+
+    // Extract all bracket annotations
+    const brackets = [...tpRaw.matchAll(/\[([^\]]+)\]/g)].map(m => m[1].trim());
+    const parens   = [...tpRaw.matchAll(/\(([^)]{5,80})\)/g)].map(m => m[1].trim()).filter(p => /date|review/i.test(p));
+
+    return res.json({ encounter_id: encId, brackets, parens, tp_raw: tpRaw.slice(0, 3000) });
+  }
+  res.json({ error: 'No encounter with TP found in first 5 encounters' });
+});
+
 router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   const { data: client, error: clientErr } = await supabase
     .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
