@@ -419,6 +419,112 @@ function parseDobMDY(raw) {
   return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+
+async function fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie) {
+  const headers = {
+    'User-Agent': INSYNC_UA,
+    'Cookie': cookie,
+    'Origin': INSYNC_BASE,
+    'Referer': `${INSYNC_BASE}/Dashboard/dashboard`,
+    'X-Requested-With': 'XMLHttpRequest',
+  };
+
+  await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+  });
+  await fetch(`${INSYNC_BASE}/PatientSearch/SaveVisitedPatientLog`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `patientID=${patientId}`,
+  });
+
+  const fsRes = await fetch(`${INSYNC_BASE}/facesheet`, {
+    headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
+  });
+  if (!fsRes.ok) throw new Error(`Facesheet returned ${fsRes.status}`);
+  const html = await fsRes.text();
+  if (html.includes('SIGN IN') && html.includes('Password')) throw new Error('Session expired');
+
+  const diagnoses = parseProblemList(html);
+
+  let encounterIds = [];
+  try {
+    const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `PatientID=${patientId}&PageSize=20&SortBy=VisitDateNTime+DESC`,
+    });
+    if (encRes.ok) encounterIds = parseEncounterIds(await encRes.text());
+  } catch (_) {}
+
+  await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ intpatientid: patientId, PageTitle: 'encounter', PriPhyId: priPhyId }),
+  });
+
+  let treatment_plan = existingInsyncData?.treatment_plan || [];
+  for (const encId of encounterIds.slice(0, 8)) {
+    const gdnBody = new URLSearchParams({
+      'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
+      'EncounterNoteBaseData[EncounterID]':         String(encId),
+      'EncounterNoteBaseData[PatientID]':            String(patientId),
+      'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
+      'EncounterNoteBaseData[PracticeId]':           '200',
+      'EncounterNoteBaseData[ConfigType]':           '0',
+      'EncounterNoteBaseData[TPChartingElementName]': '',
+      'EncounterNoteBaseData[isFromCarePlan]':       'false',
+    });
+    let notesId = 0;
+    try {
+      const gdnRes = await fetch(`${INSYNC_BASE}/EncounterNote/GetDefaultNote`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
+        body: gdnBody.toString(),
+      });
+      if (gdnRes.ok) {
+        const gdnJson = await gdnRes.json();
+        notesId = gdnJson.EncounterNoteStyle?.EncNotelist?.[0]?.NotesId || 0;
+      }
+    } catch (_) {}
+    if (!notesId) continue;
+
+    const genBody = new URLSearchParams({
+      'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
+      'EncounterNoteBaseData[EncounterID]':         String(encId),
+      'EncounterNoteBaseData[PatientID]':            String(patientId),
+      'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
+      'EncounterNoteBaseData[PracticeId]':           '200',
+      'EncounterNoteBaseData[ConfigType]':           '0',
+      'EncounterNoteBaseData[TPChartingElementName]': '',
+      'EncounterNoteBaseData[isFromCarePlan]':       'false',
+      'EncounterNoteBaseData[FilePath]':             '',
+      'EncounterNoteBaseData[HTMLFontSize]':         '11px',
+      'EncounterNoteBaseData[HTMLFontName]':         'Arial',
+      'EncounterNoteBaseData[ReferingPhyID]':        '0',
+      'EncounterNoteBaseData[IsEncounterClose]':     'false',
+      'EncounterNoteBaseData[NotesID]':              String(notesId),
+    });
+    const genRes = await fetch(`${INSYNC_BASE}/EncounterNote/GenerateEncounterNote`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
+      body: genBody.toString(),
+    });
+    if (!genRes.ok) continue;
+    const genJson = await genRes.json();
+    const noteHtml = genJson.StrEncounterNote || '';
+    if (!noteHtml) continue;
+    const parsed = parseTreatmentPlan(noteHtml);
+    if (parsed.length) { treatment_plan = parsed; break; }
+  }
+
+  return { diagnoses, treatment_plan };
+}
+
 router.post('/sync-insync', requireAuth, async (req, res) => {
   // Load credentials from app_settings
   const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
@@ -460,7 +566,7 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
   const rows = insyncData?.data;
   if (!Array.isArray(rows)) return res.status(502).json({ error: 'Unexpected InSync response — login may have failed' });
 
-  let created = 0, updated = 0, skipped = 0;
+  let created = 0, updated = 0, skipped = 0, fs_synced = 0;
 
   for (const row of rows) {
     const first = (row.FirstName || '').trim() || null;
@@ -478,38 +584,66 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
     // Match by MRN first, then first+last+dob, then first+last
     let existing = null;
     if (mrn) {
-      const { data } = await supabase.from('oo_clients').select('id').eq('mrn', mrn).maybeSingle();
+      const { data } = await supabase.from('oo_clients').select('id, insync_data').eq('mrn', mrn).maybeSingle();
       existing = data;
     }
     if (!existing && first && last) {
-      let q = supabase.from('oo_clients').select('id').eq('first_name', first).eq('last_name', last);
+      let q = supabase.from('oo_clients').select('id, insync_data').eq('first_name', first).eq('last_name', last);
       if (dob) q = q.eq('dob', dob);
       const { data } = await q.maybeSingle();
       existing = data;
     }
 
+    const patientId = row.PatientId || null;
+    const priPhyId  = row.PrimaryPhysician || 0;
+
+    // Preserve existing dx/tp so the basic sync doesn't wipe them
+    const existingInsyncData = existing?.insync_data || {};
     const payload = {
       first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email, status,
-      insync_patient_id: row.PatientId || null,
+      insync_patient_id: patientId,
       address:           (row.Address || '').trim() || null,
       payer_plan_name:   (row.PayerPlanName || '').trim() || null,
       eligibility_result:(row.EligibilityResult || '').trim() || null,
       referring_provider:(row.ReferringProviderName || '').trim() || null,
       counselor:         (row.Counselor || '').trim() || null,
-      insync_data:       row,
-      updated_at:        new Date().toISOString(),
+      insync_data: {
+        ...row,
+        diagnoses:           existingInsyncData.diagnoses           || [],
+        treatment_plan:      existingInsyncData.treatment_plan      || [],
+        facesheet_synced_at: existingInsyncData.facesheet_synced_at || null,
+      },
+      updated_at: new Date().toISOString(),
     };
 
+    let clientId = existing?.id;
     if (existing) {
       const { error } = await supabase.from('oo_clients').update(payload).eq('id', existing.id);
       if (error) skipped++; else updated++;
     } else {
-      const { error } = await supabase.from('oo_clients').insert({ ...payload });
-      if (error) skipped++; else created++;
+      const { data: inserted, error } = await supabase.from('oo_clients').insert({ ...payload }).select('id').single();
+      if (error) { skipped++; continue; }
+      clientId = inserted.id;
+      created++;
+    }
+
+    // Facesheet + TP sync — skip if synced within last 24h
+    if (patientId && clientId) {
+      const lastSync = existingInsyncData.facesheet_synced_at;
+      const age = lastSync ? Date.now() - new Date(lastSync).getTime() : Infinity;
+      if (age > TWENTY_FOUR_HOURS) {
+        try {
+          await sleep(500);
+          const { diagnoses, treatment_plan } = await fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie);
+          const updatedInsyncData = { ...payload.insync_data, diagnoses, treatment_plan, facesheet_synced_at: new Date().toISOString() };
+          await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', clientId);
+          fs_synced++;
+        } catch (_) { /* non-fatal — basic sync already saved */ }
+      }
     }
   }
 
-  res.json({ ok: true, created, updated, skipped, total: rows.length });
+  res.json({ ok: true, created, updated, skipped, fs_synced, total: rows.length });
 });
 
 // ── Facesheet sync (diagnoses / problem list) ─────────────────────────────
@@ -624,108 +758,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   };
 
   try {
-    // Step 1: set patient context
-    await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
-    });
-
-    await fetch(`${INSYNC_BASE}/PatientSearch/SaveVisitedPatientLog`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `patientID=${patientId}`,
-    });
-
-    // Step 2: fetch facesheet HTML
-    const fsRes = await fetch(`${INSYNC_BASE}/facesheet`, {
-      headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
-    });
-    if (!fsRes.ok) return res.status(502).json({ error: `Facesheet returned ${fsRes.status}` });
-
-    const html = await fsRes.text();
-    if (html.includes('SIGN IN') && html.includes('Password')) {
-      return res.status(401).json({ error: 'InSync session expired during facesheet load.' });
-    }
-
-    const diagnoses = parseProblemList(html);
-
-    // Step 3: get encounter list
-    let encounterIds = [];
-    try {
-      const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `PatientID=${patientId}&PageSize=20&SortBy=VisitDateNTime+DESC`,
-      });
-      if (encRes.ok) encounterIds = parseEncounterIds(await encRes.text());
-    } catch (_) {}
-
-    // Step 4: switch context to encounter mode, then find a completed note via GetDefaultNote
-    await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
-      body: JSON.stringify({ intpatientid: patientId, PageTitle: 'encounter', PriPhyId: priPhyId }),
-    });
-
-    let treatment_plan = client.insync_data?.treatment_plan || [];
-    for (const encId of encounterIds.slice(0, 8)) {
-      // GetDefaultNote reveals the real saved-note IDs for this encounter
-      const gdnBody = new URLSearchParams({
-        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
-        'EncounterNoteBaseData[EncounterID]':         String(encId),
-        'EncounterNoteBaseData[PatientID]':            String(patientId),
-        'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
-        'EncounterNoteBaseData[PracticeId]':           '200',
-        'EncounterNoteBaseData[ConfigType]':           '0',
-        'EncounterNoteBaseData[TPChartingElementName]': '',
-        'EncounterNoteBaseData[isFromCarePlan]':       'false',
-      });
-      let notesId = 0;
-      try {
-        const gdnRes = await fetch(`${INSYNC_BASE}/EncounterNote/GetDefaultNote`, {
-          method: 'POST',
-          headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
-          body: gdnBody.toString(),
-        });
-        if (gdnRes.ok) {
-          const gdnJson = await gdnRes.json();
-          notesId = gdnJson.EncounterNoteStyle?.EncNotelist?.[0]?.NotesId || 0;
-        }
-      } catch (_) {}
-      if (!notesId) continue;
-
-      // We have a real note ID — generate the full note HTML
-      const genBody = new URLSearchParams({
-        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
-        'EncounterNoteBaseData[EncounterID]':         String(encId),
-        'EncounterNoteBaseData[PatientID]':            String(patientId),
-        'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
-        'EncounterNoteBaseData[PracticeId]':           '200',
-        'EncounterNoteBaseData[ConfigType]':           '0',
-        'EncounterNoteBaseData[TPChartingElementName]': '',
-        'EncounterNoteBaseData[isFromCarePlan]':       'false',
-        'EncounterNoteBaseData[FilePath]':             '',
-        'EncounterNoteBaseData[HTMLFontSize]':         '11px',
-        'EncounterNoteBaseData[HTMLFontName]':         'Arial',
-        'EncounterNoteBaseData[ReferingPhyID]':        '0',
-        'EncounterNoteBaseData[IsEncounterClose]':     'false',
-        'EncounterNoteBaseData[NotesID]':              String(notesId),
-      });
-      const genRes = await fetch(`${INSYNC_BASE}/EncounterNote/GenerateEncounterNote`, {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
-        body: genBody.toString(),
-      });
-      if (!genRes.ok) continue;
-      const genJson = await genRes.json();
-      const noteHtml = genJson.StrEncounterNote || '';
-      if (!noteHtml) continue;
-      const parsed = parseTreatmentPlan(noteHtml);
-      if (parsed.length) { treatment_plan = parsed; break; }
-    }
-
-    // Merge into insync_data
+    const { diagnoses, treatment_plan } = await fetchFacesheetAndTP(patientId, priPhyId, client.insync_data, cookie);
     const updatedInsyncData = {
       ...(client.insync_data || {}),
       diagnoses,
@@ -733,7 +766,6 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       facesheet_synced_at: new Date().toISOString(),
     };
     await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
-
     res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
   } catch (err) {
     res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
