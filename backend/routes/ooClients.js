@@ -741,7 +741,7 @@ router.get('/:id/debug-encounter-html', requireAuth, async (req, res) => {
   ]);
   if (!userSetting?.value || !passSetting?.value) return res.status(400).json({ error: 'InSync credentials not configured' });
 
-  const cookie = await getInSyncCookie(userSetting.value, passSetting.value);
+  const cookie = await inSyncLogin(userSetting.value, passSetting.value);
   const patientId = client.insync_patient_id;
   const priPhyId  = client.insync_data?.PriPhyId || '';
 
