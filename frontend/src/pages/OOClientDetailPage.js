@@ -597,9 +597,30 @@ export default function OOClientDetailPage() {
       <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', marginBottom: 20 }}>
 
-        {/* Left — client info */}
+        {/* Left — personal notes */}
+        <div style={{ width: 320, flexShrink: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>My Notes</span>
+            {notesSaveState === 'saving' && <span style={{ fontSize: '0.68rem', color: 'var(--gold)' }}>Saving…</span>}
+            {notesSaveState === 'saved'  && <span style={{ fontSize: '0.68rem', color: '#16a34a' }}>✓ Saved</span>}
+          </div>
+          <textarea
+            value={clientNotes}
+            onChange={e => handleClientNotesChange(e.target.value)}
+            placeholder="Notes just for you…"
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              minHeight: 110, fontSize: '0.82rem', lineHeight: 1.55,
+              border: '1px solid var(--gray-200)', borderRadius: 6,
+              padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
+              background: 'white', color: 'var(--gray-800)',
+            }}
+          />
+        </div>
+
+        {/* Right — client info */}
         <div style={{ flex: 1, minWidth: 0 }}>
           {/* Name + sex + status + referral + Edit button */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -672,26 +693,6 @@ export default function OOClientDetailPage() {
           </div>
         </div>
 
-        {/* Right — personal notes */}
-        <div style={{ width: 260, flexShrink: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>My Notes</span>
-            {notesSaveState === 'saving' && <span style={{ fontSize: '0.68rem', color: 'var(--gold)' }}>Saving…</span>}
-            {notesSaveState === 'saved'  && <span style={{ fontSize: '0.68rem', color: '#16a34a' }}>✓ Saved</span>}
-          </div>
-          <textarea
-            value={clientNotes}
-            onChange={e => handleClientNotesChange(e.target.value)}
-            placeholder="Notes just for you…"
-            style={{
-              width: '100%', boxSizing: 'border-box',
-              minHeight: 110, fontSize: '0.82rem', lineHeight: 1.55,
-              border: '1px solid var(--gray-200)', borderRadius: 6,
-              padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
-              background: '#fffdf0', color: 'var(--gray-800)',
-            }}
-          />
-        </div>
       </div>
 
       {/* ── 3-column body ── */}

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
 function fmt12(t) {
@@ -64,6 +65,7 @@ function PhoneNum({ number, small }) {
 // ── Single call row ───────────────────────────────────────────────────────────
 
 function CallRow({ appt: initialAppt, onUpdate }) {
+  const navigate = useNavigate();
   const [appt,      setAppt]      = useState(initialAppt);
   const [expanded,  setExpanded]  = useState(false);
   const [notes,     setNotes]     = useState(initialAppt.raw_notes || '');
@@ -121,73 +123,78 @@ function CallRow({ appt: initialAppt, onUpdate }) {
   return (
     <div style={{ borderBottom: '1px solid var(--gray-100)' }}>
       {/* Main row */}
-      <div
-        style={{
-          display: 'flex', alignItems: 'center', gap: 0,
-          padding: '11px 0 11px 12px',
-          borderLeft: `3px solid ${appt.note_done_at ? '#86efac' : appt.called_at ? '#93c5fd' : 'transparent'}`,
-          cursor: 'pointer',
-        }}
-        onClick={() => setExpanded(e => !e)}
-        onMouseEnter={e => e.currentTarget.style.background = 'var(--gray-50)'}
-        onMouseLeave={e => e.currentTarget.style.background = ''}
-      >
-        {/* Expand arrow */}
-        <div style={{ width: 18, fontSize: '0.65rem', color: 'var(--gray-300)', flexShrink: 0 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center',
+        padding: '9px 0 9px 8px',
+        borderLeft: `3px solid ${appt.note_done_at ? '#86efac' : appt.called_at ? '#93c5fd' : 'transparent'}`,
+      }}>
+
+        {/* Expand arrow — only this toggles expansion */}
+        <div
+          onClick={() => setExpanded(e => !e)}
+          style={{ width: 20, fontSize: '0.65rem', color: 'var(--gray-300)', flexShrink: 0, cursor: 'pointer', userSelect: 'none', textAlign: 'center' }}
+        >
           {expanded ? '▾' : '▸'}
         </div>
 
         {/* Time */}
-        <div style={{ width: 76, fontSize: '0.82rem', fontWeight: 600, color: 'var(--navy)', flexShrink: 0 }}>
+        <div style={{ width: 70, fontSize: '0.8rem', fontWeight: 600, color: 'var(--navy)', flexShrink: 0 }}>
           {fmt12(appt.time)}
         </div>
 
-        {/* Client name */}
-        <div style={{ flex: 1, fontSize: '0.9rem', fontWeight: 600, color: 'var(--gray-800)', minWidth: 0 }}>
-          {c ? `${c.last_name}, ${c.first_name}` : '—'}
+        {/* Client name — navigates to client detail */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <span
+            onClick={() => navigate(`/oo/clients/${appt.client_id}`)}
+            style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--navy)', cursor: 'pointer', textDecoration: 'underline', textDecorationColor: 'transparent', transition: 'text-decoration-color 0.1s' }}
+            onMouseEnter={e => e.currentTarget.style.textDecorationColor = 'var(--navy)'}
+            onMouseLeave={e => e.currentTarget.style.textDecorationColor = 'transparent'}
+          >
+            {c ? `${c.last_name}, ${c.first_name}` : '—'}
+          </span>
         </div>
 
         {/* Phone numbers */}
-        <div style={{ width: 200, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <div style={{ width: 185, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
           {phone
             ? <>
                 <PhoneNum number={phone} />
                 {altPhone && <PhoneNum number={altPhone} small />}
               </>
-            : <span style={{ fontSize: '0.75rem', color: 'var(--gray-300)' }}>no phone</span>
+            : <span style={{ fontSize: '0.72rem', color: 'var(--gray-300)' }}>no phone</span>
           }
         </div>
 
         {/* Referral source */}
-        <div style={{ width: 140, fontSize: '0.75rem', color: 'var(--gray-400)', flexShrink: 0, paddingRight: 8 }}>
+        <div style={{ width: 120, fontSize: '0.72rem', color: 'var(--gray-400)', flexShrink: 0, paddingRight: 6 }}>
           {rs?.name || ''}
         </div>
 
-        {/* Called checkbox */}
-        <div style={{ width: 68, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}
-          onClick={e => { e.stopPropagation(); toggleCalled(); }}>
+        {/* Called */}
+        <div style={{ width: 56, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer' }}
+          onClick={toggleCalled}>
           <input type="checkbox" readOnly checked={!!appt.called_at}
-            style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#2563eb', pointerEvents: 'none' }} />
-          <span style={{ fontSize: '0.58rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Called</span>
-          {appt.called_at && <span style={{ fontSize: '0.58rem', color: '#2563eb', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.called_at)}</span>}
+            style={{ width: 14, height: 14, accentColor: '#2563eb', pointerEvents: 'none' }} />
+          <span style={{ fontSize: '0.56rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Called</span>
+          {appt.called_at && <span style={{ fontSize: '0.56rem', color: '#2563eb', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.called_at)}</span>}
         </div>
 
-        {/* Note Sent checkbox */}
-        <div style={{ width: 68, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}
-          onClick={e => { e.stopPropagation(); toggleNoteSent(); }}>
+        {/* Note Sent */}
+        <div style={{ width: 56, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer' }}
+          onClick={toggleNoteSent}>
           <input type="checkbox" readOnly checked={!!appt.note_sent_at}
-            style={{ width: 15, height: 15, cursor: 'pointer', accentColor: 'var(--navy)', pointerEvents: 'none' }} />
-          <span style={{ fontSize: '0.58rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Note Sent</span>
-          {appt.note_sent_at && <span style={{ fontSize: '0.58rem', color: 'var(--gray-500)', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.note_sent_at)}</span>}
+            style={{ width: 14, height: 14, accentColor: 'var(--navy)', pointerEvents: 'none' }} />
+          <span style={{ fontSize: '0.56rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sent</span>
+          {appt.note_sent_at && <span style={{ fontSize: '0.56rem', color: 'var(--gray-500)', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.note_sent_at)}</span>}
         </div>
 
-        {/* Done checkbox */}
-        <div style={{ width: 56, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center' }}
-          onClick={e => { e.stopPropagation(); toggleDone(); }}>
+        {/* Done */}
+        <div style={{ width: 48, flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer' }}
+          onClick={toggleDone}>
           <input type="checkbox" readOnly checked={!!appt.note_done_at}
-            style={{ width: 15, height: 15, cursor: 'pointer', accentColor: '#16a34a', pointerEvents: 'none' }} />
-          <span style={{ fontSize: '0.58rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Done</span>
-          {appt.note_done_at && <span style={{ fontSize: '0.58rem', color: '#16a34a', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.note_done_at)}</span>}
+            style={{ width: 14, height: 14, accentColor: '#16a34a', pointerEvents: 'none' }} />
+          <span style={{ fontSize: '0.56rem', color: 'var(--gray-400)', marginTop: 1, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Done</span>
+          {appt.note_done_at && <span style={{ fontSize: '0.56rem', color: '#16a34a', textAlign: 'center', lineHeight: 1.2 }}>{fmtStamp(appt.note_done_at)}</span>}
         </div>
       </div>
 
