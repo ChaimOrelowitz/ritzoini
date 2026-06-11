@@ -141,11 +141,12 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   const [rawNotes,  setRawNotes]  = useState(initialAppt.raw_notes || '');
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
-  const [processing, setProcessing] = useState(false);
-  const [fields,     setFields]     = useState(null);
-  const [sending,    setSending]    = useState(false);
-  const [deleting,   setDeleting]   = useState(false);
-  const [err,        setErr]        = useState('');
+  const [processing,     setProcessing]     = useState(false);
+  const [fields,         setFields]         = useState(null);
+  const [sending,        setSending]        = useState(false);
+  const [deleting,       setDeleting]       = useState(false);
+  const [err,            setErr]            = useState('');
+  const [showNoteModal,  setShowNoteModal]  = useState(false);
 
   useEffect(() => {
     setAppt(initialAppt);
@@ -313,87 +314,112 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         <textarea className="form-textarea" value={rawNotes} onChange={e => handleNoteChange(e.target.value)}
           placeholder="Session notes…" style={{ minHeight: 72, fontSize: '0.875rem' }} />
         {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
-        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn btn-outline btn-xs" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
             {processing ? 'Processing…' : fields ? 'Re-process with AI' : 'Process with AI'}
           </button>
           {fields && (
-            <button className="btn btn-gold btn-xs" type="button" onClick={handleSend} disabled={sending}>
-              {sending ? 'Sending…' : 'Send to Secretary'}
+            <button className="btn btn-gold btn-xs" type="button" onClick={() => setShowNoteModal(true)}>
+              Open Note →
             </button>
+          )}
+          {appt.note_sent_at && (
+            <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ Note sent {fmtDateTime(appt.note_sent_at)}</span>
           )}
         </div>
       </div>
 
-      {fields && (
-        <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--gray-100)' }}>
-          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 12 }}>AI-Generated Fields</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div>
-              <label style={fldLabel}>Location of Meeting</label>
-              <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'} readOnly style={{ background: 'var(--gray-50)', fontSize: '0.85rem' }} />
-            </div>
-            <div>
-              <label style={fldLabel}>Additional Person(s) Present</label>
-              <input className="form-input" style={{ fontSize: '0.85rem' }} value={fields.additional_persons_present || ''}
-                onChange={e => updateField('additional_persons_present', e.target.value)} placeholder="Leave blank if none" />
-            </div>
-            <div>
-              <label style={fldLabel}>Content Discussed</label>
-              <textarea className="form-textarea" style={{ minHeight: 56, fontSize: '0.85rem' }}
-                value={fields.content_discussed || ''} onChange={e => updateField('content_discussed', e.target.value)} />
-            </div>
-            <div>
-              <label style={fldLabel}>Interventions Used</label>
-              <textarea className="form-textarea" style={{ minHeight: 48, fontSize: '0.85rem' }}
-                value={fields.interventions_used || ''} onChange={e => updateField('interventions_used', e.target.value)} />
-            </div>
-            <div>
-              <label style={fldLabel}>Modality</label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
-                {MODALITIES_LIST.map(m => {
-                  const on = (fields.modalities || []).includes(m);
-                  return (
-                    <button key={m} type="button" onClick={() => toggleModality(m)} style={{
-                      padding: '3px 9px', fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, cursor: 'pointer',
-                      border: `1.5px solid ${on ? 'var(--navy)' : 'var(--gray-200)'}`,
-                      background: on ? 'var(--navy)' : 'transparent', color: on ? '#fff' : 'var(--gray-400)',
-                    }}>{m}</button>
-                  );
-                })}
+      {/* ── Note modal ── */}
+      {showNoteModal && fields && (
+        <div className="modal-overlay" onClick={() => setShowNoteModal(false)}>
+          <div className="modal" style={{ width: 640, maxWidth: '96vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}
+            onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--navy)' }}>
+                  Session Note — {fmtDate(appt.date)}
+                </h3>
+                <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginTop: 2 }}>
+                  {client.last_name}, {client.first_name} · {fmt12(appt.time)}
+                </div>
               </div>
+              <button onClick={() => setShowNoteModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', lineHeight: 1 }}>✕</button>
             </div>
-            <div>
-              <label style={fldLabel}>Patient Response</label>
-              <textarea className="form-textarea" style={{ minHeight: 48, fontSize: '0.85rem' }}
-                value={fields.patient_response || ''} onChange={e => updateField('patient_response', e.target.value)} />
+
+            <div className="modal-body" style={{ overflowY: 'auto', flex: 1 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div>
+                  <label style={fldLabel}>Location of Meeting</label>
+                  <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'} readOnly
+                    style={{ background: 'var(--gray-50)', fontSize: '0.85rem' }} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Additional Person(s) Present</label>
+                  <input className="form-input" style={{ fontSize: '0.85rem' }} value={fields.additional_persons_present || ''}
+                    onChange={e => updateField('additional_persons_present', e.target.value)} placeholder="Leave blank if none" />
+                </div>
+                <div>
+                  <label style={fldLabel}>Content Discussed</label>
+                  <textarea className="form-textarea" style={{ minHeight: 72, fontSize: '0.85rem' }}
+                    value={fields.content_discussed || ''} onChange={e => updateField('content_discussed', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Interventions Used</label>
+                  <textarea className="form-textarea" style={{ minHeight: 56, fontSize: '0.85rem' }}
+                    value={fields.interventions_used || ''} onChange={e => updateField('interventions_used', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Modality</label>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+                    {MODALITIES_LIST.map(m => {
+                      const on = (fields.modalities || []).includes(m);
+                      return (
+                        <button key={m} type="button" onClick={() => toggleModality(m)} style={{
+                          padding: '3px 9px', fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, cursor: 'pointer',
+                          border: `1.5px solid ${on ? 'var(--navy)' : 'var(--gray-200)'}`,
+                          background: on ? 'var(--navy)' : 'transparent', color: on ? '#fff' : 'var(--gray-400)',
+                        }}>{m}</button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <label style={fldLabel}>Patient Response</label>
+                  <textarea className="form-textarea" style={{ minHeight: 56, fontSize: '0.85rem' }}
+                    value={fields.patient_response || ''} onChange={e => updateField('patient_response', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Progress Toward Goals</label>
+                  <textarea className="form-textarea" style={{ minHeight: 56, fontSize: '0.85rem' }}
+                    value={fields.progress_toward_goals || ''} onChange={e => updateField('progress_toward_goals', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Changes to Treatment Plan</label>
+                  <textarea className="form-textarea" style={{ minHeight: 48, fontSize: '0.85rem' }}
+                    value={fields.treatment_plan_changes || ''} onChange={e => updateField('treatment_plan_changes', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Additional Comments</label>
+                  <textarea className="form-textarea" style={{ minHeight: 40, fontSize: '0.85rem' }}
+                    value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} />
+                </div>
+                <div>
+                  <label style={fldLabel}>Email Preview</label>
+                  <pre style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 6, padding: '12px 14px', fontSize: '0.78rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, color: 'var(--gray-600)' }}>
+                    {buildPreviewText(client, appt, fields, tp)}
+                  </pre>
+                </div>
+              </div>
+              {err && <p style={{ color: '#dc2626', margin: '12px 0 0', fontSize: '0.82rem' }}>{err}</p>}
             </div>
-            <div>
-              <label style={fldLabel}>Progress Toward Goals</label>
-              <textarea className="form-textarea" style={{ minHeight: 48, fontSize: '0.85rem' }}
-                value={fields.progress_toward_goals || ''} onChange={e => updateField('progress_toward_goals', e.target.value)} />
+
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowNoteModal(false)}>Close</button>
+              <button type="button" className="btn btn-gold btn-sm" onClick={handleSend} disabled={sending}>
+                {sending ? 'Sending…' : 'Send to Secretary'}
+              </button>
             </div>
-            <div>
-              <label style={fldLabel}>Changes to Treatment Plan</label>
-              <textarea className="form-textarea" style={{ minHeight: 48, fontSize: '0.85rem' }}
-                value={fields.treatment_plan_changes || ''} onChange={e => updateField('treatment_plan_changes', e.target.value)} />
-            </div>
-            <div>
-              <label style={fldLabel}>Additional Comments</label>
-              <textarea className="form-textarea" style={{ minHeight: 40, fontSize: '0.85rem' }}
-                value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} />
-            </div>
-            <div>
-              <label style={fldLabel}>Email Preview</label>
-              <pre style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 6, padding: '12px 14px', fontSize: '0.78rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontFamily: 'inherit', margin: 0, color: 'var(--gray-600)' }}>
-                {buildPreviewText(client, appt, fields, tp)}
-              </pre>
-            </div>
-          </div>
-          <div style={{ marginTop: 14 }}>
-            <button className="btn btn-gold btn-sm" type="button" onClick={handleSend} disabled={sending}>
-              {sending ? 'Sending…' : 'Send to Secretary'}
-            </button>
           </div>
         </div>
       )}
