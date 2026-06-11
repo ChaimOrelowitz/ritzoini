@@ -111,8 +111,10 @@ export default function OOClientDetailPage() {
   const [showRaw, setShowRaw]   = useState(false);
   const [syncingFs, setSyncingFs] = useState(false);
   const [fsMsg, setFsMsg]       = useState('');
-  const [editAppt, setEditAppt] = useState(null);
-  const [deleting, setDeleting] = useState(null);
+  const [editAppt, setEditAppt]     = useState(null);
+  const [deleting, setDeleting]     = useState(null);
+  const [debugHtml, setDebugHtml]   = useState('');
+  const [debugging, setDebugging]   = useState(false);
 
   function loadClient() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
@@ -128,6 +130,16 @@ export default function OOClientDetailPage() {
       loadAppts(),
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
+
+  async function debugEncounter() {
+    setDebugging(true);
+    setDebugHtml('');
+    try {
+      const r = await api.get(`/oo/clients/${id}/debug-encounter-html`);
+      setDebugHtml(r.html_preview);
+    } catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
+    finally { setDebugging(false); }
+  }
 
   async function deleteAppt(apptId) {
     setDeleting(apptId);
@@ -376,6 +388,20 @@ export default function OOClientDetailPage() {
           onClose={() => setEditAppt(null)}
           onSaved={() => { setEditAppt(null); loadAppts(); }}
         />
+      )}
+
+      {/* DEBUG: encounter HTML inspector */}
+      {client.insync_patient_id && (
+        <div style={{ marginTop: 8, marginBottom: 16 }}>
+          <button onClick={debugEncounter} disabled={debugging} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
+            {debugging ? 'Fetching…' : '⚙ Debug: fetch encounter HTML'}
+          </button>
+          {debugHtml && (
+            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #444', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+              {debugHtml}
+            </pre>
+          )}
+        </div>
       )}
 
       {/* Raw InSync data */}
