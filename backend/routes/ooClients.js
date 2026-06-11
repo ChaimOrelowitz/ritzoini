@@ -92,19 +92,24 @@ router.post('/', requireAuth, async (req, res) => {
 
 router.put('/:id', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
-          referral_source_id, program, status } = req.body;
+          referral_source_id, program, status,
+          mother_name, mother_phone, father_name, father_phone } = req.body;
   const updates = {};
-  if (first_name  !== undefined) updates.first_name  = first_name?.trim()  || null;
-  if (last_name   !== undefined) updates.last_name   = last_name?.trim()   || null;
-  if (dob         !== undefined) updates.dob         = dob || null;
-  if (sex         !== undefined) updates.sex         = sex || null;
-  if (phone       !== undefined) updates.phone       = phone?.trim()  || null;
-  if (mobile      !== undefined) updates.mobile      = mobile?.trim() || null;
-  if (email       !== undefined) updates.email       = email?.trim()  || null;
-  if (mrn         !== undefined) updates.mrn         = mrn?.trim()    || null;
+  if (first_name   !== undefined) updates.first_name   = first_name?.trim()   || null;
+  if (last_name    !== undefined) updates.last_name    = last_name?.trim()    || null;
+  if (dob          !== undefined) updates.dob          = dob || null;
+  if (sex          !== undefined) updates.sex          = sex || null;
+  if (phone        !== undefined) updates.phone        = phone?.trim()  || null;
+  if (mobile       !== undefined) updates.mobile       = mobile?.trim() || null;
+  if (email        !== undefined) updates.email        = email?.trim()  || null;
+  if (mrn          !== undefined) updates.mrn          = mrn?.trim()    || null;
   if (referral_source_id !== undefined) updates.referral_source_id = referral_source_id || null;
-  if (program     !== undefined) updates.program     = program?.trim() || null;
-  if (status      !== undefined) updates.status      = status;
+  if (program      !== undefined) updates.program      = program?.trim() || null;
+  if (status       !== undefined) updates.status       = status;
+  if (mother_name  !== undefined) updates.mother_name  = mother_name?.trim()  || null;
+  if (mother_phone !== undefined) updates.mother_phone = mother_phone?.trim() || null;
+  if (father_name  !== undefined) updates.father_name  = father_name?.trim()  || null;
+  if (father_phone !== undefined) updates.father_phone = father_phone?.trim() || null;
   updates.updated_at = new Date().toISOString();
 
   const { data, error } = await supabase

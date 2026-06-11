@@ -2,44 +2,182 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function calcAge(dob) {
+  if (!dob) return null;
+  const ms = Date.now() - new Date(dob + 'T12:00:00Z').getTime();
+  return Math.floor(ms / (365.25 * 24 * 60 * 60 * 1000));
+}
+
+function getDow(dateStr) {
+  return new Date(dateStr + 'T12:00:00Z').getUTCDay();
+}
+
+function fmt12(t) {
+  if (!t) return '';
+  const [h, m] = t.slice(0, 5).split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
 function fmtDob(d) {
   if (!d) return '';
   const [y, m, day] = d.split('-');
   return `${m}/${day}/${y}`;
 }
 
+// ── Constants ──────────────────────────────────────────────────────────────
+
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+
+const DAY_STYLES = [
+  { headerBg: '#eff6ff', headerBorder: '#bfdbfe', headerText: '#1d4ed8', dot: '#3b82f6' },
+  { headerBg: '#f0fdf4', headerBorder: '#bbf7d0', headerText: '#15803d', dot: '#22c55e' },
+  { headerBg: '#fefce8', headerBorder: '#fef08a', headerText: '#92400e', dot: '#eab308' },
+  { headerBg: '#fdf4ff', headerBorder: '#e9d5ff', headerText: '#7e22ce', dot: '#a855f7' },
+  { headerBg: '#fff7ed', headerBorder: '#fed7aa', headerText: '#c2410c', dot: '#f97316' },
+  { headerBg: '#fdf2f8', headerBorder: '#fbcfe8', headerText: '#9d174d', dot: '#ec4899' },
+];
+
+const NOT_ASSIGNED_STYLE = {
+  headerBg: '#f9fafb', headerBorder: '#e5e7eb', headerText: '#374151', dot: '#9ca3af',
+};
+
 const EMPTY_FORM = {
   first_name: '', last_name: '', dob: '', sex: '', phone: '', mobile: '',
   email: '', mrn: '', referral_source_id: '', program: '', status: 'active',
 };
 
-export default function OOClientsPage() {
+// ── Client Card ────────────────────────────────────────────────────────────
+
+function ClientCard({ client, nextAppt }) {
   const navigate = useNavigate();
-  const [clients, setClients] = useState([]);
-  const [sources, setSources] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [showModal, setShowModal] = useState(false);
+  const age = calcAge(client.dob);
+
+  return (
+    <div
+      onClick={() => navigate(`/oo/clients/${client.id}`)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 14, padding: '9px 14px',
+        borderRadius: 8, background: 'white', border: '1px solid var(--gray-100)',
+        cursor: 'pointer', marginBottom: 5, transition: 'background 0.1s, box-shadow 0.1s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--gray-50)'; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.boxShadow = 'none'; }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>
+          {client.last_name}, {client.first_name}
+        </div>
+        {nextAppt ? (
+          <div style={{ fontSize: '0.73rem', color: 'var(--gray-400)', marginTop: 1 }}>
+            {DAY_NAMES[getDow(nextAppt.date)]} · {fmt12(nextAppt.time)} · {nextAppt.duration || 45}min
+          </div>
+        ) : client.dob ? (
+          <div style={{ fontSize: '0.73rem', color: 'var(--gray-300)', marginTop: 1 }}>DOB {fmtDob(client.dob)}</div>
+        ) : null}
+      </div>
+
+      {(age !== null || client.sex) && (
+        <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', whiteSpace: 'nowrap', fontWeight: 500 }}>
+          {[age !== null ? `${age}y` : null, client.sex].filter(Boolean).join(' · ')}
+        </div>
+      )}
+
+      {client.oo_referral_sources && (
+        <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 4, padding: '2px 8px', fontSize: '0.7rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
+          {client.oo_referral_sources.name}
+        </span>
+      )}
+
+      <span style={{ color: 'var(--gray-300)', fontSize: '0.8rem' }}>›</span>
+    </div>
+  );
+}
+
+// ── Day Section ────────────────────────────────────────────────────────────
+
+function DaySection({ title, clients, nextApptMap, style, defaultOpen = true }) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
+          borderRadius: open ? '8px 8px 0 0' : 8,
+          background: style.headerBg,
+          border: `1px solid ${style.headerBorder}`,
+          cursor: 'pointer', userSelect: 'none',
+        }}
+      >
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: style.dot, flexShrink: 0 }} />
+        <span style={{ fontWeight: 700, fontSize: '0.88rem', color: style.headerText, flex: 1 }}>
+          {title}
+        </span>
+        <span style={{ fontSize: '0.75rem', color: style.headerText, opacity: 0.65 }}>
+          {clients.length} client{clients.length !== 1 ? 's' : ''}
+        </span>
+        <span style={{ fontSize: '0.72rem', color: style.headerText, opacity: 0.4, marginLeft: 4 }}>
+          {open ? '▾' : '▸'}
+        </span>
+      </div>
+
+      {open && (
+        <div style={{
+          padding: '8px 8px 4px',
+          background: 'var(--gray-50)',
+          border: `1px solid ${style.headerBorder}`,
+          borderTop: 'none',
+          borderRadius: '0 0 8px 8px',
+        }}>
+          {clients.length === 0 ? (
+            <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)', padding: '8px 6px' }}>No clients</div>
+          ) : (
+            clients.map(c => (
+              <ClientCard key={c.id} client={c} nextAppt={nextApptMap[c.id] || null} />
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main Page ──────────────────────────────────────────────────────────────
+
+export default function OOClientsPage() {
+  const [clients,     setClients]     = useState([]);
+  const [nextApptMap, setNextApptMap] = useState({});
+  const [sources,     setSources]     = useState([]);
+  const [loading,     setLoading]     = useState(true);
+  const [search,      setSearch]      = useState('');
+
+  // Add/Edit modal
+  const [showModal,  setShowModal]  = useState(false);
   const [editClient, setEditClient] = useState(null);
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
-  const [showImport, setShowImport] = useState(false);
+  const [form,       setForm]       = useState(EMPTY_FORM);
+  const [saving,     setSaving]     = useState(false);
+
+  // Import
+  const [showImport,   setShowImport]   = useState(false);
   const [importResult, setImportResult] = useState(null);
-  const [importing, setImporting] = useState(false);
+  const [importing,    setImporting]    = useState(false);
   const fileRef = useRef();
 
-  // InSync sync
+  // InSync
   const [showInSyncSettings, setShowInSyncSettings] = useState(false);
   const [inSyncUser, setInSyncUser] = useState('');
   const [inSyncPass, setInSyncPass] = useState('');
-  const [syncing, setSyncing] = useState(false);
+  const [syncing,    setSyncing]    = useState(false);
   const [syncResult, setSyncResult] = useState(null);
 
   // Assign referral source
-  const [showAssign, setShowAssign] = useState(false);
+  const [showAssign,    setShowAssign]    = useState(false);
   const [assignSourceId, setAssignSourceId] = useState('');
-  const [assignPaste, setAssignPaste] = useState('');
-  const [assignPreview, setAssignPreview] = useState(null); // { matched, unmatched }
+  const [assignPaste,   setAssignPaste]   = useState('');
+  const [assignPreview, setAssignPreview] = useState(null);
   const [assignLoading, setAssignLoading] = useState(false);
 
   useEffect(() => { loadAll(); }, []);
@@ -47,38 +185,37 @@ export default function OOClientsPage() {
   async function loadAll() {
     setLoading(true);
     try {
-      const [c, s] = await Promise.all([
+      const today = new Date().toISOString().split('T')[0];
+      const [clientsData, sourcesData, apptData] = await Promise.all([
         api.get('/oo/clients'),
         api.get('/oo/clients/referral-sources'),
+        api.get(`/oo/appointments?week_start=${today}`),
       ]);
-      setClients(c);
-      setSources(s);
+      setClients(clientsData);
+      setSources(sourcesData);
+
+      // Build client → next scheduled appointment map
+      const upcoming = (Array.isArray(apptData) ? apptData : []).filter(a => a.status === 'scheduled');
+      const map = {};
+      for (const appt of upcoming) {
+        const cid = appt.client_id;
+        if (!map[cid] ||
+            appt.date < map[cid].date ||
+            (appt.date === map[cid].date && appt.time < map[cid].time)) {
+          map[cid] = appt;
+        }
+      }
+      setNextApptMap(map);
     } finally {
       setLoading(false);
     }
   }
 
+  // ── Modal ──────────────────────────────────────────────────────────────
+
   function openAdd() {
     setEditClient(null);
     setForm(EMPTY_FORM);
-    setShowModal(true);
-  }
-
-  function openEdit(client) {
-    setEditClient(client);
-    setForm({
-      first_name: client.first_name || '',
-      last_name:  client.last_name  || '',
-      dob:        client.dob        || '',
-      sex:        client.sex        || '',
-      phone:      client.phone      || '',
-      mobile:     client.mobile     || '',
-      email:      client.email      || '',
-      mrn:        client.mrn        || '',
-      referral_source_id: client.referral_source_id || '',
-      program:    client.program    || '',
-      status:     client.status     || 'active',
-    });
     setShowModal(true);
   }
 
@@ -106,6 +243,8 @@ export default function OOClientsPage() {
     setClients(cs => cs.filter(c => c.id !== id));
   }
 
+  // ── InSync ─────────────────────────────────────────────────────────────
+
   async function handleSaveInSyncCreds() {
     await Promise.all([
       api.post('/settings/insync_username', { value: inSyncUser }),
@@ -115,34 +254,28 @@ export default function OOClientsPage() {
   }
 
   async function handleSync() {
-    setSyncing(true);
-    setSyncResult(null);
+    setSyncing(true); setSyncResult(null);
     try {
       const result = await api.post('/oo/clients/sync-insync', {});
       setSyncResult(result);
       await loadAll();
     } catch (err) {
       setSyncResult({ error: err.message });
-    } finally {
-      setSyncing(false);
-    }
+    } finally { setSyncing(false); }
   }
+
+  // ── Assign Referral Source ─────────────────────────────────────────────
 
   async function handleAssignPreview() {
     if (!assignSourceId || !assignPaste.trim()) return;
-    setAssignLoading(true);
-    setAssignPreview(null);
+    setAssignLoading(true); setAssignPreview(null);
     try {
       const result = await api.post('/oo/clients/assign-referral', {
-        referral_source_id: assignSourceId,
-        paste_text: assignPaste,
+        referral_source_id: assignSourceId, paste_text: assignPaste,
       });
       setAssignPreview(result);
-    } catch (err) {
-      setAssignPreview({ error: err.message });
-    } finally {
-      setAssignLoading(false);
-    }
+    } catch (err) { setAssignPreview({ error: err.message }); }
+    finally { setAssignLoading(false); }
   }
 
   async function handleAssignConfirm() {
@@ -154,33 +287,27 @@ export default function OOClientsPage() {
         client_ids: assignPreview.matched.map(c => c.id),
       });
       await loadAll();
-      setShowAssign(false);
-      setAssignPaste('');
-      setAssignPreview(null);
-      setAssignSourceId('');
-    } finally {
-      setAssignLoading(false);
-    }
+      setShowAssign(false); setAssignPaste(''); setAssignPreview(null); setAssignSourceId('');
+    } finally { setAssignLoading(false); }
   }
+
+  // ── Import ─────────────────────────────────────────────────────────────
 
   async function handleImport(e) {
     const file = e.target.files[0];
     if (!file) return;
-    setImporting(true);
-    setImportResult(null);
+    setImporting(true); setImportResult(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       const result = await api.postForm('/oo/clients/import/insync', formData);
       setImportResult(result);
       await loadAll();
-    } catch (err) {
-      setImportResult({ error: err.message });
-    } finally {
-      setImporting(false);
-      fileRef.current.value = '';
-    }
+    } catch (err) { setImportResult({ error: err.message }); }
+    finally { setImporting(false); fileRef.current.value = ''; }
   }
+
+  // ── Grouping ───────────────────────────────────────────────────────────
 
   const filtered = clients.filter(c => {
     if (!search) return true;
@@ -193,9 +320,32 @@ export default function OOClientsPage() {
     );
   });
 
+  const sorted = [...filtered].sort((a, b) => (a.last_name || '').localeCompare(b.last_name || ''));
+
+  // Group by day of week of next scheduled appointment (0=Sun…5=Fri); else notAssigned
+  const groups = { notAssigned: [], 0: [], 1: [], 2: [], 3: [], 4: [], 5: [] };
+  for (const client of sorted) {
+    const nextAppt = nextApptMap[client.id];
+    if (!nextAppt) {
+      groups.notAssigned.push(client);
+    } else {
+      const dow = getDow(nextAppt.date);
+      if (groups[dow] !== undefined) {
+        groups[dow].push(client);
+      } else {
+        groups.notAssigned.push(client); // Saturday or other → Not Assigned
+      }
+    }
+  }
+
+  const activeDays = [0, 1, 2, 3, 4, 5].filter(d => groups[d].length > 0);
+
+  // ── Render ─────────────────────────────────────────────────────────────
+
   return (
     <div style={{ padding: '24px 32px' }}>
-      {/* Header */}
+
+      {/* Header toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--navy)', margin: 0, flex: 1 }}>Clients</h2>
         <input
@@ -205,24 +355,24 @@ export default function OOClientsPage() {
           onChange={e => setSearch(e.target.value)}
           style={{ width: 240, fontSize: '0.85rem' }}
         />
-        <button className="btn btn-outline btn-sm" onClick={() => { setSyncing(false); setSyncResult(null); handleSync(); }} disabled={syncing}>
+        <button className="btn btn-outline btn-sm" onClick={handleSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync from InSync'}
         </button>
-        <button className="btn btn-outline btn-sm" onClick={() => setShowInSyncSettings(s => !s)} title="Configure InSync cookie">⚙</button>
+        <button className="btn btn-outline btn-sm" onClick={() => setShowInSyncSettings(s => !s)} title="Configure InSync credentials">⚙</button>
         <button className="btn btn-outline btn-sm" onClick={() => setShowImport(s => !s)}>Import Excel</button>
         <button className="btn btn-outline btn-sm" onClick={() => { setShowAssign(s => !s); setAssignPreview(null); }}>Assign Referral Source</button>
         <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Client</button>
       </div>
 
-      {/* InSync cookie settings */}
+      {/* InSync credentials panel */}
       {showInSyncSettings && (
         <div style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 8, padding: '14px 20px', marginBottom: 16, display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '0 0 200px' }}>
-            <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>InSync Username</label>
+            <label style={labelSt}>InSync Username</label>
             <input className="input" value={inSyncUser} onChange={e => setInSyncUser(e.target.value)} placeholder="Corelowitz" style={{ fontSize: '0.85rem' }} autoComplete="off" />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '0 0 200px' }}>
-            <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>InSync Password</label>
+            <label style={labelSt}>InSync Password</label>
             <input className="input" type="password" value={inSyncPass} onChange={e => setInSyncPass(e.target.value)} style={{ fontSize: '0.85rem' }} autoComplete="new-password" />
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -234,10 +384,12 @@ export default function OOClientsPage() {
 
       {/* Sync result */}
       {syncResult && (
-        <div style={{ marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: '0.82rem',
+        <div style={{
+          marginBottom: 16, padding: '10px 16px', borderRadius: 8, fontSize: '0.82rem',
           background: syncResult.error ? '#fef2f2' : '#f0fdf4',
           border: `1px solid ${syncResult.error ? '#fca5a5' : '#86efac'}`,
-          color: syncResult.error ? '#dc2626' : '#166534' }}>
+          color: syncResult.error ? '#dc2626' : '#166534',
+        }}>
           {syncResult.error
             ? `Error: ${syncResult.error}`
             : `Sync complete — ${syncResult.created} created, ${syncResult.updated} updated${syncResult.skipped > 0 ? `, ${syncResult.skipped} skipped` : ''} (${syncResult.total} total from InSync)`}
@@ -258,9 +410,7 @@ export default function OOClientsPage() {
               Done — {importResult.created} created, {importResult.updated} updated{importResult.skipped > 0 ? `, ${importResult.skipped} skipped` : ''}
             </span>
           )}
-          {importResult?.error && (
-            <span style={{ fontSize: '0.8rem', color: '#dc2626' }}>{importResult.error}</span>
-          )}
+          {importResult?.error && <span style={{ fontSize: '0.8rem', color: '#dc2626' }}>{importResult.error}</span>}
         </div>
       )}
 
@@ -270,14 +420,14 @@ export default function OOClientsPage() {
           <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--gray-600)', marginBottom: 12 }}>Assign Referral Source</div>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
-              <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Referral Source</label>
+              <label style={labelSt}>Referral Source</label>
               <select className="input" value={assignSourceId} onChange={e => { setAssignSourceId(e.target.value); setAssignPreview(null); }} style={{ fontSize: '0.85rem' }}>
                 <option value="">— Select —</option>
                 {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 300px' }}>
-              <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Paste Client List</label>
+              <label style={labelSt}>Paste Client List</label>
               <textarea
                 className="input"
                 value={assignPaste}
@@ -288,7 +438,6 @@ export default function OOClientsPage() {
               />
             </div>
           </div>
-
           <div style={{ marginTop: 12, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-primary btn-sm" onClick={handleAssignPreview} disabled={assignLoading || !assignSourceId || !assignPaste.trim()}>
               {assignLoading ? 'Matching…' : 'Preview Matches'}
@@ -301,7 +450,6 @@ export default function OOClientsPage() {
             )}
             <button className="btn btn-outline btn-sm" onClick={() => { setShowAssign(false); setAssignPaste(''); setAssignPreview(null); setAssignSourceId(''); }}>Close</button>
           </div>
-
           {assignPreview && !assignPreview.error && (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginBottom: 10 }}>
@@ -313,30 +461,30 @@ export default function OOClientsPage() {
                 ))}
               </div>
               <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-              {assignPreview.matched.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                    Matched ({assignPreview.matched.length})
-                  </div>
-                  {assignPreview.matched.map((c, i) => (
-                    <div key={i} style={{ fontSize: '0.8rem', color: '#166534', padding: '2px 0' }}>
-                      ✓ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                {assignPreview.matched.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                      Matched ({assignPreview.matched.length})
                     </div>
-                  ))}
-                </div>
-              )}
-              {assignPreview.unmatched.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
-                    Not found in system ({assignPreview.unmatched.length})
+                    {assignPreview.matched.map((c, i) => (
+                      <div key={i} style={{ fontSize: '0.8rem', color: '#166534', padding: '2px 0' }}>
+                        ✓ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                      </div>
+                    ))}
                   </div>
-                  {assignPreview.unmatched.map((c, i) => (
-                    <div key={i} style={{ fontSize: '0.8rem', color: '#92400e', padding: '2px 0' }}>
-                      ✗ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                )}
+                {assignPreview.unmatched.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
+                      Not found ({assignPreview.unmatched.length})
                     </div>
-                  ))}
-                </div>
-              )}
+                    {assignPreview.unmatched.map((c, i) => (
+                      <div key={i} style={{ fontSize: '0.8rem', color: '#92400e', padding: '2px 0' }}>
+                        ✗ {c.first_name} {c.last_name} {c.dob ? `· ${fmtDob(c.dob)}` : ''}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -346,120 +494,109 @@ export default function OOClientsPage() {
         </div>
       )}
 
-      {/* Table */}
+      {/* Grouped sections */}
       {loading ? (
         <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Loading…</div>
       ) : filtered.length === 0 ? (
-        <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>{search ? 'No matches.' : 'No clients yet. Add one or import from InSync.'}</div>
-      ) : (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem' }}>
-            <thead>
-              <tr style={{ borderBottom: '2px solid var(--gray-200)' }}>
-                {['Last', 'First', 'DOB', 'Sex', 'Phone', 'Mobile', 'Email', 'MRN', 'Referral Source', 'Status', ''].map(h => (
-                  <th key={h} style={{ textAlign: 'left', padding: '6px 10px', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', whiteSpace: 'nowrap' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(c => (
-                <tr key={c.id} onClick={() => navigate(`/oo/clients/${c.id}`)} style={{ borderBottom: '1px solid var(--gray-100)', cursor: 'pointer' }} onMouseEnter={e => e.currentTarget.style.background='var(--gray-50)'} onMouseLeave={e => e.currentTarget.style.background=''}>
-                  <td style={{ padding: '7px 10px', fontWeight: 600, color: 'var(--navy)', whiteSpace: 'nowrap' }}>{c.last_name || '—'}</td>
-                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>{c.first_name || '—'}</td>
-                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>{fmtDob(c.dob) || '—'}</td>
-                  <td style={{ padding: '7px 10px', color: 'var(--gray-600)' }}>{c.sex || '—'}</td>
-                  <td style={{ padding: '7px 10px', color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{c.phone || '—'}</td>
-                  <td style={{ padding: '7px 10px', color: 'var(--gray-600)', whiteSpace: 'nowrap' }}>{c.mobile || '—'}</td>
-                  <td style={{ padding: '7px 10px', color: 'var(--gray-600)' }}>{c.email || '—'}</td>
-                  <td style={{ padding: '7px 10px', color: 'var(--gray-600)' }}>{c.mrn || '—'}</td>
-                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
-                    {c.oo_referral_sources ? (
-                      <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 4, padding: '2px 7px', fontSize: '0.72rem', fontWeight: 600 }}>{c.oo_referral_sources.name}</span>
-                    ) : <span style={{ color: 'var(--gray-300)' }}>—</span>}
-                  </td>
-                  <td style={{ padding: '7px 10px' }}>
-                    <span style={{
-                      background: c.status === 'active' ? '#dcfce7' : '#f3f4f6',
-                      color: c.status === 'active' ? '#166534' : '#6b7280',
-                      borderRadius: 4, padding: '2px 7px', fontSize: '0.72rem', fontWeight: 600,
-                    }}>{c.status || 'active'}</span>
-                  </td>
-                  <td style={{ padding: '7px 10px', whiteSpace: 'nowrap' }}>
-                    <button className="btn btn-outline btn-xs" onClick={e => { e.stopPropagation(); openEdit(c); }} style={{ marginRight: 6 }}>Edit</button>
-                    <button className="btn btn-outline btn-xs" onClick={e => { e.stopPropagation(); handleDelete(c.id); }} style={{ color: '#dc2626', borderColor: '#fca5a5' }}>Delete</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem', padding: '20px 0' }}>
+          {search ? 'No matches.' : 'No clients yet. Add one or import from InSync.'}
         </div>
+      ) : (
+        <>
+          <DaySection
+            title="Not Assigned"
+            clients={groups.notAssigned}
+            nextApptMap={nextApptMap}
+            style={NOT_ASSIGNED_STYLE}
+            defaultOpen={groups.notAssigned.length > 0}
+          />
+          {activeDays.map(dow => (
+            <DaySection
+              key={dow}
+              title={DAY_NAMES[dow]}
+              clients={groups[dow]}
+              nextApptMap={nextApptMap}
+              style={DAY_STYLES[dow]}
+              defaultOpen
+            />
+          ))}
+        </>
       )}
 
-      {/* Add/Edit Modal */}
+      {/* Add Client Modal */}
       {showModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ background: '#fff', borderRadius: 12, padding: '28px 32px', width: 560, maxWidth: '95vw', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ margin: '0 0 20px', fontSize: '1rem', fontWeight: 700, color: 'var(--navy)' }}>
-              {editClient ? 'Edit Client' : 'Add Client'}
-            </h3>
-            <form onSubmit={handleSave}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
-                {[
-                  { key: 'first_name', label: 'First Name' },
-                  { key: 'last_name',  label: 'Last Name'  },
-                  { key: 'dob',        label: 'Date of Birth', type: 'date' },
-                  { key: 'mrn',        label: 'MRN'        },
-                  { key: 'phone',      label: 'Phone',      type: 'tel' },
-                  { key: 'mobile',     label: 'Mobile',     type: 'tel' },
-                  { key: 'email',      label: 'Email',      type: 'email', span: 2 },
-                ].map(({ key, label, type = 'text', span }) => (
-                  <div key={key} style={{ gridColumn: span ? `span ${span}` : undefined, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{label}</label>
-                    <input
-                      className="input"
-                      type={type}
-                      value={form[key]}
-                      onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                      style={{ fontSize: '0.85rem' }}
-                    />
+        <div className="modal-overlay">
+          <div className="modal" style={{ width: 520, maxWidth: '95vw' }}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: 'var(--navy)' }}>
+                {editClient ? 'Edit Client' : 'Add Client'}
+              </h3>
+              <button onClick={() => setShowModal(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', lineHeight: 1 }}>✕</button>
+            </div>
+            <div className="modal-body">
+              <form id="add-client-form" onSubmit={handleSave}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 16px' }}>
+                  {[
+                    { key: 'first_name', label: 'First Name' },
+                    { key: 'last_name',  label: 'Last Name'  },
+                    { key: 'dob',        label: 'Date of Birth', type: 'date' },
+                    { key: 'mrn',        label: 'MRN' },
+                    { key: 'phone',      label: 'Phone',  type: 'tel' },
+                    { key: 'mobile',     label: 'Mobile', type: 'tel' },
+                    { key: 'email',      label: 'Email',  type: 'email', span: 2 },
+                  ].map(({ key, label, type = 'text', span }) => (
+                    <div key={key} style={{ gridColumn: span ? `span ${span}` : undefined, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      <label style={labelSt}>{label}</label>
+                      <input
+                        className="input"
+                        type={type}
+                        value={form[key]}
+                        onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                        style={{ fontSize: '0.85rem' }}
+                      />
+                    </div>
+                  ))}
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={labelSt}>Sex</label>
+                    <select className="input" value={form.sex} onChange={e => setForm(f => ({ ...f, sex: e.target.value }))} style={{ fontSize: '0.85rem' }}>
+                      <option value="">—</option>
+                      <option value="M">Male</option>
+                      <option value="F">Female</option>
+                      <option value="Other">Other</option>
+                    </select>
                   </div>
-                ))}
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sex</label>
-                  <select className="input" value={form.sex} onChange={e => setForm(f => ({ ...f, sex: e.target.value }))} style={{ fontSize: '0.85rem' }}>
-                    <option value="">—</option>
-                    <option value="M">Male</option>
-                    <option value="F">Female</option>
-                    <option value="Other">Other</option>
-                  </select>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={labelSt}>Status</label>
+                    <select className="input" value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} style={{ fontSize: '0.85rem' }}>
+                      <option value="active">Active</option>
+                      <option value="inactive">Inactive</option>
+                    </select>
+                  </div>
+
+                  <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={labelSt}>Referral Source</label>
+                    <select className="input" value={form.referral_source_id} onChange={e => setForm(f => ({ ...f, referral_source_id: e.target.value }))} style={{ fontSize: '0.85rem' }}>
+                      <option value="">— None —</option>
+                      {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
                 </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Status</label>
-                  <select className="input" value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} style={{ fontSize: '0.85rem' }}>
-                    <option value="active">Active</option>
-                    <option value="inactive">Inactive</option>
-                  </select>
-                </div>
-
-                <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                  <label style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Referral Source</label>
-                  <select className="input" value={form.referral_source_id} onChange={e => setForm(f => ({ ...f, referral_source_id: e.target.value }))} style={{ fontSize: '0.85rem' }}>
-                    <option value="">— None —</option>
-                    {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 24 }}>
-                <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowModal(false)}>Cancel</button>
-                <button type="submit" className="btn btn-primary btn-sm" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
-              </div>
-            </form>
+              </form>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowModal(false)}>Cancel</button>
+              <button type="submit" form="add-client-form" className="btn btn-primary btn-sm" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
 }
+
+const labelSt = {
+  fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)',
+  textTransform: 'uppercase', letterSpacing: '0.05em',
+};
