@@ -31,17 +31,15 @@ function fmtDob(d) {
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
 
 const DAY_STYLES = [
-  { headerBg: '#eff6ff', headerBorder: '#bfdbfe', headerText: '#1d4ed8', dot: '#3b82f6' },
-  { headerBg: '#f0fdf4', headerBorder: '#bbf7d0', headerText: '#15803d', dot: '#22c55e' },
-  { headerBg: '#fefce8', headerBorder: '#fef08a', headerText: '#92400e', dot: '#eab308' },
-  { headerBg: '#fdf4ff', headerBorder: '#e9d5ff', headerText: '#7e22ce', dot: '#a855f7' },
-  { headerBg: '#fff7ed', headerBorder: '#fed7aa', headerText: '#c2410c', dot: '#f97316' },
-  { headerBg: '#fdf2f8', headerBorder: '#fbcfe8', headerText: '#9d174d', dot: '#ec4899' },
+  { dot: '#93c5fd' },
+  { dot: '#6ee7b7' },
+  { dot: '#fde68a' },
+  { dot: '#c4b5fd' },
+  { dot: '#fdba74' },
+  { dot: '#f9a8d4' },
 ];
 
-const NOT_ASSIGNED_STYLE = {
-  headerBg: '#f9fafb', headerBorder: '#e5e7eb', headerText: '#374151', dot: '#9ca3af',
-};
+const NOT_ASSIGNED_STYLE = { dot: 'var(--gray-400)', muted: true };
 
 const EMPTY_FORM = {
   first_name: '', last_name: '', dob: '', sex: '', phone: '', mobile: '',
@@ -85,7 +83,7 @@ function ClientCard({ client, nextAppt }) {
       )}
 
       {client.oo_referral_sources && (
-        <span style={{ background: '#dbeafe', color: '#1e40af', borderRadius: 4, padding: '2px 8px', fontSize: '0.7rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
+        <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>
           {client.oo_referral_sources.name}
         </span>
       )}
@@ -99,6 +97,7 @@ function ClientCard({ client, nextAppt }) {
 
 function DaySection({ title, clients, nextApptMap, style, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
+  const isMuted = !!style.muted;
 
   return (
     <div style={{ marginBottom: 10 }}>
@@ -107,19 +106,18 @@ function DaySection({ title, clients, nextApptMap, style, defaultOpen = true }) 
         style={{
           display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px',
           borderRadius: open ? '8px 8px 0 0' : 8,
-          background: style.headerBg,
-          border: `1px solid ${style.headerBorder}`,
+          background: isMuted ? 'var(--gray-100)' : 'var(--navy)',
           cursor: 'pointer', userSelect: 'none',
         }}
       >
         <span style={{ width: 8, height: 8, borderRadius: '50%', background: style.dot, flexShrink: 0 }} />
-        <span style={{ fontWeight: 700, fontSize: '0.88rem', color: style.headerText, flex: 1 }}>
+        <span style={{ fontWeight: 700, fontSize: '0.88rem', color: isMuted ? 'var(--gray-600)' : '#fff', flex: 1 }}>
           {title}
         </span>
-        <span style={{ fontSize: '0.75rem', color: style.headerText, opacity: 0.65 }}>
+        <span style={{ fontSize: '0.75rem', color: isMuted ? 'var(--gray-400)' : 'rgba(255,255,255,0.55)' }}>
           {clients.length} client{clients.length !== 1 ? 's' : ''}
         </span>
-        <span style={{ fontSize: '0.72rem', color: style.headerText, opacity: 0.4, marginLeft: 4 }}>
+        <span style={{ fontSize: '0.72rem', color: isMuted ? 'var(--gray-400)' : 'rgba(255,255,255,0.35)', marginLeft: 4 }}>
           {open ? '▾' : '▸'}
         </span>
       </div>
@@ -127,8 +125,8 @@ function DaySection({ title, clients, nextApptMap, style, defaultOpen = true }) 
       {open && (
         <div style={{
           padding: '8px 8px 4px',
-          background: 'var(--gray-50)',
-          border: `1px solid ${style.headerBorder}`,
+          background: 'white',
+          border: '1px solid var(--gray-100)',
           borderTop: 'none',
           borderRadius: '0 0 8px 8px',
         }}>

@@ -99,7 +99,7 @@ function RSection({ title, action, children }) {
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
-        <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', flex: 1 }}>{title}</span>
+        <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em', flex: 1 }}>{title}</span>
         {action}
       </div>
       {children}
@@ -657,7 +657,7 @@ export default function OOClientDetailPage() {
               </span>
             )}
             <span className={`badge badge-${client.status}`}>{client.status}</span>
-            {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
+            {rs && <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{rs.name}</span>}
             <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
           </div>
 
@@ -700,7 +700,7 @@ export default function OOClientDetailPage() {
             {raw.diagnoses?.map((d, i) => (
               <span key={i} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 5,
-                background: '#fef9c3', color: '#78350f', border: '1px solid #fde68a',
+                background: '#eef2ff', color: 'var(--navy)', border: '1px solid #c7d2fe',
                 borderRadius: 4, padding: '2px 8px', fontSize: '0.75rem',
               }}>
                 <strong style={{ fontSize: '0.7rem', fontWeight: 700 }}>{d.icd_10}</strong>
@@ -739,7 +739,7 @@ export default function OOClientDetailPage() {
                 flex: '1 1 70px', background: 'white', border: '1px solid var(--gray-100)',
                 borderRadius: 8, padding: '8px 12px', textAlign: 'center',
               }}>
-                <div style={{ fontSize: '1.3rem', fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
+                <div style={{ fontSize: '1.6rem', fontWeight: 700, color, lineHeight: 1, fontFamily: "'DM Serif Display', Georgia, serif" }}>{value}</div>
                 <div style={{ fontSize: '0.63rem', fontWeight: 600, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 3 }}>{label}</div>
               </div>
             ))}
