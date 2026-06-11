@@ -1,141 +1,502 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
 function fmtDob(d) {
   if (!d) return '—';
-  const [y, m, day] = d.split('-');
+  const [y,m,day] = d.split('-');
   return `${m}/${day}/${y}`;
 }
 
+function fmt12(t) {
+  if (!t) return '';
+  const [h,m] = t.slice(0,5).split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2,'0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const [y,m,d] = iso.split('-');
+  return `${m}/${d}/${y}`;
+}
+
+function fmtDateTime(ts) {
+  if (!ts) return null;
+  return new Date(ts).toLocaleString('en-US', { month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit', hour12:true });
+}
+
+function buildTpText(tp) {
+  if (!tp?.length) return '';
+  return tp.map(p => {
+    const lines = [`Problem: ${p.problem}`];
+    (p.long_term_goals  || []).forEach((g,i) => lines.push(`  LTG ${i+1}: ${g}`));
+    (p.short_term_goals || []).forEach((g,i) => lines.push(`  STG ${i+1}: ${g}`));
+    if (p.interventions?.length) lines.push(`  Interventions: ${p.interventions.join(', ')}`);
+    return lines.join('\n');
+  }).join('\n\n');
+}
+
+function buildPreviewText(client, appt, fields, tp) {
+  const initials = `${client.first_name[0]}${client.last_name[0]}`.toUpperCase();
+  const mrn      = client.mrn || '—';
+  const modStr   = (fields.modalities || []).join(', ') || '—';
+
+  return [
+    `Client: ${initials} (MRN: ${mrn})`,
+    `Date: ${appt.date || '—'}`,
+    '',
+    `Location of Meeting: ${fields.location_of_meeting || 'Telehealth - Video'}`,
+    fields.additional_persons_present ? `Additional Person(s) Present: ${fields.additional_persons_present}` : null,
+    fields.audio_only_reason          ? `Audio Only Reason: ${fields.audio_only_reason}` : null,
+    '',
+    `Content Discussed:\n${fields.content_discussed || '—'}`,
+    '',
+    `Interventions Used:\n${fields.interventions_used || '—'}`,
+    '',
+    `Modality: ${modStr}`,
+    '',
+    `Patient Response:\n${fields.patient_response || '—'}`,
+    '',
+    `Progress Toward Goals:\n${fields.progress_toward_goals || '—'}`,
+    '',
+    `Changes to Treatment Plan:\n${fields.treatment_plan_changes || '—'}`,
+    fields.additional_comments ? `\nAdditional Comments:\n${fields.additional_comments}` : null,
+    '',
+    '── Treatment Plan ──',
+    tp || '(not provided)',
+  ].filter(l => l !== null).join('\n');
+}
+
+// ── Shared components ────────────────────────────────────────────────────────
 function Field({ label, value }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
-      <span style={{ fontSize: '0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-300)' }}>{value || '—'}</span>
+    <div style={{ display:'flex', flexDirection:'column', gap:2 }}>
+      <span style={{ fontSize:'0.68rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.06em' }}>{label}</span>
+      <span style={{ fontSize:'0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-400)' }}>{value || '—'}</span>
     </div>
   );
 }
 
 function FieldWide({ label, value }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
-      <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
-      <span style={{ fontSize: '0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-300)' }}>{value || '—'}</span>
+    <div style={{ display:'flex', flexDirection:'column', gap:2, gridColumn:'1 / -1' }}>
+      <span style={{ fontSize:'0.68rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.06em' }}>{label}</span>
+      <span style={{ fontSize:'0.88rem', color: value ? 'var(--gray-800)' : 'var(--gray-400)' }}>{value || '—'}</span>
     </div>
   );
 }
 
-function Section({ title, children }) {
+function InfoSection({ title, children }) {
   return (
-    <div style={{ marginBottom: 28 }}>
-      <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>{title}</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '14px 24px' }}>
+    <div style={{ marginBottom:28 }}>
+      <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:14, paddingBottom:6, borderBottom:'1px solid var(--gray-100)' }}>{title}</div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:'14px 24px' }}>
         {children}
       </div>
     </div>
   );
 }
 
-function fmt12(t) {
-  if (!t) return '';
-  const [h, m] = t.slice(0, 5).split(':').map(Number);
-  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
-}
+// ── Constants ────────────────────────────────────────────────────────────────
+const MODALITIES_LIST = ['CBT','EMDR','Sand Tray','Solution Focused','Client Centered','DBT','Art Therapy','Strength Based','Family Systems','Trauma Focused','Play Therapy','Mindfulness','Behavioral Role Play','Guided Imagery','Motivational Interviewing'];
 
-function EditApptModal({ appt, onClose, onSaved }) {
-  const [date, setDate]         = useState(appt.date);
-  const [time, setTime]         = useState(appt.time?.slice(0, 5) || '');
-  const [duration, setDuration] = useState(appt.duration || 45);
-  const [saving, setSaving]     = useState(false);
-  const [err, setErr]           = useState('');
+const APPT_STATUS_STYLE = {
+  scheduled: { bg:'#dbeafe', color:'#1e40af', border:'#93c5fd' },
+  completed: { bg:'#dcfce7', color:'#166534', border:'#86efac' },
+  cancelled: { bg:'#f3f4f6', color:'#6b7280', border:'#d1d5db' },
+};
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setSaving(true);
-    setErr('');
-    try {
-      await api.patch(`/oo/appointments/${appt.id}`, { date, time, duration });
-      onSaved();
-    } catch (ex) { setErr(ex.message); setSaving(false); }
+const fldLabel = { display:'block', fontSize:'0.7rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:4 };
+
+// ── Appointment Card ─────────────────────────────────────────────────────────
+function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
+  const tp = buildTpText(client.insync_data?.treatment_plan);
+  const [appt, setAppt]         = useState(initialAppt);
+  const [editDate, setEditDate] = useState(false);
+  const [editTime, setEditTime] = useState(false);
+  const [localDate, setLocalDate] = useState(initialAppt.date || '');
+  const [localTime, setLocalTime] = useState((initialAppt.time || '').slice(0,5));
+  const [localDur,  setLocalDur]  = useState(String(initialAppt.duration || 45));
+
+  const [rawNotes,   setRawNotes]   = useState(initialAppt.raw_notes || '');
+  const [saveState,  setSaveState]  = useState('idle');
+  const saveTimer = useRef(null);
+
+  const [processing, setProcessing] = useState(false);
+  const [fields,     setFields]     = useState(null);
+  const [sending,    setSending]    = useState(false);
+  const [deleting,   setDeleting]   = useState(false);
+  const [err,        setErr]        = useState('');
+
+  useEffect(() => {
+    setAppt(initialAppt);
+    setRawNotes(initialAppt.raw_notes || '');
+    setLocalDate(initialAppt.date || '');
+    setLocalTime((initialAppt.time || '').slice(0,5));
+    setLocalDur(String(initialAppt.duration || 45));
+  }, [initialAppt]);
+
+  const style = APPT_STATUS_STYLE[appt.status] || APPT_STATUS_STYLE.scheduled;
+
+  // ── Note auto-save ──
+  function handleNoteChange(val) {
+    setRawNotes(val);
+    setSaveState('saving');
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        const updated = await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: val });
+        setAppt(prev => ({ ...prev, ...updated }));
+        onUpdate({ ...appt, ...updated, raw_notes: val });
+        setSaveState('saved');
+        setTimeout(() => setSaveState('idle'), 2000);
+      } catch { setSaveState('idle'); }
+    }, 1000);
   }
 
-  const labelSt = { display: 'block', fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 };
+  // ── Checkboxes ──
+  async function handleCheckbox(field, checked) {
+    const val = checked ? new Date().toISOString() : null;
+    setAppt(prev => ({ ...prev, [field]: val }));
+    try {
+      const updated = await api.patch(`/oo/appointments/${appt.id}`, { [field]: val });
+      setAppt(prev => ({ ...prev, ...updated }));
+      onUpdate({ ...appt, ...updated, [field]: val });
+    } catch {
+      setAppt(prev => ({ ...prev, [field]: appt[field] }));
+    }
+  }
+
+  // ── Inline date/time editing ──
+  async function saveDate() {
+    setEditDate(false);
+    if (localDate === appt.date) return;
+    const updated = await api.patch(`/oo/appointments/${appt.id}`, { date: localDate });
+    setAppt(prev => ({ ...prev, ...updated }));
+    onUpdate({ ...appt, ...updated });
+  }
+
+  async function saveTime() {
+    setEditTime(false);
+    const updated = await api.patch(`/oo/appointments/${appt.id}`, {
+      time: localTime + ':00',
+      duration: parseInt(localDur) || 45,
+    });
+    setAppt(prev => ({ ...prev, ...updated }));
+    onUpdate({ ...appt, ...updated });
+  }
+
+  // ── AI processing ──
+  async function handleProcess() {
+    if (!rawNotes.trim()) { setErr('Write notes first.'); return; }
+    setProcessing(true); setErr('');
+    try {
+      await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: rawNotes });
+      const r = await api.post(`/oo/appointments/${appt.id}/process-note`, { raw_notes: rawNotes, treatment_plan: tp });
+      setFields(r.fields);
+    } catch (ex) { setErr(ex.message); }
+    finally { setProcessing(false); }
+  }
+
+  async function handleSend() {
+    setSending(true); setErr('');
+    try {
+      await api.post(`/oo/appointments/${appt.id}/send-note`, { fields, treatment_plan: tp });
+      const sentAt = new Date().toISOString();
+      setAppt(prev => ({ ...prev, note_sent_at: sentAt }));
+      onUpdate({ ...appt, note_sent_at: sentAt });
+    } catch (ex) { setErr(ex.message); }
+    finally { setSending(false); }
+  }
+
+  function updateField(key, val) {
+    setFields(prev => ({ ...prev, [key]: val }));
+  }
+
+  function toggleModality(m) {
+    setFields(prev => {
+      const mods = prev.modalities || [];
+      return { ...prev, modalities: mods.includes(m) ? mods.filter(x => x !== m) : [...mods, m] };
+    });
+  }
+
+  // ── Delete ──
+  async function handleDelete() {
+    if (!window.confirm(`Delete appointment on ${fmtDate(appt.date)} at ${fmt12(appt.time)}?`)) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/oo/appointments/${appt.id}`);
+      onDelete(appt.id);
+    } catch (ex) { alert(ex.message); setDeleting(false); }
+  }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2 style={{ margin: 0, fontSize: '1rem' }}>Edit Appointment</h2>
-          <button className="btn-ghost" onClick={onClose}>✕</button>
-        </div>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '18px 20px' }}>
-          <div>
-            <label style={labelSt}>Date</label>
-            <input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} required />
-          </div>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <div style={{ flex: 1 }}>
-              <label style={labelSt}>Time</label>
-              <input type="time" className="input" value={time} onChange={e => setTime(e.target.value)} required />
+    <div style={{
+      background:'white',
+      border:`1px solid ${style.border}`,
+      borderLeft:`5px solid ${style.border}`,
+      borderRadius:'var(--radius)',
+      padding:'14px 18px',
+      marginBottom:10,
+    }}>
+      {/* ── Top row ── */}
+      <div style={{ display:'flex', gap:16, alignItems:'flex-start', flexWrap:'wrap' }}>
+
+        {/* Date + time (editable) */}
+        <div style={{ minWidth:160 }}>
+          {editDate ? (
+            <div style={{ display:'flex', gap:4, marginBottom:4 }}>
+              <input type="date" className="form-input" style={{ padding:'3px 6px', fontSize:'0.78rem', width:140 }}
+                value={localDate} onChange={e => setLocalDate(e.target.value)} autoFocus />
+              <button className="btn btn-gold btn-xs" type="button" onClick={saveDate}>✓</button>
+              <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditDate(false)}>✕</button>
             </div>
-            <div style={{ flex: 1 }}>
-              <label style={labelSt}>Duration</label>
-              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                {[30, 45].map(d => (
-                  <label key={d} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.88rem', cursor: 'pointer' }}>
-                    <input type="radio" name="dur" value={d} checked={duration === d} onChange={() => setDuration(d)} />
-                    {d} min
-                  </label>
-                ))}
+          ) : (
+            <div onClick={() => setEditDate(true)}
+              style={{ fontWeight:700, color:'var(--navy)', fontSize:'0.95rem', cursor:'pointer', marginBottom:3 }}>
+              {fmtDate(appt.date)}
+              <span style={{ color:'var(--gray-400)', marginLeft:5, fontSize:'0.68rem' }}>✏</span>
+            </div>
+          )}
+
+          {editTime ? (
+            <div style={{ display:'flex', gap:4, flexWrap:'wrap', alignItems:'center' }}>
+              <input type="time" className="form-input" style={{ padding:'3px 6px', fontSize:'0.78rem', width:100 }}
+                value={localTime} onChange={e => setLocalTime(e.target.value)} />
+              <input type="number" className="form-input" style={{ padding:'3px 6px', fontSize:'0.78rem', width:62 }}
+                value={localDur} onChange={e => setLocalDur(e.target.value)} placeholder="min" />
+              <button className="btn btn-gold btn-xs" type="button" onClick={saveTime}>✓</button>
+              <button className="btn btn-outline btn-xs" type="button" onClick={() => setEditTime(false)}>✕</button>
+            </div>
+          ) : (
+            <div onClick={() => setEditTime(true)}
+              style={{ fontSize:'0.75rem', color:'var(--gray-400)', cursor:'pointer', marginTop:2 }}>
+              {fmt12(appt.time)} · {appt.duration || 45} min
+              <span style={{ color:'var(--gray-400)', marginLeft:4, fontSize:'0.68rem' }}>✏</span>
+            </div>
+          )}
+        </div>
+
+        {/* Status badge */}
+        <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+          <label style={{ fontSize:'0.7rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase' }}>Status</label>
+          <div style={{
+            padding:'5px 10px', fontSize:'0.82rem', width:120,
+            borderRadius:'var(--radius)', border:`1.5px solid ${style.border}`,
+            background:style.bg, color:style.color, fontWeight:600,
+            textTransform:'capitalize', boxSizing:'border-box',
+          }}>
+            {appt.status}
+          </div>
+        </div>
+
+        {/* Checkboxes */}
+        <div style={{ display:'flex', gap:24, alignItems:'flex-start', marginLeft:'auto', flexWrap:'wrap' }}>
+          {[
+            { field:'note_sent_at', label:'Note Sent' },
+            { field:'note_done_at', label:'Done' },
+          ].map(({ field, label }) => (
+            <div key={field} style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
+              <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:'0.8rem', color:'var(--gray-800)', cursor:'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={!!appt[field]}
+                  onChange={e => handleCheckbox(field, e.target.checked)}
+                  style={{ width:15, height:15, accentColor:'var(--navy)' }}
+                />
+                {label}
+              </label>
+              {appt[field] && (
+                <div style={{ fontSize:'0.65rem', color:'var(--gray-400)', whiteSpace:'nowrap' }}>
+                  {fmtDateTime(appt[field])}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Delete */}
+        <button className="btn btn-danger btn-xs" type="button" onClick={handleDelete} disabled={deleting}>
+          {deleting ? '…' : 'Delete'}
+        </button>
+      </div>
+
+      {/* ── Notes ── */}
+      <div style={{ marginTop:14 }}>
+        <div style={{ fontSize:'0.7rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:6, display:'flex', gap:8, alignItems:'center' }}>
+          Session Notes
+          {saveState === 'saving' && <span style={{ color:'var(--gold)', fontWeight:500, fontSize:'0.72rem' }}>Saving…</span>}
+          {saveState === 'saved'  && <span style={{ color:'#10b981', fontWeight:500, fontSize:'0.72rem' }}>✓ Saved</span>}
+        </div>
+        <textarea
+          className="form-textarea"
+          value={rawNotes}
+          onChange={e => handleNoteChange(e.target.value)}
+          placeholder="Session notes…"
+          style={{ minHeight:72, fontSize:'0.875rem' }}
+        />
+        {err && <p style={{ color:'#dc2626', margin:'4px 0 0', fontSize:'0.78rem' }}>{err}</p>}
+        <div style={{ display:'flex', gap:8, marginTop:8, flexWrap:'wrap' }}>
+          <button className="btn btn-outline btn-xs" type="button"
+            onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
+            {processing ? 'Processing…' : fields ? 'Re-process with AI' : 'Process with AI'}
+          </button>
+          {fields && (
+            <button className="btn btn-gold btn-xs" type="button"
+              onClick={handleSend} disabled={sending}>
+              {sending ? 'Sending…' : 'Send to Secretary'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── AI fields + preview ── */}
+      {fields && (
+        <div style={{ marginTop:18, paddingTop:16, borderTop:'1px solid var(--gray-100)' }}>
+          <div style={{ fontSize:'0.7rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.05em', marginBottom:12 }}>
+            AI-Generated Fields
+          </div>
+
+          <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+            <div>
+              <label style={fldLabel}>Location of Meeting</label>
+              <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'}
+                readOnly style={{ background:'var(--gray-50)', fontSize:'0.85rem' }} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Additional Person(s) Present</label>
+              <input className="form-input" style={{ fontSize:'0.85rem' }}
+                value={fields.additional_persons_present || ''}
+                onChange={e => updateField('additional_persons_present', e.target.value)}
+                placeholder="Leave blank if none" />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Content Discussed</label>
+              <textarea className="form-textarea" style={{ minHeight:56, fontSize:'0.85rem' }}
+                value={fields.content_discussed || ''} onChange={e => updateField('content_discussed', e.target.value)} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Interventions Used</label>
+              <textarea className="form-textarea" style={{ minHeight:48, fontSize:'0.85rem' }}
+                value={fields.interventions_used || ''} onChange={e => updateField('interventions_used', e.target.value)} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Modality</label>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:5, marginTop:6 }}>
+                {MODALITIES_LIST.map(m => {
+                  const on = (fields.modalities || []).includes(m);
+                  return (
+                    <button key={m} type="button" onClick={() => toggleModality(m)} style={{
+                      padding:'3px 9px', fontSize:'0.72rem', fontWeight:600, borderRadius:4, cursor:'pointer',
+                      border:`1.5px solid ${on ? 'var(--navy)' : 'var(--gray-200)'}`,
+                      background: on ? 'var(--navy)' : 'transparent',
+                      color: on ? '#fff' : 'var(--gray-400)',
+                      transition:'background 0.1s',
+                    }}>{m}</button>
+                  );
+                })}
               </div>
             </div>
+
+            <div>
+              <label style={fldLabel}>Patient Response</label>
+              <textarea className="form-textarea" style={{ minHeight:48, fontSize:'0.85rem' }}
+                value={fields.patient_response || ''} onChange={e => updateField('patient_response', e.target.value)} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Progress Toward Goals</label>
+              <textarea className="form-textarea" style={{ minHeight:48, fontSize:'0.85rem' }}
+                value={fields.progress_toward_goals || ''} onChange={e => updateField('progress_toward_goals', e.target.value)} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Changes to Treatment Plan</label>
+              <textarea className="form-textarea" style={{ minHeight:48, fontSize:'0.85rem' }}
+                value={fields.treatment_plan_changes || ''} onChange={e => updateField('treatment_plan_changes', e.target.value)} />
+            </div>
+
+            <div>
+              <label style={fldLabel}>Additional Comments</label>
+              <textarea className="form-textarea" style={{ minHeight:40, fontSize:'0.85rem' }}
+                value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} />
+            </div>
+
+            {/* Email preview */}
+            <div>
+              <label style={fldLabel}>Email Preview</label>
+              <pre style={{
+                background:'#f8fafc', border:'1px solid var(--gray-200)', borderRadius:6,
+                padding:'12px 14px', fontSize:'0.78rem', lineHeight:1.7,
+                whiteSpace:'pre-wrap', wordBreak:'break-word', fontFamily:'inherit',
+                margin:0, color:'var(--gray-600)',
+              }}>
+                {buildPreviewText(client, appt, fields, tp)}
+              </pre>
+            </div>
           </div>
-          {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+
+          {/* Send button (also at bottom of fields for convenience) */}
+          <div style={{ marginTop:14 }}>
+            <button className="btn btn-gold btn-sm" type="button" onClick={handleSend} disabled={sending}>
+              {sending ? 'Sending…' : 'Send to Secretary'}
+            </button>
           </div>
-        </form>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
 
+// ── Main Page ─────────────────────────────────────────────────────────────────
 export default function OOClientDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [client, setClient]     = useState(null);
-  const [appts, setAppts]       = useState([]);
-  const [loading, setLoading]   = useState(true);
-  const [showRaw, setShowRaw]   = useState(false);
+  const [client,   setClient]   = useState(null);
+  const [appts,    setAppts]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [showRaw,  setShowRaw]  = useState(false);
   const [syncingFs, setSyncingFs] = useState(false);
-  const [fsMsg, setFsMsg]       = useState('');
-  const [editAppt, setEditAppt]     = useState(null);
-  const [deleting, setDeleting]     = useState(null);
-  const [debugHtml, setDebugHtml]       = useState('');
-  const [debugging, setDebugging]       = useState(false);
-  const [debugFields, setDebugFields]   = useState(null);
-  const [debuggingFields, setDebuggingFields] = useState(false);
+  const [fsMsg,    setFsMsg]    = useState('');
+  const [debugHtml,        setDebugHtml]        = useState('');
+  const [debugging,        setDebugging]        = useState(false);
+  const [debugFields,      setDebugFields]      = useState(null);
+  const [debuggingFields,  setDebuggingFields]  = useState(false);
 
   function loadClient() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
   }
 
   const loadAppts = useCallback(() => {
-    api.get(`/oo/appointments?client_id=${id}`).then(d => setAppts(Array.isArray(d) ? d : [])).catch(() => {});
+    return api.get(`/oo/appointments?client_id=${id}`)
+      .then(d => setAppts(Array.isArray(d) ? [...d].sort((a,b) => {
+        if (a.date !== b.date) return a.date.localeCompare(b.date);
+        return a.time.localeCompare(b.time);
+      }) : []))
+      .catch(() => {});
   }, [id]);
 
   useEffect(() => {
-    Promise.all([
-      loadClient(),
-      loadAppts(),
-    ]).finally(() => setLoading(false));
+    Promise.all([loadClient(), loadAppts()]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
+  async function syncFacesheet() {
+    setSyncingFs(true); setFsMsg('');
+    try {
+      const r = await api.post(`/oo/clients/${id}/sync-facesheet`, {});
+      setFsMsg(`${r.diagnoses_count ?? 0} dx · ${r.tp_count ?? 0} TP problem${(r.tp_count ?? 0) !== 1 ? 's' : ''} synced`);
+      await loadClient();
+    } catch (ex) { setFsMsg(ex.message); }
+    finally { setSyncingFs(false); }
+  }
+
   async function debugEncounter() {
-    setDebugging(true);
-    setDebugHtml('');
+    setDebugging(true); setDebugHtml('');
     try {
       const r = await api.get(`/oo/clients/${id}/debug-encounter-html`);
       setDebugHtml(r.html_preview);
@@ -144,8 +505,7 @@ export default function OOClientDetailPage() {
   }
 
   async function debugNoteFields() {
-    setDebuggingFields(true);
-    setDebugFields(null);
+    setDebuggingFields(true); setDebugFields(null);
     try {
       const r = await api.get(`/oo/clients/${id}/debug-note-fields`);
       setDebugFields(r);
@@ -153,168 +513,175 @@ export default function OOClientDetailPage() {
     finally { setDebuggingFields(false); }
   }
 
-  async function deleteAppt(apptId) {
-    setDeleting(apptId);
-    try {
-      await api.delete(`/oo/appointments/${apptId}`);
-      loadAppts();
-    } catch (ex) { alert(ex.message); }
-    finally { setDeleting(null); }
+  function handleApptUpdate(updated) {
+    setAppts(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a));
   }
 
-  async function syncFacesheet() {
-    setSyncingFs(true);
-    setFsMsg('');
-    try {
-      const r = await api.post(`/oo/clients/${id}/sync-facesheet`, {});
-      setFsMsg(`${r.diagnoses_count ?? r.count ?? 0} dx · ${r.tp_count ?? 0} TP problem${(r.tp_count ?? 0) !== 1 ? 's' : ''} synced`);
-      await loadClient();
-    } catch (ex) {
-      setFsMsg(ex.message);
-    } finally {
-      setSyncingFs(false);
-    }
+  function handleApptDelete(apptId) {
+    setAppts(prev => prev.filter(a => a.id !== apptId));
   }
 
-  if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
+  if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!client) return null;
 
   const rs  = client.oo_referral_sources;
   const raw = client.insync_data || {};
 
-  // Parse PrimaryPayers: "PAYER A (dates)!@#PAYER B (dates)"
   const primaryPayers = raw.PrimaryPayers
     ? raw.PrimaryPayers.split('!@#').map(s => s.trim()).filter(Boolean)
     : [];
 
-  return (
-    <div style={{ padding: '24px 32px', maxWidth: 900 }}>
-      {/* Back */}
-      <button onClick={() => navigate('/oo/clients')} style={{ background: 'none', border: 'none', color: 'var(--gray-400)', cursor: 'pointer', fontSize: '0.82rem', padding: 0, marginBottom: 20 }}>
-        ← Back to Clients
-      </button>
+  // Stats
+  const stats = {
+    total:     appts.length,
+    scheduled: appts.filter(a => a.status === 'scheduled').length,
+    sent:      appts.filter(a => a.note_sent_at).length,
+    done:      appts.filter(a => a.note_done_at).length,
+  };
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 28, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1 }}>
-          <h2 style={{ margin: '0 0 6px', fontSize: '1.4rem', fontWeight: 700, color: 'var(--navy)' }}>
-            {client.last_name}, {client.first_name}
-          </h2>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            {client.mrn && <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>MRN: <strong>{client.mrn}</strong></span>}
-            {client.dob && <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>DOB: {fmtDob(client.dob)}</span>}
-            {client.sex && <span style={{ fontSize: '0.78rem', color: 'var(--gray-500)' }}>{client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex}</span>}
-            <span style={{
-              fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, padding: '2px 8px',
-              background: client.status === 'active' ? '#dcfce7' : '#f3f4f6',
-              color: client.status === 'active' ? '#166534' : '#6b7280',
-            }}>{client.status}</span>
-            {rs && (
-              <span style={{ fontSize: '0.72rem', fontWeight: 600, background: '#dbeafe', color: '#1e40af', borderRadius: 4, padding: '2px 8px' }}>
-                {rs.name}
-              </span>
-            )}
+  return (
+    <div style={{ padding:'28px 32px', maxWidth:960 }}>
+      <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
+
+      {/* ── Header ── */}
+      <div className="page-header">
+        <div style={{ flex:1 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12, marginBottom:4, flexWrap:'wrap' }}>
+            <h2 style={{ margin:0 }}>{client.last_name}, {client.first_name}</h2>
+            <span className={`badge badge-${client.status}`}>{client.status}</span>
+            {rs && <span className="badge" style={{ background:'#dbeafe', color:'#1e40af' }}>{rs.name}</span>}
+          </div>
+          <div style={{ fontSize:'0.82rem', color:'var(--gray-600)', display:'flex', gap:16, flexWrap:'wrap', marginTop:4 }}>
+            {client.mrn  && <span>MRN: <strong>{client.mrn}</strong></span>}
+            {client.dob  && <span>DOB: {fmtDob(client.dob)}</span>}
+            {client.sex  && <span>{client.sex === 'F' ? 'Female' : client.sex === 'M' ? 'Male' : client.sex}</span>}
+            {client.insync_patient_id && <span style={{ color:'var(--gray-400)' }}>InSync: {client.insync_patient_id}</span>}
           </div>
         </div>
-        {client.insync_patient_id && (
-          <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', textAlign: 'right' }}>
-            InSync ID: <strong style={{ color: 'var(--gray-600)' }}>{client.insync_patient_id}</strong>
-          </div>
-        )}
       </div>
 
-      {/* Contact */}
-      <Section title="Contact">
+      {/* ── Stats ── */}
+      <div className="stats-row" style={{ marginBottom:28 }}>
+        <div className="stat-card"><div className="stat-value">{stats.total}</div><div className="stat-label">Total</div></div>
+        <div className="stat-card"><div className="stat-value" style={{ color:'#1e40af' }}>{stats.scheduled}</div><div className="stat-label">Scheduled</div></div>
+        <div className="stat-card"><div className="stat-value" style={{ color:'#166534' }}>{stats.sent}</div><div className="stat-label">Note Sent</div></div>
+        <div className="stat-card"><div className="stat-value" style={{ color:'var(--gold)' }}>{stats.done}</div><div className="stat-label">Done</div></div>
+      </div>
+
+      {/* ── Sessions ── */}
+      <div className="card" style={{ marginBottom:28 }}>
+        <div className="card-header">
+          <h3 style={{ fontSize:'1rem', color:'var(--navy)' }}>Sessions</h3>
+          <span style={{ fontSize:'0.75rem', color:'var(--gray-400)' }}>Notes auto-save · Click date/time to edit</span>
+        </div>
+        <div style={{ padding:'16px 20px' }}>
+          {appts.length === 0 ? (
+            <div className="empty-state" style={{ padding:'40px 20px' }}>
+              <div className="empty-icon">📅</div>
+              <p>No appointments yet.</p>
+            </div>
+          ) : appts.map(a => (
+            <ApptCard
+              key={a.id}
+              appt={a}
+              client={client}
+              onUpdate={handleApptUpdate}
+              onDelete={handleApptDelete}
+            />
+          ))}
+        </div>
+      </div>
+
+      {/* ── Contact ── */}
+      <InfoSection title="Contact">
         <Field label="Phone"   value={client.phone} />
         <Field label="Mobile"  value={client.mobile} />
         <Field label="Email"   value={client.email || raw.PatientEmail || null} />
         <Field label="Age"     value={raw.PatientAge || null} />
         <FieldWide label="Address" value={client.address} />
-      </Section>
+      </InfoSection>
 
-      {/* InSync info */}
-      <Section title="InSync">
+      {/* ── InSync ── */}
+      <InfoSection title="InSync">
         <Field label="Primary Provider"   value={raw.PrimaryProviderName || null} />
         <Field label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
         <Field label="Counselor"          value={client.counselor} />
         <Field label="Patient Note"       value={raw.PatientNote || null} />
-        <Field label="Created By"         value={raw.Created_By ? `${raw.Created_By} on ${raw.Created_On || ''}` : null} />
         <Field label="Eligibility"        value={client.eligibility_result} />
-      </Section>
+      </InfoSection>
 
-      {/* Diagnoses */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-            Diagnoses (Problem List)
+      {/* ── Diagnoses ── */}
+      <div style={{ marginBottom:28 }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14, paddingBottom:6, borderBottom:'1px solid var(--gray-100)' }}>
+          <span style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.07em' }}>
+            Diagnoses
             {raw.facesheet_synced_at && (
-              <span style={{ fontWeight: 400, textTransform: 'none', marginLeft: 8, fontSize: '0.7rem' }}>
+              <span style={{ fontWeight:400, textTransform:'none', marginLeft:8, fontSize:'0.7rem' }}>
                 synced {new Date(raw.facesheet_synced_at).toLocaleDateString()}
               </span>
             )}
           </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {fsMsg && <span style={{ fontSize: '0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? 'var(--danger)' : 'var(--success, #16a34a)' }}>{fsMsg}</span>}
+          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+            {fsMsg && <span style={{ fontSize:'0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a' }}>{fsMsg}</span>}
             {client.insync_patient_id && (
-              <button className="btn-ghost" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={syncFacesheet} disabled={syncingFs}>
+              <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}>
                 {syncingFs ? 'Syncing…' : 'Sync from InSync'}
               </button>
             )}
           </div>
         </div>
         {raw.diagnoses?.length > 0 ? (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+          <table style={{ width:'100%', borderCollapse:'collapse', fontSize:'0.85rem' }}>
             <thead>
-              <tr style={{ background: 'var(--gray-50)' }}>
-                <th style={thSt}>ICD-10</th>
-                <th style={thSt}>Problem</th>
-                <th style={thSt}>Onset</th>
-                <th style={thSt}>Notes</th>
+              <tr style={{ background:'var(--gray-50)' }}>
+                {['ICD-10','Problem','Onset','Notes'].map(h => (
+                  <th key={h} style={thSt}>{h}</th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {raw.diagnoses.map((d, i) => (
-                <tr key={i} style={{ borderBottom: '1px solid var(--gray-100)' }}>
+              {raw.diagnoses.map((d,i) => (
+                <tr key={i} style={{ borderBottom:'1px solid var(--gray-100)' }}>
                   <td style={tdSt}><strong>{d.icd_10}</strong></td>
                   <td style={tdSt}>{d.problem}</td>
-                  <td style={{ ...tdSt, color: 'var(--gray-400)', whiteSpace: 'nowrap' }}>{d.date_onset || '—'}</td>
-                  <td style={{ ...tdSt, color: 'var(--gray-400)' }}>{d.notes || '—'}</td>
+                  <td style={{ ...tdSt, color:'var(--gray-400)', whiteSpace:'nowrap' }}>{d.date_onset || '—'}</td>
+                  <td style={{ ...tdSt, color:'var(--gray-400)' }}>{d.notes || '—'}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         ) : (
-          <p style={{ color: 'var(--gray-300)', fontSize: '0.85rem', margin: 0 }}>
-            {client.insync_patient_id ? 'No diagnoses synced yet — click "Sync from InSync"' : 'Sync client from InSync to enable facesheet sync.'}
+          <p style={{ color:'var(--gray-400)', fontSize:'0.85rem', margin:0 }}>
+            {client.insync_patient_id ? 'No diagnoses synced — click "Sync from InSync"' : 'No InSync ID linked.'}
           </p>
         )}
       </div>
 
-      {/* Treatment Plan */}
+      {/* ── Treatment Plan ── */}
       {raw.treatment_plan?.length > 0 && (
-        <div style={{ marginBottom: 28 }}>
-          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+        <div style={{ marginBottom:28 }}>
+          <div style={{ fontSize:'0.72rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.07em', marginBottom:14, paddingBottom:6, borderBottom:'1px solid var(--gray-100)' }}>
             Treatment Plan
           </div>
-          {raw.treatment_plan.map((p, i) => (
-            <div key={i} style={{ marginBottom: 20, padding: '14px 16px', background: 'var(--gray-50)', borderRadius: 8, border: '1px solid var(--gray-100)' }}>
-              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--navy)', marginBottom: 10 }}>{p.problem}</div>
-              {p.long_term_goals?.map((g, j) => (
-                <div key={j} style={{ marginBottom: 6 }}>
-                  <span style={tpLabelSt}>LTG {j + 1}</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-700)' }}>{g}</span>
+          {raw.treatment_plan.map((p,i) => (
+            <div key={i} style={{ marginBottom:18, padding:'14px 16px', background:'var(--gray-50)', borderRadius:8, border:'1px solid var(--gray-100)' }}>
+              <div style={{ fontWeight:700, fontSize:'0.88rem', color:'var(--navy)', marginBottom:10 }}>{p.problem}</div>
+              {p.long_term_goals?.map((g,j) => (
+                <div key={j} style={{ marginBottom:5 }}>
+                  <span style={tpLabelSt}>LTG {j+1}</span>
+                  <span style={{ fontSize:'0.84rem', color:'var(--gray-800)' }}>{g}</span>
                 </div>
               ))}
-              {p.short_term_goals?.map((g, j) => (
-                <div key={j} style={{ marginBottom: 6 }}>
-                  <span style={tpLabelSt}>STG {j + 1}</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-700)' }}>{g}</span>
+              {p.short_term_goals?.map((g,j) => (
+                <div key={j} style={{ marginBottom:5 }}>
+                  <span style={tpLabelSt}>STG {j+1}</span>
+                  <span style={{ fontSize:'0.84rem', color:'var(--gray-800)' }}>{g}</span>
                 </div>
               ))}
               {p.interventions?.length > 0 && (
-                <div style={{ marginTop: 6 }}>
+                <div style={{ marginTop:6 }}>
                   <span style={tpLabelSt}>Interventions</span>
-                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-500)' }}>{p.interventions.join(' · ')}</span>
+                  <span style={{ fontSize:'0.84rem', color:'var(--gray-600)' }}>{p.interventions.join(' · ')}</span>
                 </div>
               )}
             </div>
@@ -322,122 +689,64 @@ export default function OOClientDetailPage() {
         </div>
       )}
 
-      {/* Appointments */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-          Scheduled Appointments
-        </div>
-        {appts.length === 0 ? (
-          <p style={{ color: 'var(--gray-300)', fontSize: '0.85rem', margin: 0 }}>No appointments scheduled.</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-            <thead>
-              <tr style={{ background: 'var(--gray-50)' }}>
-                <th style={thSt}>Date</th>
-                <th style={thSt}>Time</th>
-                <th style={thSt}>Duration</th>
-                <th style={thSt}>Status</th>
-                <th style={thSt}>Notes</th>
-                <th style={thSt}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {appts.map(a => (
-                <tr key={a.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
-                  <td style={tdSt}>{a.date}</td>
-                  <td style={tdSt}>{fmt12(a.time)}</td>
-                  <td style={tdSt}>{a.duration} min</td>
-                  <td style={tdSt}>
-                    <span style={{
-                      fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, padding: '2px 7px',
-                      background: a.status === 'scheduled' ? '#dbeafe' : '#f3f4f6',
-                      color: a.status === 'scheduled' ? '#1e40af' : '#6b7280',
-                    }}>{a.status}</span>
-                  </td>
-                  <td style={{ ...tdSt, color: 'var(--gray-400)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {a.raw_notes || '—'}
-                  </td>
-                  <td style={{ ...tdSt, whiteSpace: 'nowrap' }}>
-                    <button className="btn-ghost" style={{ fontSize: '0.75rem', padding: '3px 9px', marginRight: 4 }} onClick={() => setEditAppt(a)}>Edit</button>
-                    <button
-                      className="btn-ghost"
-                      style={{ fontSize: '0.75rem', padding: '3px 9px', color: 'var(--danger)', borderColor: 'var(--danger)' }}
-                      disabled={deleting === a.id}
-                      onClick={() => { if (window.confirm(`Delete appointment on ${a.date} at ${fmt12(a.time)}?`)) deleteAppt(a.id); }}
-                    >{deleting === a.id ? '…' : 'Delete'}</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
-
-      {/* Insurance */}
-      <Section title="Insurance">
+      {/* ── Insurance ── */}
+      <InfoSection title="Insurance">
         <Field label="Current Payer" value={client.payer_plan_name} />
-        {primaryPayers.length > 1 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, gridColumn: '1 / -1' }}>
-            <span style={{ fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Payer History</span>
-            {primaryPayers.map((p, i) => (
-              <span key={i} style={{ fontSize: '0.85rem', color: 'var(--gray-700)' }}>{p}</span>
+        {primaryPayers.length > 1 && (
+          <div style={{ display:'flex', flexDirection:'column', gap:2, gridColumn:'1 / -1' }}>
+            <span style={{ fontSize:'0.68rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.06em' }}>Payer History</span>
+            {primaryPayers.map((p,i) => (
+              <span key={i} style={{ fontSize:'0.85rem', color:'var(--gray-800)' }}>{p}</span>
             ))}
           </div>
-        ) : null}
-      </Section>
+        )}
+      </InfoSection>
 
-      {/* Referral source */}
+      {/* ── Referral Source ── */}
       {rs && (
-        <Section title="Referral Source">
-          <Field label="Name"         value={rs.name} />
-          <Field label="Notes Email"  value={rs.notes_email} />
-        </Section>
+        <InfoSection title="Referral Source">
+          <Field label="Name"        value={rs.name} />
+          <Field label="Notes Email" value={rs.notes_email} />
+        </InfoSection>
       )}
 
-      {editAppt && (
-        <EditApptModal
-          appt={editAppt}
-          onClose={() => setEditAppt(null)}
-          onSaved={() => { setEditAppt(null); loadAppts(); }}
-        />
-      )}
-
-      {/* DEBUG: note fields inspector */}
+      {/* ── Debug ── */}
       {client.insync_patient_id && (
-        <div style={{ marginTop: 8, marginBottom: 8 }}>
-          <button onClick={debugNoteFields} disabled={debuggingFields} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
-            {debuggingFields ? 'Fetching…' : '⚙ Debug: fetch note fields'}
+        <div style={{ marginTop:8 }}>
+          <button onClick={debugNoteFields} disabled={debuggingFields}
+            style={{ background:'none', border:'none', cursor:'pointer', fontSize:'0.75rem', color:'#f59e0b', padding:0 }}>
+            {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
           </button>
           {debugFields && (
-            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #444', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+            <pre style={{ marginTop:8, background:'#1e1e1e', color:'#d4d4d4', borderRadius:6, padding:14, fontSize:'0.68rem', overflowX:'auto', maxHeight:300, overflowY:'auto', whiteSpace:'pre-wrap' }}>
               {JSON.stringify(debugFields, null, 2)}
             </pre>
           )}
         </div>
       )}
-
-      {/* DEBUG: encounter HTML inspector */}
       {client.insync_patient_id && (
-        <div style={{ marginTop: 8, marginBottom: 16 }}>
-          <button onClick={debugEncounter} disabled={debugging} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
-            {debugging ? 'Fetching…' : '⚙ Debug: fetch encounter HTML'}
+        <div style={{ marginTop:8, marginBottom:16 }}>
+          <button onClick={debugEncounter} disabled={debugging}
+            style={{ background:'none', border:'none', cursor:'pointer', fontSize:'0.75rem', color:'#f59e0b', padding:0 }}>
+            {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
           </button>
           {debugHtml && (
-            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #444', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+            <pre style={{ marginTop:8, background:'#1e1e1e', color:'#d4d4d4', borderRadius:6, padding:14, fontSize:'0.68rem', overflowX:'auto', maxHeight:300, overflowY:'auto', whiteSpace:'pre-wrap', wordBreak:'break-all' }}>
               {debugHtml}
             </pre>
           )}
         </div>
       )}
 
-      {/* Raw InSync data */}
+      {/* ── Raw InSync data ── */}
       {client.insync_data && (
-        <div style={{ marginTop: 8 }}>
-          <button onClick={() => setShowRaw(s => !s)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--gray-400)', padding: 0 }}>
+        <div style={{ marginTop:8 }}>
+          <button onClick={() => setShowRaw(s => !s)}
+            style={{ background:'none', border:'none', cursor:'pointer', fontSize:'0.75rem', color:'var(--gray-400)', padding:0 }}>
             {showRaw ? '▾' : '▸'} Raw InSync data
           </button>
           {showRaw && (
-            <pre style={{ marginTop: 8, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 14, fontSize: '0.72rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
+            <pre style={{ marginTop:8, background:'var(--gray-50)', border:'1px solid var(--gray-200)', borderRadius:6, padding:14, fontSize:'0.72rem', color:'var(--gray-600)', overflowX:'auto', maxHeight:400, overflowY:'auto' }}>
               {JSON.stringify(client.insync_data, null, 2)}
             </pre>
           )}
@@ -447,6 +756,6 @@ export default function OOClientDetailPage() {
   );
 }
 
-const thSt    = { padding: '6px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--gray-200)' };
-const tdSt    = { padding: '8px 10px', verticalAlign: 'top' };
-const tpLabelSt = { display: 'inline-block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', minWidth: 80, marginRight: 8 };
+const thSt = { padding:'6px 10px', textAlign:'left', fontSize:'0.7rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.05em', borderBottom:'1px solid var(--gray-200)' };
+const tdSt = { padding:'8px 10px', verticalAlign:'top' };
+const tpLabelSt = { display:'inline-block', fontSize:'0.68rem', fontWeight:700, color:'var(--gray-400)', textTransform:'uppercase', letterSpacing:'0.05em', minWidth:80, marginRight:8 };
