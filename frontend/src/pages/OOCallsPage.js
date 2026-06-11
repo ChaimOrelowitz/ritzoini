@@ -39,12 +39,16 @@ function NewApptModal({ client, onClose, onCreated }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
+  const [conflicts, setConflicts] = useState([]);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setSaving(true);
     setErr('');
+    setConflicts([]);
     try {
-      await api.post('/oo/appointments', { client_id: client.id, date, time, duration, repeat_weeks: repeatWeeks });
+      const r = await api.post('/oo/appointments', { client_id: client.id, date, time, duration, repeat_weeks: repeatWeeks });
+      if (r.conflicts?.length) setConflicts(r.conflicts);
       onCreated();
     } catch (ex) {
       setErr(ex.message);
@@ -53,7 +57,7 @@ function NewApptModal({ client, onClose, onCreated }) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2 style={{ margin: 0, fontSize: '1rem' }}>Schedule — {client.first_name} {client.last_name}</h2>
@@ -70,14 +74,29 @@ function NewApptModal({ client, onClose, onCreated }) {
               <input type="time" className="input" value={time} onChange={e => setTime(e.target.value)} required />
             </div>
             <div style={{ flex: 1 }}>
-              <label style={labelSt}>Duration (min)</label>
-              <input type="number" className="input" value={duration} min={15} max={120} onChange={e => setDuration(Number(e.target.value))} />
+              <label style={labelSt}>Duration</label>
+              <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                {[30, 45].map(d => (
+                  <label key={d} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.88rem', cursor: 'pointer' }}>
+                    <input type="radio" name="duration" value={d} checked={duration === d} onChange={() => setDuration(d)} />
+                    {d} min
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
           <div>
             <label style={labelSt}>Repeat (weeks)</label>
             <input type="number" className="input" value={repeatWeeks} min={1} max={52} onChange={e => setRepeatWeeks(Number(e.target.value))} />
           </div>
+          {conflicts.length > 0 && (
+            <div style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 6, padding: '8px 12px', fontSize: '0.8rem', color: '#92400e' }}>
+              <strong>⚠ Time conflict</strong> — another client is scheduled at the same time on:
+              <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
+                {conflicts.map((c, i) => <li key={i}>{c}</li>)}
+              </ul>
+            </div>
+          )}
           {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
@@ -109,7 +128,7 @@ function NotesModal({ client, appt, onClose, onSaved }) {
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 500 }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2 style={{ margin: 0, fontSize: '1rem' }}>
