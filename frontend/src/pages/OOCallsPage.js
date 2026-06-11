@@ -42,7 +42,11 @@ function BulkScheduleModal({ clients, onClose, onDone }) {
 
   const [selections, setSelections] = useState(() => {
     const s = {};
-    for (const c of clients) s[c.id] = { days: new Set(), duration: 45 };
+    for (const c of clients) {
+      const mins = c.insync_data?.typical_session_minutes;
+      const duration = mins === 30 ? 30 : 45;
+      s[c.id] = { days: new Set(), duration };
+    }
     return s;
   });
 

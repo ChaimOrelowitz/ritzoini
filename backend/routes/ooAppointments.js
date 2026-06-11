@@ -29,7 +29,7 @@ router.get('/calls', requireAuth, async (req, res) => {
   const we = windowEnd.toISOString().split('T')[0];
 
   const [{ data: clients }, { data: appts }] = await Promise.all([
-    supabase.from('oo_clients').select('id, first_name, last_name, mrn, referral_source_id, oo_referral_sources(name)').eq('status', 'active').order('last_name'),
+    supabase.from('oo_clients').select('id, first_name, last_name, mrn, referral_source_id, insync_data, oo_referral_sources(name)').eq('status', 'active').order('last_name'),
     supabase.from('oo_appointments').select('*').gte('date', ws).lte('date', we).eq('status', 'scheduled'),
   ]);
 

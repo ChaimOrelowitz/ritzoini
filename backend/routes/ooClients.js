@@ -452,13 +452,23 @@ async function fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cook
   const diagnoses = parseProblemList(html);
 
   let encounterIds = [];
+  let typical_session_minutes = existingInsyncData?.typical_session_minutes || null;
   try {
     const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: `PatientID=${patientId}&PageSize=20&SortBy=VisitDateNTime+DESC`,
     });
-    if (encRes.ok) encounterIds = parseEncounterIds(await encRes.text());
+    if (encRes.ok) {
+      const encHtml = await encRes.text();
+      encounterIds = parseEncounterIds(encHtml);
+      // Extract duration from most recent Individual Therapy encounter type name e.g. "Telehealth Individual Therapy - 45m"
+      const therapyTypes = [...encHtml.matchAll(/title="([^"]*Individual Therapy[^"]*)"/gi)];
+      for (const m of therapyTypes) {
+        const durMatch = m[1].match(/-\s*(\d+)m/i);
+        if (durMatch) { typical_session_minutes = parseInt(durMatch[1]); break; }
+      }
+    }
   } catch (_) {}
 
   await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
@@ -522,7 +532,7 @@ async function fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cook
     if (parsed.length) { treatment_plan = parsed; break; }
   }
 
-  return { diagnoses, treatment_plan };
+  return { diagnoses, treatment_plan, typical_session_minutes };
 }
 
 router.post('/sync-insync', requireAuth, async (req, res) => {
@@ -634,8 +644,8 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
       if (age > TWENTY_FOUR_HOURS) {
         try {
           await sleep(500);
-          const { diagnoses, treatment_plan } = await fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie);
-          const updatedInsyncData = { ...payload.insync_data, diagnoses, treatment_plan, facesheet_synced_at: new Date().toISOString() };
+          const { diagnoses, treatment_plan, typical_session_minutes } = await fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie);
+          const updatedInsyncData = { ...payload.insync_data, diagnoses, treatment_plan, facesheet_synced_at: new Date().toISOString(), ...(typical_session_minutes ? { typical_session_minutes } : {}) };
           await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', clientId);
           fs_synced++;
         } catch (_) { /* non-fatal — basic sync already saved */ }
@@ -805,12 +815,13 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   };
 
   try {
-    const { diagnoses, treatment_plan } = await fetchFacesheetAndTP(patientId, priPhyId, client.insync_data, cookie);
+    const { diagnoses, treatment_plan, typical_session_minutes } = await fetchFacesheetAndTP(patientId, priPhyId, client.insync_data, cookie);
     const updatedInsyncData = {
       ...(client.insync_data || {}),
       diagnoses,
       treatment_plan,
       facesheet_synced_at: new Date().toISOString(),
+      ...(typical_session_minutes ? { typical_session_minutes } : {}),
     };
     await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
     res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
