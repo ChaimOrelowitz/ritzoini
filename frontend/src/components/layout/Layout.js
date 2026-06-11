@@ -72,13 +72,10 @@ export default function Layout() {
           <span className="nav-icon">👤</span> Clients
         </NavLink>
         <NavLink to="/oo/calls" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">📞</span> Calls
+          <span className="nav-icon">☑</span> Sessions
         </NavLink>
         <NavLink to="/oo/referral-sources" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">🔗</span> Referral Sources
-        </NavLink>
-        <NavLink to="/oo/sessions" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">☑</span> Sessions
         </NavLink>
         <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">📅</span> Calendar
