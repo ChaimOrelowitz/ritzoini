@@ -111,9 +111,9 @@ async function generateNames(groups) {
     `${i+1}. ${g.gender || ''} ${g.groupLabel} on ${g.dayName}s at ${fmt12(g.time)}${g.setting ? `, setting: ${g.setting}` : ''}`
   ).join('\n');
 
-  const prompt = `You are naming enrichment and therapy groups for children, teens, and adults. Generate one short, catchy, creative name (2-3 words) for each group below.
+  const prompt = `You are naming therapy groups for a clinical practice that bills insurance. Generate one short, professionally appropriate name (2-4 words) for each group below.
 
-Style: Names are energetic and activity-inspired. Use alliteration, paired words with "&", or evocative imagery. Never literal — "Sensory Gym" → "Kinetic Kids". Never mention day, time, or demographics in the name.
+Style: Names must communicate a specific therapeutic skill or modality — suitable for a billing record or clinical document. Use terms like regulation, coping, social skills, mindfulness, DBT, CBT, executive function, body awareness, motor skills, distress tolerance, emotional regulation, etc. Names should be titlecase, no cute punctuation, no alliteration for its own sake. Use the group's setting and population to inform the skill focus.
 
 Do NOT reuse any of these existing names: ${HISTORICAL_NAMES.join(', ')}.
 
@@ -121,8 +121,8 @@ Groups:
 ${descriptions}
 
 Reply with ONLY the names, one per line, numbered. Example:
-1. Sparkle Squad
-2. Motion Masters`;
+1. Emotion Regulation Skills
+2. Social Thinking Group`;
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
