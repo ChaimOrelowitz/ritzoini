@@ -782,8 +782,19 @@ router.get('/:id/debug-encounter-html', requireAuth, async (req, res) => {
   if (!encRes.ok) return res.status(500).json({ error: `FSEncounterReload returned ${encRes.status}` });
   const html = await encRes.text();
 
-  // Return first 4000 chars so we can see the structure without drowning in it
-  res.json({ html_preview: html.slice(0, 4000), total_length: html.length });
+  // Extract duration from Individual Therapy encounter type name
+  const therapyTypes = [...html.matchAll(/title="([^"]*Individual Therapy[^"]*)"/gi)];
+  const durations = therapyTypes.map(m => {
+    const d = m[1].match(/-\s*(\d+)m/i);
+    return { type: m[1], minutes: d ? parseInt(d[1]) : null };
+  });
+  const typical = durations.find(d => d.minutes)?.minutes || null;
+
+  res.json({
+    typical_session_minutes: typical,
+    individual_therapy_encounters: durations,
+    total_encounters: html.match(/fscount="(\d+)"/)?.[1],
+  });
 });
 
 router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
