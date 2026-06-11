@@ -698,6 +698,9 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       _dbg.gen_status = genRes.status;
       if (genRes.ok) {
         const genJson = await genRes.json();
+        _dbg.gen_keys = Object.keys(genJson);
+        _dbg.gen_str_enc_note_type = typeof genJson.StrEncounterNote;
+        _dbg.gen_str_enc_note_len = genJson.StrEncounterNote?.length ?? -1;
         const noteHtml = genJson.StrEncounterNote || '';
         _dbg.tp_raw_len = noteHtml.length;
         const parsed = parseTreatmentPlan(noteHtml);
