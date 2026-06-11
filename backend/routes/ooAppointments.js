@@ -239,6 +239,9 @@ Return exactly this JSON structure:
     const jsonEnd   = text.lastIndexOf('}');
     if (jsonStart === -1) return res.status(500).json({ error: 'AI returned no JSON', raw: text });
     const fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    await supabase.from('oo_appointments')
+      .update({ ai_fields: fields, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
     res.json({ fields });
   } catch (err) {
     console.error('[process-note]', err);
@@ -313,7 +316,7 @@ ${fields.additional_comments ? `<p><strong>Additional Comments:</strong><br>${fi
 
 // PATCH update appointment (notes, status)
 router.patch('/:id', requireAuth, async (req, res) => {
-  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at', 'called_at'];
+  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at', 'called_at', 'ai_fields'];
   const updates = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) updates[k] = req.body[k];

@@ -142,7 +142,7 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
   const [processing,     setProcessing]     = useState(false);
-  const [fields,         setFields]         = useState(null);
+  const [fields,         setFields]         = useState(initialAppt.ai_fields || null);
   const [sending,        setSending]        = useState(false);
   const [deleting,       setDeleting]       = useState(false);
   const [err,            setErr]            = useState('');
@@ -154,6 +154,7 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
     setLocalDate(initialAppt.date || '');
     setLocalTime((initialAppt.time || '').slice(0, 5));
     setLocalDur(String(initialAppt.duration || 45));
+    setFields(initialAppt.ai_fields || null);
   }, [initialAppt]);
 
   const style = APPT_STATUS_STYLE[appt.status] || APPT_STATUS_STYLE.scheduled;
@@ -316,15 +317,25 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
         {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
         <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn btn-outline btn-xs" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
-            {processing ? 'Processing…' : fields ? 'Re-process with AI' : 'Process with AI'}
+            {processing ? 'Processing…' : fields ? 'Re-process' : 'Process with AI'}
           </button>
-          {fields && (
-            <button className="btn btn-gold btn-xs" type="button" onClick={() => setShowNoteModal(true)}>
-              Open Note →
-            </button>
-          )}
+          <button
+            className="btn btn-xs"
+            type="button"
+            onClick={() => fields && setShowNoteModal(true)}
+            style={{
+              background: fields ? 'var(--gold)' : 'var(--gray-100)',
+              color: fields ? 'var(--navy)' : 'var(--gray-400)',
+              border: `1px solid ${fields ? 'var(--gold)' : 'var(--gray-200)'}`,
+              cursor: fields ? 'pointer' : 'default',
+              fontWeight: 600,
+            }}
+            title={fields ? 'Open AI note' : 'No AI note yet — write notes and click Process with AI'}
+          >
+            {fields ? 'Open Note →' : 'No AI note'}
+          </button>
           {appt.note_sent_at && (
-            <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ Note sent {fmtDateTime(appt.note_sent_at)}</span>
+            <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>
           )}
         </div>
       </div>
