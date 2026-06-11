@@ -80,23 +80,41 @@ function PhoneNum({ number, small }) {
 // ── Client detail side panel ──────────────────────────────────────────────────
 
 function ClientPanel({ clientId, onClose }) {
-  const [client,  setClient]  = useState(null);
-  const [appts,   setAppts]   = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [client,    setClient]    = useState(null);
+  const [appts,     setAppts]     = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [myNotes,   setMyNotes]   = useState('');
+  const [notesSave, setNotesSave] = useState('idle');
+  const notesTimer = useRef(null);
 
   useEffect(() => {
     if (!clientId) return;
     setLoading(true);
     setClient(null);
     setAppts([]);
+    setMyNotes('');
     Promise.all([
       api.get(`/oo/clients/${clientId}`),
       api.get(`/oo/appointments?client_id=${clientId}`),
     ]).then(([c, a]) => {
       setClient(c);
+      setMyNotes(c.notes || '');
       setAppts(Array.isArray(a) ? a.sort((x, y) => y.date.localeCompare(x.date)) : []);
     }).catch(() => {}).finally(() => setLoading(false));
   }, [clientId]);
+
+  function handleNotesChange(val) {
+    setMyNotes(val);
+    setNotesSave('saving');
+    clearTimeout(notesTimer.current);
+    notesTimer.current = setTimeout(async () => {
+      try {
+        await api.put(`/oo/clients/${clientId}`, { notes: val });
+        setNotesSave('saved');
+        setTimeout(() => setNotesSave('idle'), 2000);
+      } catch { setNotesSave('idle'); }
+    }, 1000);
+  }
 
   if (!clientId) return null;
 
@@ -161,6 +179,21 @@ function ClientPanel({ clientId, onClose }) {
 
         {client && (
           <>
+            {/* DX — top */}
+            {dxs.length > 0 && (
+              <section style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>Diagnoses</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  {dxs.map((d, i) => (
+                    <div key={i} style={{ fontSize: '0.75rem', color: 'var(--gray-700)' }}>
+                      <strong style={{ color: 'var(--navy)' }}>{d.icd_10}</strong>{' '}
+                      <span>{d.problem}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Contact */}
             <section style={{ marginBottom: 14 }}>
               <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>Contact</div>
@@ -181,21 +214,6 @@ function ClientPanel({ clientId, onClose }) {
                 {client.oo_referral_sources?.name && (
                   <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>via {client.oo_referral_sources.name}</div>
                 )}
-              </section>
-            )}
-
-            {/* DX */}
-            {dxs.length > 0 && (
-              <section style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>Diagnoses</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  {dxs.map((d, i) => (
-                    <div key={i} style={{ fontSize: '0.75rem', color: 'var(--gray-700)' }}>
-                      <strong style={{ color: 'var(--navy)' }}>{d.icd_10}</strong>{' '}
-                      <span>{d.problem}</span>
-                    </div>
-                  ))}
-                </div>
               </section>
             )}
 
@@ -266,13 +284,26 @@ function ClientPanel({ clientId, onClose }) {
               </section>
             )}
 
-            {/* Personal notes */}
-            {client.notes && (
-              <section style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5 }}>My Notes</div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--gray-700)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{client.notes}</div>
-              </section>
-            )}
+            {/* My Notes — always editable */}
+            <section style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 5, display: 'flex', gap: 8, alignItems: 'center' }}>
+                My Notes
+                {notesSave === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.68rem', textTransform: 'none' }}>Saving…</span>}
+                {notesSave === 'saved'  && <span style={{ color: '#16a34a', fontWeight: 500, fontSize: '0.68rem', textTransform: 'none' }}>✓ Saved</span>}
+              </div>
+              <textarea
+                value={myNotes}
+                onChange={e => handleNotesChange(e.target.value)}
+                placeholder="Private notes…"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  minHeight: 80, fontSize: '0.8rem', lineHeight: 1.5,
+                  border: '1px solid var(--gray-200)', borderRadius: 6,
+                  padding: '7px 9px', resize: 'vertical', fontFamily: 'inherit',
+                  background: 'white', color: 'var(--gray-800)',
+                }}
+              />
+            </section>
           </>
         )}
       </div>
