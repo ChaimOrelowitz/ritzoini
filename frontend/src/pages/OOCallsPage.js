@@ -280,28 +280,64 @@ function NewApptModal({ client, onClose, onCreated }) {
   );
 }
 
+const MODALITIES_LIST = ['CBT','EMDR','Sand Tray','Solution Focused','Client Centered','DBT','Art Therapy','Strength Based','Family Systems','Trauma Focused','Play Therapy','Mindfulness','Behavioral Role Play','Guided Imagery','Motivational Interviewing'];
+
 // ── Notes modal ────────────────────────────────────────────────────────────
 function NotesModal({ client, appt, onClose, onSaved }) {
-  const [notes, setNotes] = useState(appt.raw_notes || '');
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
+  const tp = client.insync_data?.treatment_plan || '';
+  const [rawNotes,   setRawNotes]   = useState(appt.raw_notes || '');
+  const [processing, setProcessing] = useState(false);
+  const [sending,    setSending]    = useState(false);
+  const [fields,     setFields]     = useState(null);
+  const [err,        setErr]        = useState('');
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setSaving(true);
+  async function handleProcess() {
+    if (!rawNotes.trim()) { setErr('Write notes first.'); return; }
+    setProcessing(true); setErr('');
+    try {
+      await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: rawNotes });
+      const r = await api.post(`/oo/appointments/${appt.id}/process-note`, { raw_notes: rawNotes, treatment_plan: tp });
+      setFields(r.fields);
+    } catch (ex) {
+      setErr(ex.message);
+    } finally {
+      setProcessing(false);
+    }
+  }
+
+  async function handleSaveRaw() {
     setErr('');
     try {
-      await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: notes });
+      await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: rawNotes });
+      onSaved();
+    } catch (ex) { setErr(ex.message); }
+  }
+
+  async function handleSend() {
+    setSending(true); setErr('');
+    try {
+      await api.post(`/oo/appointments/${appt.id}/send-note`, { fields, treatment_plan: tp });
       onSaved();
     } catch (ex) {
       setErr(ex.message);
-      setSaving(false);
+      setSending(false);
     }
+  }
+
+  function updateField(key, val) {
+    setFields(prev => ({ ...prev, [key]: val }));
+  }
+
+  function toggleModality(m) {
+    setFields(prev => {
+      const mods = prev.modalities || [];
+      return { ...prev, modalities: mods.includes(m) ? mods.filter(x => x !== m) : [...mods, m] };
+    });
   }
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 500 }} onClick={e => e.stopPropagation()}>
+      <div className="modal" style={{ maxWidth: 620, width: '96vw' }} onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <h2 style={{ margin: 0, fontSize: '1rem' }}>
             Notes — {client.first_name} {client.last_name}
@@ -311,22 +347,118 @@ function NotesModal({ client, appt, onClose, onSaved }) {
           </h2>
           <button className="btn-ghost" onClick={onClose}>✕</button>
         </div>
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '18px 20px' }}>
-          <textarea
-            className="input"
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            rows={7}
-            placeholder="Session notes…"
-            style={{ resize: 'vertical', fontFamily: 'inherit' }}
-            autoFocus
-          />
-          {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save Notes'}</button>
+        <div style={{ padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '80vh', overflowY: 'auto' }}>
+
+          {/* Raw notes */}
+          <div>
+            <label style={labelSt}>Raw Notes</label>
+            <textarea
+              className="input"
+              value={rawNotes}
+              onChange={e => setRawNotes(e.target.value)}
+              rows={5}
+              placeholder="Write your session notes here…"
+              style={{ resize: 'vertical', fontFamily: 'inherit' }}
+              autoFocus
+            />
           </div>
-        </form>
+
+          {/* Process button */}
+          <button
+            className="btn-primary"
+            disabled={processing || !rawNotes.trim()}
+            onClick={handleProcess}
+            style={{ alignSelf: 'flex-start' }}
+          >
+            {processing ? 'Processing…' : fields ? 'Re-process with AI' : 'Process with AI'}
+          </button>
+
+          {/* AI-expanded fields */}
+          {fields && (
+            <>
+              <hr style={{ margin: '4px 0', borderColor: 'var(--gray-200)' }} />
+
+              <div>
+                <label style={labelSt}>Location of Meeting</label>
+                <input className="input" value={fields.location_of_meeting || 'Telehealth - Video'} readOnly style={{ background: 'var(--gray-50, #f9fafb)' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Additional Person(s) Present</label>
+                <input className="input" value={fields.additional_persons_present || ''} onChange={e => updateField('additional_persons_present', e.target.value)} placeholder="Leave blank if none" />
+              </div>
+
+              <div>
+                <label style={labelSt}>Content Discussed</label>
+                <textarea className="input" rows={3} value={fields.content_discussed || ''} onChange={e => updateField('content_discussed', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Interventions Used</label>
+                <textarea className="input" rows={2} value={fields.interventions_used || ''} onChange={e => updateField('interventions_used', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Modality</label>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {MODALITIES_LIST.map(m => {
+                    const on = (fields.modalities || []).includes(m);
+                    return (
+                      <button key={m} type="button" onClick={() => toggleModality(m)} style={{
+                        padding: '3px 9px', fontSize: '0.74rem', fontWeight: 600, borderRadius: 4, cursor: 'pointer',
+                        border: `1.5px solid ${on ? 'var(--navy)' : 'var(--gray-300)'}`,
+                        background: on ? 'var(--navy)' : 'transparent',
+                        color: on ? '#fff' : 'var(--gray-400)',
+                        transition: 'background 0.1s',
+                      }}>{m}</button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label style={labelSt}>Patient Response</label>
+                <textarea className="input" rows={2} value={fields.patient_response || ''} onChange={e => updateField('patient_response', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Progress Toward Goals</label>
+                <textarea className="input" rows={2} value={fields.progress_toward_goals || ''} onChange={e => updateField('progress_toward_goals', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Changes to Treatment Plan</label>
+                <textarea className="input" rows={2} value={fields.treatment_plan_changes || ''} onChange={e => updateField('treatment_plan_changes', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+
+              <div>
+                <label style={labelSt}>Additional Comments</label>
+                <textarea className="input" rows={2} value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+            </>
+          )}
+
+          {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
+
+          {/* Footer buttons */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>
+            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+            {!fields && (
+              <button type="button" className="btn-primary" onClick={handleSaveRaw}>Save Notes</button>
+            )}
+            {fields && (
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={sending}
+                onClick={handleSend}
+                style={{ background: '#16a34a', borderColor: '#16a34a' }}
+              >
+                {sending ? 'Sending…' : 'Send to Secretary'}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -337,22 +469,20 @@ const labelSt = { display: 'block', fontSize: '0.75rem', color: 'var(--gray-400)
 // ── Bucket card ─────────────────────────────────────────────────────────────
 function ClientCard({ c, onSchedule, onNotes, onGoToClient }) {
   const appt = c.next_appointment;
-  const bucket = !appt ? 'none' : c.called ? 'called' : 'pending';
+  const noteSent  = !!appt?.note_sent_at;
+  const hasNotes  = !noteSent && !!(appt?.raw_notes?.trim());
+  const bucket    = !appt ? 'none' : noteSent ? 'sent' : hasNotes ? 'has_notes' : 'pending';
 
-  const borderColor = bucket === 'none' ? 'var(--warning, #f59e0b)' : bucket === 'called' ? 'var(--success, #22c55e)' : 'var(--navy)';
-  const bg = bucket === 'none' ? '#fffbeb' : bucket === 'called' ? '#f0fdf4' : '#fff';
+  const borderColor = { none: '#f59e0b', sent: '#22c55e', has_notes: '#f59e0b', pending: 'var(--navy)' }[bucket];
+  const bg          = { none: '#fffbeb', sent: '#f0fdf4', has_notes: '#fffbeb', pending: '#fff' }[bucket];
 
   return (
     <div style={{
-      background: bg,
-      border: `1.5px solid ${borderColor}`,
-      borderRadius: 10,
-      padding: '12px 16px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 12,
-      cursor: 'pointer',
+      background: bg, border: `1.5px solid ${borderColor}`,
+      borderRadius: 10, padding: '12px 16px',
+      display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer',
     }} onClick={() => onGoToClient(c.id)}>
+
       {/* Name + referral */}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, fontSize: '0.95rem' }}>{c.first_name} {c.last_name}</div>
@@ -361,15 +491,20 @@ function ClientCard({ c, onSchedule, onNotes, onGoToClient }) {
         )}
       </div>
 
-      {/* Appointment info */}
+      {/* Appointment info + note-sent time */}
       <div style={{ textAlign: 'right', minWidth: 90 }}>
         {appt ? (
           <>
             <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>{apptDayLabel(appt.date)} {formatTime12(appt.time)}</div>
             <div style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>{formatDate(appt.date)}</div>
+            {noteSent && (
+              <div style={{ fontSize: '0.68rem', color: '#16a34a', marginTop: 2 }}>
+                sent {new Date(appt.note_sent_at).toLocaleDateString()}
+              </div>
+            )}
           </>
         ) : (
-          <span style={{ fontSize: '0.75rem', color: 'var(--warning, #f59e0b)', fontWeight: 600 }}>No appt</span>
+          <span style={{ fontSize: '0.75rem', color: '#f59e0b', fontWeight: 600 }}>No appt</span>
         )}
       </div>
 
@@ -385,9 +520,14 @@ function ClientCard({ c, onSchedule, onNotes, onGoToClient }) {
             Add Notes
           </button>
         )}
-        {bucket === 'called' && (
+        {bucket === 'has_notes' && (
+          <button className="btn-primary" style={{ fontSize: '0.78rem', padding: '5px 12px', background: '#f59e0b', borderColor: '#f59e0b' }} onClick={() => onNotes(c, appt)}>
+            Send Note
+          </button>
+        )}
+        {bucket === 'sent' && (
           <button className="btn-ghost" style={{ fontSize: '0.78rem', padding: '5px 12px' }} onClick={() => onNotes(c, appt)}>
-            Edit Notes
+            Resend
           </button>
         )}
       </div>
@@ -430,16 +570,18 @@ export default function OOCallsPage() {
   const { clients, week_start, week_end } = data;
 
   const noAppt   = clients.filter(c => !c.next_appointment);
-  const pending  = clients.filter(c =>  c.next_appointment && !c.called)
+  const sent     = clients.filter(c => c.next_appointment?.note_sent_at);
+  const pending  = clients.filter(c => c.next_appointment && !c.next_appointment.note_sent_at)
                           .sort((a, b) => {
                             const da = a.next_appointment, db = b.next_appointment;
                             if (da.date !== db.date) return da.date.localeCompare(db.date);
                             return da.time.localeCompare(db.time);
                           });
-  const called   = clients.filter(c =>  c.next_appointment &&  c.called);
+  const called = sent; // alias for clarity
 
-  const totalDone = called.length;
-  const totalLeft = noAppt.length + pending.length;
+  const hasNotes  = clients.filter(c => c.next_appointment && !c.next_appointment.note_sent_at && c.next_appointment.raw_notes?.trim());
+  const totalDone = sent.length;
+  const totalLeft = noAppt.length + pending.length + hasNotes.length;
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto', padding: '24px 16px' }}>
@@ -481,11 +623,11 @@ export default function OOCallsPage() {
         </section>
       )}
 
-      {/* Pending bucket */}
+      {/* Pending — needs notes */}
       {pending.length > 0 && (
         <section style={{ marginBottom: 28 }}>
           <div style={bucketHeaderSt('var(--navy)')}>
-            Pending — needs notes
+            Needs Notes
             <span style={countBadgeSt('var(--navy)')}>{pending.length}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -501,15 +643,35 @@ export default function OOCallsPage() {
         </section>
       )}
 
-      {/* Called / done bucket */}
-      {called.length > 0 && (
+      {/* Has notes — needs to send */}
+      {hasNotes.length > 0 && (
         <section style={{ marginBottom: 28 }}>
-          <div style={bucketHeaderSt('#22c55e')}>
-            Done
-            <span style={countBadgeSt('#22c55e')}>{called.length}</span>
+          <div style={bucketHeaderSt('#f59e0b')}>
+            Notes Written — Send to Secretary
+            <span style={countBadgeSt('#f59e0b')}>{hasNotes.length}</span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {called.map(c => (
+            {hasNotes.map(c => (
+              <ClientCard
+                key={c.id} c={c}
+                onSchedule={setScheduleClient}
+                onNotes={(cl, ap) => setNotesTarget({ client: cl, appt: ap })}
+                onGoToClient={id => navigate(`/oo/clients/${id}`)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Sent to secretary */}
+      {sent.length > 0 && (
+        <section style={{ marginBottom: 28 }}>
+          <div style={bucketHeaderSt('#22c55e')}>
+            Note Sent
+            <span style={countBadgeSt('#22c55e')}>{sent.length}</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {sent.map(c => (
               <ClientCard
                 key={c.id} c={c}
                 onSchedule={setScheduleClient}

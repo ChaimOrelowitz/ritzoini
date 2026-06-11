@@ -2,6 +2,13 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
+const Anthropic = require('@anthropic-ai/sdk');
+const { Resend } = require('resend');
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const resend    = new Resend(process.env.RESEND_API_KEY);
+
+const MODALITIES = ['CBT','EMDR','Sand Tray','Solution Focused','Client Centered','DBT','Art Therapy','Strength Based','Family Systems','Trauma Focused','Play Therapy','Mindfulness','Behavioral Role Play','Guided Imagery','Motivational Interviewing'];
 
 // GET all appointments (with client info)
 router.get('/', requireAuth, async (req, res) => {
@@ -180,9 +187,131 @@ router.post('/bulk-schedule', requireAuth, async (req, res) => {
   res.json({ created: inserted.length, total_dates: allDates.length });
 });
 
+// POST /:id/process-note — run raw_notes through Claude, return structured fields
+router.post('/:id/process-note', requireAuth, async (req, res) => {
+  try {
+    const { raw_notes, treatment_plan } = req.body;
+    if (!raw_notes?.trim()) return res.status(400).json({ error: 'raw_notes required' });
+
+    const prompt = `You are a licensed clinical social worker's documentation assistant. The clinician has given you raw session notes and their client's treatment plan. Expand the raw notes into a complete clinical session note with the following 10 fields. Return ONLY valid JSON — no markdown, no explanation.
+
+Raw notes:
+${raw_notes}
+
+Treatment plan (for context only, do not include in output):
+${treatment_plan || '(none provided)'}
+
+Fields to populate:
+1. additional_persons_present — string, who else was on the call if anyone (leave empty string if none)
+2. location_of_meeting — always exactly: "Telehealth - Video"
+3. audio_only_reason — string, reason if audio-only (usually leave empty)
+4. content_discussed — paragraph, what was discussed in the session
+5. interventions_used — paragraph, what therapeutic interventions were used
+6. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
+7. patient_response — paragraph, how the patient responded to the interventions
+8. progress_toward_goals — paragraph, progress made toward treatment goals
+9. treatment_plan_changes — string, any changes needed to the treatment plan (or "No changes at this time")
+10. additional_comments — string, any other relevant clinical observations
+
+Return exactly this JSON structure:
+{
+  "additional_persons_present": "",
+  "location_of_meeting": "Telehealth - Video",
+  "audio_only_reason": "",
+  "content_discussed": "",
+  "interventions_used": "",
+  "modalities": [],
+  "patient_response": "",
+  "progress_toward_goals": "",
+  "treatment_plan_changes": "",
+  "additional_comments": ""
+}`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = response.content[0].text.trim();
+    const jsonStart = text.indexOf('{');
+    const jsonEnd   = text.lastIndexOf('}');
+    if (jsonStart === -1) return res.status(500).json({ error: 'AI returned no JSON', raw: text });
+    const fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    res.json({ fields });
+  } catch (err) {
+    console.error('[process-note]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /:id/send-note — build email from processed fields, send to secretary
+router.post('/:id/send-note', requireAuth, async (req, res) => {
+  try {
+    const { fields, treatment_plan } = req.body;
+    if (!fields) return res.status(400).json({ error: 'fields required' });
+
+    // Fetch appointment + client + referral source
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('*, oo_clients(id, first_name, last_name, mrn, referral_source_id, oo_referral_sources(name, notes_email))')
+      .eq('id', req.params.id)
+      .single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const client = appt.oo_clients;
+    const ref    = client?.oo_referral_sources;
+    const toEmail = ref?.notes_email;
+    if (!toEmail) return res.status(400).json({ error: 'No notes_email for this referral source' });
+
+    const initials = client ? `${client.first_name[0]}${client.last_name[0]}`.toUpperCase() : '??';
+    const mrn      = client?.mrn || appt.client_id;
+    const dateStr  = appt.date || 'unknown date';
+
+    const modStr   = (fields.modalities || []).join(', ') || '—';
+    const emailHtml = `
+<p><strong>Client:</strong> ${initials} (MRN: ${mrn})</p>
+<p><strong>Date:</strong> ${dateStr}</p>
+<hr>
+<p><strong>Location of Meeting:</strong> ${fields.location_of_meeting || 'Telehealth - Video'}</p>
+${fields.additional_persons_present ? `<p><strong>Additional Person(s) Present:</strong> ${fields.additional_persons_present}</p>` : ''}
+${fields.audio_only_reason ? `<p><strong>Audio Only Reason:</strong> ${fields.audio_only_reason}</p>` : ''}
+<p><strong>Content Discussed:</strong><br>${(fields.content_discussed || '').replace(/\n/g, '<br>')}</p>
+<p><strong>Interventions Used:</strong><br>${(fields.interventions_used || '').replace(/\n/g, '<br>')}</p>
+<p><strong>Modality:</strong> ${modStr}</p>
+<p><strong>Patient Response:</strong><br>${(fields.patient_response || '').replace(/\n/g, '<br>')}</p>
+<p><strong>Progress Toward Goals:</strong><br>${(fields.progress_toward_goals || '').replace(/\n/g, '<br>')}</p>
+<p><strong>Changes to Treatment Plan:</strong><br>${(fields.treatment_plan_changes || '—').replace(/\n/g, '<br>')}</p>
+${fields.additional_comments ? `<p><strong>Additional Comments:</strong><br>${fields.additional_comments.replace(/\n/g, '<br>')}</p>` : ''}
+<hr>
+<p><strong>── Treatment Plan ──</strong></p>
+<pre style="font-family:inherit;white-space:pre-wrap">${treatment_plan || '(not provided)'}</pre>
+`.trim();
+
+    const subject = `Session Note — ${initials} (${mrn}) — ${dateStr}`;
+
+    const { data: emailData, error: emailErr } = await resend.emails.send({
+      from: process.env.FROM_EMAIL,
+      to:   toEmail,
+      subject,
+      html: emailHtml,
+    });
+    if (emailErr) return res.status(500).json({ error: emailErr.message || JSON.stringify(emailErr) });
+
+    // Mark note sent
+    const now = new Date().toISOString();
+    await supabase.from('oo_appointments').update({ note_sent_at: now, updated_at: now }).eq('id', req.params.id);
+
+    res.json({ ok: true, email_id: emailData?.id, sent_to: toEmail });
+  } catch (err) {
+    console.error('[send-note]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // PATCH update appointment (notes, status)
 router.patch('/:id', requireAuth, async (req, res) => {
-  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id'];
+  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at'];
   const updates = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) updates[k] = req.body[k];
