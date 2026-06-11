@@ -652,19 +652,23 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
 
     // Step 3: get encounter list (loaded separately via AJAX on facesheet)
     let encounterIds = [];
+    let _dbg = { enc_status: null, enc_body_snippet: null, enc_ids: [], gen_status: null, tp_raw_len: 0, tp_parse_count: 0 };
     try {
       const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'PageSize=13&SortBy=VisitDateNTime+DESC',
+        body: `PatientID=${patientId}&PageSize=13&SortBy=VisitDateNTime+DESC`,
       });
+      _dbg.enc_status = encRes.status;
       if (encRes.ok) {
         const encHtml = await encRes.text();
+        _dbg.enc_body_snippet = encHtml.slice(0, 300);
         encounterIds = parseEncounterIds(encHtml);
+        _dbg.enc_ids = encounterIds;
       }
-    } catch (_) { /* non-fatal */ }
+    } catch (e) { _dbg.enc_err = e.message; }
 
-    // Step 3: fetch treatment plan via most recent encounter
+    // Step 4: fetch treatment plan via most recent encounter
     let treatment_plan = client.insync_data?.treatment_plan || [];
     if (encounterIds.length) {
       const encId = encounterIds[0]; // most recent first (facesheet loads DESC)
@@ -691,10 +695,13 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
         body: genBody.toString(),
       });
 
+      _dbg.gen_status = genRes.status;
       if (genRes.ok) {
         const genJson = await genRes.json();
         const noteHtml = genJson.StrEncounterNote || '';
+        _dbg.tp_raw_len = noteHtml.length;
         const parsed = parseTreatmentPlan(noteHtml);
+        _dbg.tp_parse_count = parsed.length;
         if (parsed.length) treatment_plan = parsed;
       }
     }
@@ -708,7 +715,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
     };
     await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
 
-    res.json({ ok: true, diagnoses, treatment_plan, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
+    res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length, _dbg });
   } catch (err) {
     res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
   }
