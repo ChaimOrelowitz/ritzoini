@@ -729,6 +729,50 @@ function parseProblemList(html) {
   return diagnoses;
 }
 
+router.get('/:id/debug-encounter-html', requireAuth, async (req, res) => {
+  const { data: client, error: clientErr } = await supabase
+    .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
+  if (clientErr || !client) return res.status(404).json({ error: 'Client not found' });
+  if (!client.insync_patient_id) return res.status(400).json({ error: 'No InSync Patient ID' });
+
+  const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+  ]);
+  if (!userSetting?.value || !passSetting?.value) return res.status(400).json({ error: 'InSync credentials not configured' });
+
+  const cookie = await getInSyncCookie(userSetting.value, passSetting.value);
+  const patientId = client.insync_patient_id;
+  const priPhyId  = client.insync_data?.PriPhyId || '';
+
+  const headers = {
+    'Cookie': cookie,
+    'Origin': INSYNC_BASE,
+    'Referer': `${INSYNC_BASE}/Dashboard/dashboard`,
+    'X-Requested-With': 'XMLHttpRequest',
+    'User-Agent': 'Mozilla/5.0',
+  };
+
+  // Set patient context
+  await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+  });
+
+  const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `PatientID=${patientId}&PageSize=5&SortBy=VisitDateNTime+DESC`,
+  });
+
+  if (!encRes.ok) return res.status(500).json({ error: `FSEncounterReload returned ${encRes.status}` });
+  const html = await encRes.text();
+
+  // Return first 4000 chars so we can see the structure without drowning in it
+  res.json({ html_preview: html.slice(0, 4000), total_length: html.length });
+});
+
 router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   const { data: client, error: clientErr } = await supabase
     .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
