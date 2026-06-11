@@ -656,7 +656,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `PatientID=${patientId}&PageSize=50&SortBy=VisitDateNTime+DESC`,
+        body: `PatientID=${patientId}&PageSize=20&SortBy=VisitDateNTime+DESC`,
       });
       if (encRes.ok) encounterIds = parseEncounterIds(await encRes.text());
     } catch (_) {}
@@ -669,7 +669,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
     });
 
     let treatment_plan = client.insync_data?.treatment_plan || [];
-    for (const encId of encounterIds.slice(0, 15)) {
+    for (const encId of encounterIds.slice(0, 8)) {
       // GetDefaultNote reveals the real saved-note IDs for this encounter
       const gdnBody = new URLSearchParams({
         'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
