@@ -422,6 +422,10 @@ export default function OOClientDetailPage() {
   const [addingAppt,   setAddingAppt]   = useState(false);
   const [addConflicts, setAddConflicts] = useState([]);
 
+  const [clientNotes,     setClientNotes]     = useState('');
+  const [notesSaveState,  setNotesSaveState]  = useState('idle');
+  const notesSaveTimer = useRef(null);
+
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
   const [debugFields,     setDebugFields]     = useState(null);
@@ -432,7 +436,23 @@ export default function OOClientDetailPage() {
   const [debuggingTp,     setDebuggingTp]     = useState(false);
 
   function loadClientData() {
-    return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
+    return api.get(`/oo/clients/${id}`).then(c => {
+      setClient(c);
+      setClientNotes(c.notes || '');
+    }).catch(() => navigate('/oo/clients'));
+  }
+
+  function handleClientNotesChange(val) {
+    setClientNotes(val);
+    setNotesSaveState('saving');
+    clearTimeout(notesSaveTimer.current);
+    notesSaveTimer.current = setTimeout(async () => {
+      try {
+        await api.put(`/oo/clients/${id}`, { notes: val });
+        setNotesSaveState('saved');
+        setTimeout(() => setNotesSaveState('idle'), 2000);
+      } catch { setNotesSaveState('idle'); }
+    }, 1000);
   }
 
   const loadAppts = useCallback(() => {
@@ -577,75 +597,100 @@ export default function OOClientDetailPage() {
       <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
 
       {/* ── Header ── */}
-      <div style={{ marginBottom: 20 }}>
-        {/* Name + sex + status + referral + Edit button */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
-          {sexBadge && (
-            <span style={{ fontSize: '0.72rem', fontWeight: 700, background: 'var(--gray-100)', color: 'var(--gray-500)', borderRadius: 3, padding: '2px 6px', letterSpacing: '0.04em' }}>
-              {sexBadge}
-            </span>
+      <div style={{ display: 'flex', gap: 24, alignItems: 'flex-start', marginBottom: 20 }}>
+
+        {/* Left — client info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {/* Name + sex + status + referral + Edit button */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
+            <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
+            {sexBadge && (
+              <span style={{ fontSize: '0.72rem', fontWeight: 700, background: 'var(--gray-100)', color: 'var(--gray-500)', borderRadius: 3, padding: '2px 6px', letterSpacing: '0.04em' }}>
+                {sexBadge}
+              </span>
+            )}
+            <span className={`badge badge-${client.status}`}>{client.status}</span>
+            {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
+            <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
+          </div>
+
+          {/* DOB (age) */}
+          {client.dob && (
+            <div style={{ fontSize: '0.85rem', color: 'var(--gray-700)', marginBottom: 4 }}>
+              {fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}
+            </div>
           )}
-          <span className={`badge badge-${client.status}`}>{client.status}</span>
-          {rs && <span className="badge" style={{ background: '#dbeafe', color: '#1e40af' }}>{rs.name}</span>}
-          <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
+
+          {/* Mobile · Phone · Email */}
+          {(client.mobile || client.phone || client.email || raw.PatientEmail) && (
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 4 }}>
+              {client.mobile && <span>{client.mobile}</span>}
+              {client.phone  && <span>{client.phone}</span>}
+              {(client.email || raw.PatientEmail) && <span>{client.email || raw.PatientEmail}</span>}
+            </div>
+          )}
+
+          {/* Mother / Father — always show */}
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)', marginBottom: 4 }}>
+            <span>
+              <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Mother:</strong>{' '}
+              {client.mother_name
+                ? <>{client.mother_name}{client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}</>
+                : <span style={{ color: 'var(--gray-300)' }}>—</span>
+              }
+            </span>
+            <span>
+              <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Father:</strong>{' '}
+              {client.father_name
+                ? <>{client.father_name}{client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}</>
+                : <span style={{ color: 'var(--gray-300)' }}>—</span>
+              }
+            </span>
+          </div>
+
+          {/* DX badges + Sync */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
+            {raw.diagnoses?.map((d, i) => (
+              <span key={i} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                background: '#fef9c3', color: '#78350f', border: '1px solid #fde68a',
+                borderRadius: 4, padding: '2px 8px', fontSize: '0.75rem',
+              }}>
+                <strong style={{ fontSize: '0.7rem', fontWeight: 700 }}>{d.icd_10}</strong>
+                <span>{d.problem}</span>
+              </span>
+            ))}
+            {client.insync_patient_id && (
+              <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}
+                style={{ fontSize: '0.72rem' }}>
+                {syncingFs ? 'Syncing…' : 'Sync DX'}
+              </button>
+            )}
+            {fsMsg && (
+              <span style={{ fontSize: '0.72rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a' }}>{fsMsg}</span>
+            )}
+          </div>
         </div>
 
-        {/* DOB (age) */}
-        {client.dob && (
-          <div style={{ fontSize: '0.85rem', color: 'var(--gray-700)', marginBottom: 4 }}>
-            {fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}
+        {/* Right — personal notes */}
+        <div style={{ width: 260, flexShrink: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+            <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>My Notes</span>
+            {notesSaveState === 'saving' && <span style={{ fontSize: '0.68rem', color: 'var(--gold)' }}>Saving…</span>}
+            {notesSaveState === 'saved'  && <span style={{ fontSize: '0.68rem', color: '#16a34a' }}>✓ Saved</span>}
           </div>
-        )}
-
-        {/* Mobile · Phone · Email */}
-        {(client.mobile || client.phone || client.email || raw.PatientEmail) && (
-          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 4 }}>
-            {client.mobile && <span>{client.mobile}</span>}
-            {client.phone  && <span>{client.phone}</span>}
-            {(client.email || raw.PatientEmail) && <span>{client.email || raw.PatientEmail}</span>}
-          </div>
-        )}
-
-        {/* Mother / Father — always show */}
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)', marginBottom: 4 }}>
-          <span>
-            <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Mother:</strong>{' '}
-            {client.mother_name
-              ? <>{client.mother_name}{client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}</>
-              : <span style={{ color: 'var(--gray-300)' }}>—</span>
-            }
-          </span>
-          <span>
-            <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Father:</strong>{' '}
-            {client.father_name
-              ? <>{client.father_name}{client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}</>
-              : <span style={{ color: 'var(--gray-300)' }}>—</span>
-            }
-          </span>
-        </div>
-
-        {/* DX badges + Sync */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
-          {raw.diagnoses?.map((d, i) => (
-            <span key={i} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              background: '#fef9c3', color: '#78350f', border: '1px solid #fde68a',
-              borderRadius: 4, padding: '2px 8px', fontSize: '0.75rem',
-            }}>
-              <strong style={{ fontSize: '0.7rem', fontWeight: 700 }}>{d.icd_10}</strong>
-              <span>{d.problem}</span>
-            </span>
-          ))}
-          {client.insync_patient_id && (
-            <button className="btn btn-outline btn-xs" onClick={syncFacesheet} disabled={syncingFs}
-              style={{ fontSize: '0.72rem' }}>
-              {syncingFs ? 'Syncing…' : 'Sync DX'}
-            </button>
-          )}
-          {fsMsg && (
-            <span style={{ fontSize: '0.72rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? '#dc2626' : '#16a34a' }}>{fsMsg}</span>
-          )}
+          <textarea
+            value={clientNotes}
+            onChange={e => handleClientNotesChange(e.target.value)}
+            placeholder="Notes just for you…"
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              minHeight: 110, fontSize: '0.82rem', lineHeight: 1.55,
+              border: '1px solid var(--gray-200)', borderRadius: 6,
+              padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
+              background: '#fffdf0', color: 'var(--gray-800)',
+            }}
+          />
         </div>
       </div>
 

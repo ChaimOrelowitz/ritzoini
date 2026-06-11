@@ -93,7 +93,7 @@ router.post('/', requireAuth, async (req, res) => {
 router.put('/:id', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
           referral_source_id, program, status,
-          mother_name, mother_phone, father_name, father_phone } = req.body;
+          mother_name, mother_phone, father_name, father_phone, notes } = req.body;
   const updates = {};
   if (first_name   !== undefined) updates.first_name   = first_name?.trim()   || null;
   if (last_name    !== undefined) updates.last_name    = last_name?.trim()    || null;
@@ -110,6 +110,7 @@ router.put('/:id', requireAuth, async (req, res) => {
   if (mother_phone !== undefined) updates.mother_phone = mother_phone?.trim() || null;
   if (father_name  !== undefined) updates.father_name  = father_name?.trim()  || null;
   if (father_phone !== undefined) updates.father_phone = father_phone?.trim() || null;
+  if (notes        !== undefined) updates.notes        = notes || null;
   updates.updated_at = new Date().toISOString();
 
   const { data, error } = await supabase
