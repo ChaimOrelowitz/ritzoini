@@ -33,12 +33,21 @@ function fmtDateTime(ts) {
   return new Date(ts).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
+function goalText(g) { return typeof g === 'string' ? g : g.text; }
+function goalTarget(g) { return typeof g === 'string' ? null : g.target_date; }
+
 function buildTpText(tp) {
   if (!tp?.length) return '';
   return tp.map(p => {
     const lines = [`Problem: ${p.problem}`];
-    (p.long_term_goals  || []).forEach((g, i) => lines.push(`  LTG ${i + 1}: ${g}`));
-    (p.short_term_goals || []).forEach((g, i) => lines.push(`  STG ${i + 1}: ${g}`));
+    (p.long_term_goals  || []).forEach((g, i) => {
+      const td = goalTarget(g);
+      lines.push(`  LTG ${i + 1}: ${goalText(g)}${td ? ` [Target: ${td}]` : ''}`);
+    });
+    (p.short_term_goals || []).forEach((g, i) => {
+      const td = goalTarget(g);
+      lines.push(`  STG ${i + 1}: ${goalText(g)}${td ? ` [Target: ${td}]` : ''}`);
+    });
     if (p.interventions?.length) lines.push(`  Interventions: ${p.interventions.join(', ')}`);
     return lines.join('\n');
   }).join('\n\n');
@@ -634,8 +643,8 @@ export default function OOClientDetailPage() {
       {/* ── 3-column body ── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
 
-        {/* Left — wider — stats + sessions */}
-        <div style={{ flex: 5, paddingRight: 28, minWidth: 0 }}>
+        {/* Left — stats + sessions */}
+        <div style={{ flex: 6, paddingRight: 28, minWidth: 0 }}>
 
           {/* Stats */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
@@ -729,7 +738,7 @@ export default function OOClientDetailPage() {
         <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
 
         {/* Middle — last note + treatment plan */}
-        <div style={{ flex: 3, padding: '0 24px', minWidth: 0 }}>
+        <div style={{ flex: 4, padding: '0 24px', minWidth: 0 }}>
 
           {/* Last written note */}
           {lastNote ? (
@@ -753,15 +762,21 @@ export default function OOClientDetailPage() {
               <div key={i} style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
                 <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--navy)', marginBottom: 6 }}>{p.problem}</div>
                 {p.long_term_goals?.map((g, j) => (
-                  <div key={j} style={{ marginBottom: 4, display: 'flex', gap: 6 }}>
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>LTG {j + 1}</span>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{g}</span>
+                  <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>LTG {j + 1}</span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
+                      {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
+                    </div>
                   </div>
                 ))}
                 {p.short_term_goals?.map((g, j) => (
-                  <div key={j} style={{ marginBottom: 4, display: 'flex', gap: 6 }}>
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>STG {j + 1}</span>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{g}</span>
+                  <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>STG {j + 1}</span>
+                    <div style={{ flex: 1 }}>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
+                      {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
+                    </div>
                   </div>
                 ))}
                 {p.interventions?.length > 0 && (
@@ -787,8 +802,20 @@ export default function OOClientDetailPage() {
 
           {/* Client Info */}
           <RSection title="Client Info">
-            <RField label="MRN"               value={client.mrn} />
-            <RField label="InSync ID"         value={client.insync_patient_id ? String(client.insync_patient_id) : null} />
+            <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
+              {client.mrn && (
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>MRN</div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.mrn}</div>
+                </div>
+              )}
+              {client.insync_patient_id && (
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>InSync ID</div>
+                  <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.insync_patient_id}</div>
+                </div>
+              )}
+            </div>
             <RField label="Primary Provider"  value={raw.PrimaryProviderName || null} />
             <RField label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
             <RField label="Counselor"         value={client.counselor} />

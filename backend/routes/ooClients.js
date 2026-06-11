@@ -695,21 +695,30 @@ function parseTreatmentPlan(noteHtml) {
   return found.map((p, i) => {
     const chunk = tpText.slice(p.end, i + 1 < found.length ? found[i + 1].start : tpText.length);
 
-    function extractItems(label) {
+    function extractItems(label, isGoal = false) {
       const re = new RegExp(label + ' \\d+: (.*?)(?= ' + label.replace(/[()]/g,'\\$&') + ' \\d+| Long Term| Short Term| Intervention|$)', 'g');
       const items = [];
       let mm;
       while ((mm = re.exec(chunk)) !== null) {
-        const val = mm[1].replace(/\s*\[Date Started:[^\]]+\]/g, '').trim();
-        if (val) items.push(val);
+        const raw = mm[1].trim();
+        if (!raw) continue;
+        if (isGoal) {
+          const dateStarted = raw.match(/\[Date Started:\s*([^\]]+)\]/i)?.[1]?.trim() || null;
+          const targetDate  = raw.match(/\[(?:Target Date|End Date|Goal End Date|Estimated End Date):\s*([^\]]+)\]/i)?.[1]?.trim() || null;
+          const text = raw.replace(/\s*\[[^\]]+\]/g, '').trim();
+          if (text) items.push({ text, date_started: dateStarted, target_date: targetDate });
+        } else {
+          const text = raw.replace(/\s*\[[^\]]+\]/g, '').trim();
+          if (text) items.push(text);
+        }
       }
       return items;
     }
 
     return {
       problem:          p.name,
-      long_term_goals:  extractItems('Long Term Goal\\(s\\)'),
-      short_term_goals: extractItems('Short Term Goal\\(s\\)'),
+      long_term_goals:  extractItems('Long Term Goal\\(s\\)', true),
+      short_term_goals: extractItems('Short Term Goal\\(s\\)', true),
       interventions:    extractItems('Intervention\\(s\\)'),
     };
   });
