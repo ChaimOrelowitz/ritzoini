@@ -668,10 +668,10 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       }
     } catch (e) { _dbg.enc_err = e.message; }
 
-    // Step 4: fetch treatment plan via most recent encounter
+    // Step 4: fetch treatment plan — try encounter IDs in order until one has note content
     let treatment_plan = client.insync_data?.treatment_plan || [];
-    if (encounterIds.length) {
-      const encId = encounterIds[0]; // most recent first (facesheet loads DESC)
+    _dbg.tried_enc_ids = [];
+    for (const encId of encounterIds.slice(0, 5)) {
       const genBody = new URLSearchParams({
         'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'false',
         'EncounterNoteBaseData[EncounterID]':         String(encId),
@@ -696,17 +696,16 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       });
 
       _dbg.gen_status = genRes.status;
-      if (genRes.ok) {
-        const genJson = await genRes.json();
-        _dbg.gen_keys = Object.keys(genJson);
-        _dbg.gen_str_enc_note_type = typeof genJson.StrEncounterNote;
-        _dbg.gen_str_enc_note_len = genJson.StrEncounterNote?.length ?? -1;
-        const noteHtml = genJson.StrEncounterNote || '';
-        _dbg.tp_raw_len = noteHtml.length;
-        const parsed = parseTreatmentPlan(noteHtml);
-        _dbg.tp_parse_count = parsed.length;
-        if (parsed.length) treatment_plan = parsed;
-      }
+      if (!genRes.ok) break;
+      const genJson = await genRes.json();
+      const noteHtml = genJson.StrEncounterNote || '';
+      _dbg.tried_enc_ids.push({ id: encId, len: noteHtml.length });
+      if (!noteHtml) continue;
+
+      _dbg.tp_raw_len = noteHtml.length;
+      const parsed = parseTreatmentPlan(noteHtml);
+      _dbg.tp_parse_count = parsed.length;
+      if (parsed.length) { treatment_plan = parsed; break; }
     }
 
     // Merge into insync_data
