@@ -650,28 +650,52 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
 
     const diagnoses = parseProblemList(html);
 
-    // Step 3: get encounter list (loaded separately via AJAX on facesheet)
+    // Step 3: get encounter list
     let encounterIds = [];
-    let _dbg = { enc_status: null, enc_body_snippet: null, enc_ids: [], gen_status: null, tp_raw_len: 0, tp_parse_count: 0 };
     try {
       const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
         body: `PatientID=${patientId}&PageSize=50&SortBy=VisitDateNTime+DESC`,
       });
-      _dbg.enc_status = encRes.status;
-      if (encRes.ok) {
-        const encHtml = await encRes.text();
-        _dbg.enc_body_snippet = encHtml.slice(0, 300);
-        encounterIds = parseEncounterIds(encHtml);
-        _dbg.enc_ids = encounterIds;
-      }
-    } catch (e) { _dbg.enc_err = e.message; }
+      if (encRes.ok) encounterIds = parseEncounterIds(await encRes.text());
+    } catch (_) {}
 
-    // Step 4: fetch treatment plan — try encounter IDs in order until one has note content
+    // Step 4: switch context to encounter mode, then find a completed note via GetDefaultNote
+    await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+      body: JSON.stringify({ intpatientid: patientId, PageTitle: 'encounter', PriPhyId: priPhyId }),
+    });
+
     let treatment_plan = client.insync_data?.treatment_plan || [];
-    _dbg.tried_enc_ids = [];
-    for (const encId of encounterIds.slice(0, 20)) {
+    for (const encId of encounterIds.slice(0, 15)) {
+      // GetDefaultNote reveals the real saved-note IDs for this encounter
+      const gdnBody = new URLSearchParams({
+        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
+        'EncounterNoteBaseData[EncounterID]':         String(encId),
+        'EncounterNoteBaseData[PatientID]':            String(patientId),
+        'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
+        'EncounterNoteBaseData[PracticeId]':           '200',
+        'EncounterNoteBaseData[ConfigType]':           '0',
+        'EncounterNoteBaseData[TPChartingElementName]': '',
+        'EncounterNoteBaseData[isFromCarePlan]':       'false',
+      });
+      let notesId = 0;
+      try {
+        const gdnRes = await fetch(`${INSYNC_BASE}/EncounterNote/GetDefaultNote`, {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
+          body: gdnBody.toString(),
+        });
+        if (gdnRes.ok) {
+          const gdnJson = await gdnRes.json();
+          notesId = gdnJson.EncounterNoteStyle?.EncNotelist?.[0]?.NotesId || 0;
+        }
+      } catch (_) {}
+      if (!notesId) continue;
+
+      // We have a real note ID — generate the full note HTML
       const genBody = new URLSearchParams({
         'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
         'EncounterNoteBaseData[EncounterID]':         String(encId),
@@ -686,25 +710,18 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
         'EncounterNoteBaseData[HTMLFontName]':         'Arial',
         'EncounterNoteBaseData[ReferingPhyID]':        '0',
         'EncounterNoteBaseData[IsEncounterClose]':     'false',
-        'EncounterNoteBaseData[NotesID]':              '0',
+        'EncounterNoteBaseData[NotesID]':              String(notesId),
       });
-
       const genRes = await fetch(`${INSYNC_BASE}/EncounterNote/GenerateEncounterNote`, {
         method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote` },
+        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote?pid=${patientId}&eid=${encId}` },
         body: genBody.toString(),
       });
-
-      _dbg.gen_status = genRes.status;
-      if (!genRes.ok) break;
+      if (!genRes.ok) continue;
       const genJson = await genRes.json();
       const noteHtml = genJson.StrEncounterNote || '';
-      _dbg.tried_enc_ids.push({ id: encId, len: noteHtml.length });
       if (!noteHtml) continue;
-
-      _dbg.tp_raw_len = noteHtml.length;
       const parsed = parseTreatmentPlan(noteHtml);
-      _dbg.tp_parse_count = parsed.length;
       if (parsed.length) { treatment_plan = parsed; break; }
     }
 
@@ -717,7 +734,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
     };
     await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
 
-    res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length, _dbg });
+    res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
   } catch (err) {
     res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
   }
