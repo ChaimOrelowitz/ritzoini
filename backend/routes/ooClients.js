@@ -515,12 +515,13 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
 // ── Facesheet sync (diagnoses / problem list) ─────────────────────────────
 
 function parseEncounterIds(html) {
-  const matches = [...html.matchAll(/encounterid="(\d+)"/gi)];
+  const matches = [...html.matchAll(/encounterid[="'\s:]+(\d{5,})/gi)];
   return [...new Set(matches.map(m => parseInt(m[1])))]; // already DESC by date
 }
 
 function parseTreatmentPlan(noteHtml) {
   const text = noteHtml
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -538,12 +539,12 @@ function parseTreatmentPlan(noteHtml) {
   const found = [];
   let m;
   while ((m = problemRegex.exec(tpText)) !== null) {
-    found.push({ name: m[1].trim(), end: m.index + m[0].length });
+    found.push({ name: m[1].trim(), start: m.index, end: m.index + m[0].length });
   }
   if (!found.length) return [];
 
   return found.map((p, i) => {
-    const chunk = tpText.slice(p.end, i + 1 < found.length ? found[i + 1].end - found[i + 1].name.length - 50 : tpText.length);
+    const chunk = tpText.slice(p.end, i + 1 < found.length ? found[i + 1].start : tpText.length);
 
     function extractItems(label) {
       const re = new RegExp(label + ' \\d+: (.*?)(?= ' + label.replace(/[()]/g,'\\$&') + ' \\d+| Long Term| Short Term| Intervention|$)', 'g');
@@ -647,8 +648,21 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       return res.status(401).json({ error: 'InSync session expired during facesheet load.' });
     }
 
-    const diagnoses    = parseProblemList(html);
-    const encounterIds = parseEncounterIds(html);
+    const diagnoses = parseProblemList(html);
+
+    // Step 3: get encounter list (loaded separately via AJAX on facesheet)
+    let encounterIds = [];
+    try {
+      const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'PageSize=13&SortBy=VisitDateNTime+DESC',
+      });
+      if (encRes.ok) {
+        const encHtml = await encRes.text();
+        encounterIds = parseEncounterIds(encHtml);
+      }
+    } catch (_) { /* non-fatal */ }
 
     // Step 3: fetch treatment plan via most recent encounter
     let treatment_plan = client.insync_data?.treatment_plan || [];
