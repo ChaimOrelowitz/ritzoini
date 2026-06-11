@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
@@ -37,22 +37,106 @@ function Section({ title, children }) {
   );
 }
 
+function fmt12(t) {
+  if (!t) return '';
+  const [h, m] = t.slice(0, 5).split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+
+function EditApptModal({ appt, onClose, onSaved }) {
+  const [date, setDate]         = useState(appt.date);
+  const [time, setTime]         = useState(appt.time?.slice(0, 5) || '');
+  const [duration, setDuration] = useState(appt.duration || 45);
+  const [saving, setSaving]     = useState(false);
+  const [err, setErr]           = useState('');
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setSaving(true);
+    setErr('');
+    try {
+      await api.patch(`/oo/appointments/${appt.id}`, { date, time, duration });
+      onSaved();
+    } catch (ex) { setErr(ex.message); setSaving(false); }
+  }
+
+  const labelSt = { display: 'block', fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 380 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2 style={{ margin: 0, fontSize: '1rem' }}>Edit Appointment</h2>
+          <button className="btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '18px 20px' }}>
+          <div>
+            <label style={labelSt}>Date</label>
+            <input type="date" className="input" value={date} onChange={e => setDate(e.target.value)} required />
+          </div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <div style={{ flex: 1 }}>
+              <label style={labelSt}>Time</label>
+              <input type="time" className="input" value={time} onChange={e => setTime(e.target.value)} required />
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={labelSt}>Duration</label>
+              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                {[30, 45].map(d => (
+                  <label key={d} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.88rem', cursor: 'pointer' }}>
+                    <input type="radio" name="dur" value={d} checked={duration === d} onChange={() => setDuration(d)} />
+                    {d} min
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function OOClientDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [client, setClient] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [showRaw, setShowRaw] = useState(false);
+  const [client, setClient]     = useState(null);
+  const [appts, setAppts]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [showRaw, setShowRaw]   = useState(false);
   const [syncingFs, setSyncingFs] = useState(false);
-  const [fsMsg, setFsMsg] = useState('');
+  const [fsMsg, setFsMsg]       = useState('');
+  const [editAppt, setEditAppt] = useState(null);
+  const [deleting, setDeleting] = useState(null);
 
   function loadClient() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
   }
 
+  const loadAppts = useCallback(() => {
+    api.get(`/oo/appointments?client_id=${id}`).then(d => setAppts(Array.isArray(d) ? d : [])).catch(() => {});
+  }, [id]);
+
   useEffect(() => {
-    loadClient().finally(() => setLoading(false));
+    Promise.all([
+      loadClient(),
+      loadAppts(),
+    ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
+
+  async function deleteAppt(apptId) {
+    setDeleting(apptId);
+    try {
+      await api.delete(`/oo/appointments/${apptId}`);
+      loadAppts();
+    } catch (ex) { alert(ex.message); }
+    finally { setDeleting(null); }
+  }
 
   async function syncFacesheet() {
     setSyncingFs(true);
@@ -214,6 +298,57 @@ export default function OOClientDetailPage() {
         </div>
       )}
 
+      {/* Appointments */}
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+          Scheduled Appointments
+        </div>
+        {appts.length === 0 ? (
+          <p style={{ color: 'var(--gray-300)', fontSize: '0.85rem', margin: 0 }}>No appointments scheduled.</p>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--gray-50)' }}>
+                <th style={thSt}>Date</th>
+                <th style={thSt}>Time</th>
+                <th style={thSt}>Duration</th>
+                <th style={thSt}>Status</th>
+                <th style={thSt}>Notes</th>
+                <th style={thSt}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {appts.map(a => (
+                <tr key={a.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
+                  <td style={tdSt}>{a.date}</td>
+                  <td style={tdSt}>{fmt12(a.time)}</td>
+                  <td style={tdSt}>{a.duration} min</td>
+                  <td style={tdSt}>
+                    <span style={{
+                      fontSize: '0.72rem', fontWeight: 600, borderRadius: 4, padding: '2px 7px',
+                      background: a.status === 'scheduled' ? '#dbeafe' : '#f3f4f6',
+                      color: a.status === 'scheduled' ? '#1e40af' : '#6b7280',
+                    }}>{a.status}</span>
+                  </td>
+                  <td style={{ ...tdSt, color: 'var(--gray-400)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {a.raw_notes || '—'}
+                  </td>
+                  <td style={{ ...tdSt, whiteSpace: 'nowrap' }}>
+                    <button className="btn-ghost" style={{ fontSize: '0.75rem', padding: '3px 9px', marginRight: 4 }} onClick={() => setEditAppt(a)}>Edit</button>
+                    <button
+                      className="btn-ghost"
+                      style={{ fontSize: '0.75rem', padding: '3px 9px', color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                      disabled={deleting === a.id}
+                      onClick={() => { if (window.confirm(`Delete appointment on ${a.date} at ${fmt12(a.time)}?`)) deleteAppt(a.id); }}
+                    >{deleting === a.id ? '…' : 'Delete'}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       {/* Insurance */}
       <Section title="Insurance">
         <Field label="Current Payer" value={client.payer_plan_name} />
@@ -233,6 +368,14 @@ export default function OOClientDetailPage() {
           <Field label="Name"         value={rs.name} />
           <Field label="Notes Email"  value={rs.notes_email} />
         </Section>
+      )}
+
+      {editAppt && (
+        <EditApptModal
+          appt={editAppt}
+          onClose={() => setEditAppt(null)}
+          onSaved={() => { setEditAppt(null); loadAppts(); }}
+        />
       )}
 
       {/* Raw InSync data */}

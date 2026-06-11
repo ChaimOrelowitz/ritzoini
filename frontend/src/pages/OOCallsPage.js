@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const SCHED_DAYS = [0, 1, 2, 3, 4, 5]; // Sun–Fri (no Shabbos)
 
 function formatDate(iso) {
   if (!iso) return '';
@@ -29,6 +30,165 @@ function apptDayLabel(iso) {
   return DAY_NAMES[d.getUTCDay()];
 }
 
+// ── Bulk schedule modal ────────────────────────────────────────────────────
+function BulkScheduleModal({ clients, onClose, onDone }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [weeks, setWeeks]         = useState(12);
+  const [startDate, setStartDate] = useState(today);
+  const [startTime, setStartTime] = useState('09:00');
+  const [saving, setSaving]       = useState(false);
+  const [result, setResult]       = useState(null);
+  const [err, setErr]             = useState('');
+
+  const [selections, setSelections] = useState(() => {
+    const s = {};
+    for (const c of clients) s[c.id] = { days: new Set(), duration: 45 };
+    return s;
+  });
+
+  function toggleDay(clientId, day) {
+    setSelections(prev => {
+      const days = new Set(prev[clientId].days);
+      days.has(day) ? days.delete(day) : days.add(day);
+      return { ...prev, [clientId]: { ...prev[clientId], days } };
+    });
+  }
+
+  function setDur(clientId, d) {
+    setSelections(prev => ({ ...prev, [clientId]: { ...prev[clientId], duration: d } }));
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const assignments = clients
+      .filter(c => selections[c.id]?.days.size > 0)
+      .map(c => ({ client_id: c.id, days: [...selections[c.id].days], duration: selections[c.id].duration }));
+    if (!assignments.length) { setErr('Select at least one day for at least one client.'); return; }
+    setSaving(true); setErr('');
+    try {
+      const r = await api.post('/oo/appointments/bulk-schedule', { assignments, weeks, start_date: startDate, start_time: startTime });
+      setResult(r);
+    } catch (ex) { setErr(ex.message); setSaving(false); }
+  }
+
+  if (result) {
+    return (
+      <div className="modal-overlay" onClick={onDone}>
+        <div className="modal" style={{ maxWidth: 420 }} onClick={e => e.stopPropagation()}>
+          <div className="modal-header">
+            <h2 style={{ margin: 0, fontSize: '1rem' }}>Bulk Schedule — Done</h2>
+            <button className="btn-ghost" onClick={onDone}>✕</button>
+          </div>
+          <div style={{ padding: '18px 20px' }}>
+            <p style={{ margin: 0, fontSize: '0.95rem' }}>
+              Created <strong>{result.created}</strong> appointments across <strong>{result.total_dates}</strong> dates.
+            </p>
+            <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn-primary" onClick={onDone}>Done</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 720, width: '96vw' }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2 style={{ margin: 0, fontSize: '1rem' }}>Bulk Schedule</h2>
+          <button className="btn-ghost" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={handleSubmit}>
+          {/* Options row */}
+          <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--gray-200)', display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div>
+              <label style={labelSt}>Start date</label>
+              <input type="date" className="input" style={{ width: 152 }} value={startDate} onChange={e => setStartDate(e.target.value)} />
+            </div>
+            <div>
+              <label style={labelSt}>First appt at</label>
+              <input type="time" className="input" style={{ width: 120 }} value={startTime} onChange={e => setStartTime(e.target.value)} />
+            </div>
+            <div>
+              <label style={labelSt}>Weeks</label>
+              <input type="number" className="input" style={{ width: 76 }} value={weeks} min={1} max={52} onChange={e => setWeeks(Number(e.target.value))} />
+            </div>
+          </div>
+
+          {/* Client grid */}
+          <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead style={{ position: 'sticky', top: 0, background: '#fff', zIndex: 1 }}>
+                <tr>
+                  <th style={{ textAlign: 'left', padding: '10px 20px', fontSize: '0.72rem', color: 'var(--gray-400)', fontWeight: 700, textTransform: 'uppercase' }}>Client</th>
+                  {SCHED_DAYS.map(d => (
+                    <th key={d} style={{ textAlign: 'center', padding: '10px 6px', fontSize: '0.72rem', color: 'var(--gray-400)', fontWeight: 700, textTransform: 'uppercase' }}>
+                      {DAY_NAMES[d]}
+                    </th>
+                  ))}
+                  <th style={{ textAlign: 'center', padding: '10px 6px', fontSize: '0.72rem', color: 'var(--gray-400)', fontWeight: 700, textTransform: 'uppercase' }}>Min</th>
+                </tr>
+              </thead>
+              <tbody>
+                {clients.map((c, i) => {
+                  const sel = selections[c.id];
+                  return (
+                    <tr key={c.id} style={{ borderTop: '1px solid var(--gray-100)' }}>
+                      <td style={{ padding: '8px 20px', fontSize: '0.88rem', fontWeight: 500, whiteSpace: 'nowrap' }}>
+                        {c.first_name} {c.last_name}
+                      </td>
+                      {SCHED_DAYS.map(day => {
+                        const on = sel.days.has(day);
+                        return (
+                          <td key={day} style={{ textAlign: 'center', padding: '8px 4px' }}>
+                            <button
+                              type="button"
+                              onClick={() => toggleDay(c.id, day)}
+                              style={{
+                                width: 34, height: 34, borderRadius: '50%', padding: 0,
+                                border: `2px solid ${on ? 'var(--navy)' : 'var(--gray-300)'}`,
+                                background: on ? 'var(--navy)' : 'transparent',
+                                color: on ? '#fff' : 'var(--gray-400)',
+                                fontSize: '0.68rem', fontWeight: 700, cursor: 'pointer',
+                                transition: 'background 0.12s, border-color 0.12s',
+                              }}
+                            >{DAY_NAMES[day][0]}</button>
+                          </td>
+                        );
+                      })}
+                      <td style={{ textAlign: 'center', padding: '8px 8px' }}>
+                        <div style={{ display: 'flex', gap: 4, justifyContent: 'center' }}>
+                          {[30, 45].map(d => (
+                            <button key={d} type="button" onClick={() => setDur(c.id, d)}
+                              style={{
+                                padding: '3px 7px', fontSize: '0.72rem', fontWeight: 700, borderRadius: 4, cursor: 'pointer',
+                                border: `1.5px solid ${sel.duration === d ? 'var(--navy)' : 'var(--gray-300)'}`,
+                                background: sel.duration === d ? 'var(--navy)' : 'transparent',
+                                color: sel.duration === d ? '#fff' : 'var(--gray-400)',
+                              }}
+                            >{d}</button>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {err && <p style={{ color: 'var(--danger)', margin: '0 20px 8px', fontSize: '0.82rem' }}>{err}</p>}
+          <div style={{ padding: '12px 20px', borderTop: '1px solid var(--gray-200)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Scheduling…' : 'Schedule'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 // ── Appointment creation modal ─────────────────────────────────────────────
 function NewApptModal({ client, onClose, onCreated }) {
   const today = new Date().toISOString().split('T')[0];
@@ -48,8 +208,13 @@ function NewApptModal({ client, onClose, onCreated }) {
     setConflicts([]);
     try {
       const r = await api.post('/oo/appointments', { client_id: client.id, date, time, duration, repeat_weeks: repeatWeeks });
-      if (r.conflicts?.length) setConflicts(r.conflicts);
-      onCreated();
+      if (r.conflicts?.length) {
+        setConflicts(r.conflicts);
+        setSaving(false);
+        // don't close — let user see the warning first
+      } else {
+        onCreated();
+      }
     } catch (ex) {
       setErr(ex.message);
       setSaving(false);
@@ -91,7 +256,7 @@ function NewApptModal({ client, onClose, onCreated }) {
           </div>
           {conflicts.length > 0 && (
             <div style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 6, padding: '8px 12px', fontSize: '0.8rem', color: '#92400e' }}>
-              <strong>⚠ Time conflict</strong> — another client is scheduled at the same time on:
+              <strong>⚠ Scheduling conflict</strong> — appointments were created but overlap with:
               <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
                 {conflicts.map((c, i) => <li key={i}>{c}</li>)}
               </ul>
@@ -100,7 +265,10 @@ function NewApptModal({ client, onClose, onCreated }) {
           {err && <p style={{ color: 'var(--danger)', margin: 0, fontSize: '0.82rem' }}>{err}</p>}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button type="button" className="btn-ghost" onClick={onClose}>Cancel</button>
-            <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
+            {conflicts.length > 0
+              ? <button type="button" className="btn-primary" onClick={onCreated}>Got it — close</button>
+              : <button type="submit" className="btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create'}</button>
+            }
           </div>
         </form>
       </div>
@@ -230,7 +398,8 @@ export default function OOCallsPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [scheduleClient, setScheduleClient] = useState(null);
-  const [notesTarget, setNotesTarget] = useState(null); // { client, appt }
+  const [notesTarget, setNotesTarget]     = useState(null); // { client, appt }
+  const [showBulk, setShowBulk]           = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -278,8 +447,13 @@ export default function OOCallsPage() {
             Next 7 days · {formatWeekRange(week_start, week_end)}
           </div>
         </div>
-        <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)' }}>
-          {totalDone} done · {totalLeft} remaining
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)' }}>
+            {totalDone} done · {totalLeft} remaining
+          </div>
+          <button className="btn-primary" style={{ fontSize: '0.78rem', padding: '5px 12px' }} onClick={() => setShowBulk(true)}>
+            Bulk Schedule
+          </button>
         </div>
       </div>
 
@@ -357,6 +531,13 @@ export default function OOCallsPage() {
           appt={notesTarget.appt}
           onClose={() => setNotesTarget(null)}
           onSaved={handleSaved}
+        />
+      )}
+      {showBulk && (
+        <BulkScheduleModal
+          clients={clients}
+          onClose={() => setShowBulk(false)}
+          onDone={() => { setShowBulk(false); load(); }}
         />
       )}
     </div>

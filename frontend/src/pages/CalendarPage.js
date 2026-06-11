@@ -27,6 +27,7 @@ export default function CalendarPage() {
   const calendarRef = useRef(null);
 
   const [sessions,         setSessions]         = useState([]);
+  const [ooAppts,          setOoAppts]          = useState([]);
   const [supervisors,      setSupervisors]      = useState([]);
   const [filterSup,        setFilterSup]        = useState('');
   const [includeArchived,  setIncludeArchived]  = useState(false);
@@ -39,13 +40,16 @@ export default function CalendarPage() {
 
   useEffect(() => {
     setLoading(true);
-    api.getCalendarSessions(filterSup || null, includeArchived)
-      .then(setSessions)
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.getCalendarSessions(filterSup || null, includeArchived),
+      api.get('/oo/appointments').catch(() => []),
+    ]).then(([s, oo]) => {
+      setSessions(s);
+      setOoAppts(Array.isArray(oo) ? oo : []);
+    }).catch(console.error).finally(() => setLoading(false));
   }, [filterSup, includeArchived]);
 
-  const events = sessions.map(s => {
+  const sessionEvents = sessions.map(s => {
     const date = s.session_date || s.scheduled_date;
     const time = s.ecw_time || s.start_time || s.scheduled_time;
     const endTime = s.ecw_end_time || s.end_time;
@@ -68,13 +72,37 @@ export default function CalendarPage() {
         groupName: g?.group_name,
         ecwTime: s.ecw_time,
         status: s.status,
+        type: 'group',
       },
     };
   });
 
+  const ooEvents = ooAppts.map(a => {
+    const c = a.oo_clients;
+    const name = c ? `${c.last_name}, ${c.first_name}` : 'OO';
+    const endDate = new Date(`${a.date}T${a.time}`);
+    endDate.setMinutes(endDate.getMinutes() + (a.duration || 45));
+    const endTime = endDate.toTimeString().slice(0, 8);
+    return {
+      id: `oo-${a.id}`,
+      title: `1:1 ${name}`,
+      start: `${a.date}T${a.time}`,
+      end: `${a.date}T${endTime}`,
+      backgroundColor: '#0e7490',
+      borderColor: '#0e7490',
+      extendedProps: { type: 'oo', apptId: a.id, clientId: a.client_id },
+    };
+  });
+
+  const events = [...sessionEvents, ...ooEvents];
+
   function handleEventClick({ event }) {
-    const { groupId, sessionId } = event.extendedProps;
-    navigate(`/groups/${groupId}?session=${sessionId}`);
+    const { type, groupId, sessionId, clientId } = event.extendedProps;
+    if (type === 'oo') {
+      navigate(`/oo/clients/${clientId}`);
+    } else {
+      navigate(`/groups/${groupId}?session=${sessionId}`);
+    }
   }
 
   function handleDateClick({ date, view: v }) {
@@ -93,7 +121,14 @@ export default function CalendarPage() {
   }
 
   function renderEventContent(info) {
-    const { ecwTime, groupName, internalName } = info.event.extendedProps;
+    const { type, ecwTime, groupName, internalName } = info.event.extendedProps;
+    if (type === 'oo') {
+      return (
+        <div style={{ padding: '1px 3px', overflow: 'hidden', fontSize: '0.75rem', lineHeight: 1.3, cursor: 'pointer' }}>
+          <span>{info.event.title}</span>
+        </div>
+      );
+    }
     return (
       <div style={{ padding: '1px 3px', overflow: 'hidden', fontSize: '0.75rem', lineHeight: 1.3, cursor: 'pointer' }}>
         {ecwTime && <span style={{ fontWeight: 700 }}>{fmt12(ecwTime)} </span>}
