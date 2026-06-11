@@ -73,19 +73,21 @@ router.post('/', requireAuth, async (req, res) => {
     });
   }
 
-  // Check for time conflicts across all dates being scheduled
+  // Check for time conflicts: same time slot, any client (including this one)
   const dates = rows.map(r => r.date);
   const { data: existing } = await supabase
     .from('oo_appointments')
-    .select('date, time, duration, oo_clients(first_name, last_name)')
+    .select('date, time, client_id, oo_clients(first_name, last_name)')
     .in('date', dates)
     .eq('time', time)
-    .neq('client_id', client_id)
     .eq('status', 'scheduled');
 
-  const conflicts = (existing || []).map(a =>
-    `${a.date} ${time} — ${a.oo_clients?.first_name} ${a.oo_clients?.last_name}`
-  );
+  const conflicts = (existing || []).map(a => {
+    const who = a.client_id === client_id
+      ? 'same client already booked'
+      : `${a.oo_clients?.first_name} ${a.oo_clients?.last_name}`;
+    return `${a.date} ${time} — ${who}`;
+  });
 
   const { data, error } = await supabase.from('oo_appointments').insert(rows).select();
   if (error) return res.status(500).json({ error: error.message });
