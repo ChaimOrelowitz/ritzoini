@@ -15,7 +15,7 @@ router.get('/', requireAuth, async (req, res) => {
   const { client_id, week_start, week_end } = req.query;
   let query = supabase
     .from('oo_appointments')
-    .select('*, oo_clients(id, first_name, last_name, mrn, status, referral_source_id, oo_referral_sources(id, name, notes_email))')
+    .select('*, oo_clients(id, first_name, last_name, mrn, phone, mobile, status, referral_source_id, oo_referral_sources(id, name, notes_email))')
     .order('date').order('time');
 
   if (client_id)  query = query.eq('client_id', client_id);
@@ -313,7 +313,7 @@ ${fields.additional_comments ? `<p><strong>Additional Comments:</strong><br>${fi
 
 // PATCH update appointment (notes, status)
 router.patch('/:id', requireAuth, async (req, res) => {
-  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at'];
+  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at', 'called_at'];
   const updates = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) updates[k] = req.body[k];
