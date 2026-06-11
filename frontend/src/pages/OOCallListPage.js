@@ -24,6 +24,43 @@ function getRolling7() {
   return { start, end };
 }
 
+// ── Phone with copy button ────────────────────────────────────────────────────
+
+function PhoneNum({ number, small }) {
+  const [copied, setCopied] = useState(false);
+
+  function copy(e) {
+    e.stopPropagation();
+    navigator.clipboard.writeText(number).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ fontSize: small ? '0.72rem' : '0.8rem', color: small ? 'var(--gray-400)' : 'var(--gray-700)', fontWeight: small ? 400 : 500 }}>
+        {number}
+      </span>
+      <button
+        type="button"
+        onClick={copy}
+        title="Copy"
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: '1px 3px',
+          fontSize: '0.7rem', color: copied ? '#16a34a' : 'var(--gray-300)',
+          lineHeight: 1, borderRadius: 3,
+          transition: 'color 0.15s',
+        }}
+        onMouseEnter={e => { if (!copied) e.currentTarget.style.color = 'var(--gray-500)'; }}
+        onMouseLeave={e => { if (!copied) e.currentTarget.style.color = 'var(--gray-300)'; }}
+      >
+        {copied ? '✓' : '⎘'}
+      </button>
+    </div>
+  );
+}
+
 // ── Single call row ───────────────────────────────────────────────────────────
 
 function CallRow({ appt: initialAppt, onUpdate }) {
@@ -111,11 +148,11 @@ function CallRow({ appt: initialAppt, onUpdate }) {
         </div>
 
         {/* Phone numbers */}
-        <div style={{ width: 180, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+        <div style={{ width: 200, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
           {phone
             ? <>
-                <span style={{ fontSize: '0.8rem', color: 'var(--gray-700)', fontWeight: 500 }}>{phone}</span>
-                {altPhone && <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>{altPhone}</span>}
+                <PhoneNum number={phone} />
+                {altPhone && <PhoneNum number={altPhone} small />}
               </>
             : <span style={{ fontSize: '0.75rem', color: 'var(--gray-300)' }}>no phone</span>
           }
