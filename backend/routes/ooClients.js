@@ -514,6 +514,57 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
 
 // ── Facesheet sync (diagnoses / problem list) ─────────────────────────────
 
+function parseEncounterIds(html) {
+  const matches = [...html.matchAll(/encounterid="(\d+)"/gi)];
+  return [...new Set(matches.map(m => parseInt(m[1])))]; // already DESC by date
+}
+
+function parseTreatmentPlan(noteHtml) {
+  const text = noteHtml
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // Find the last "Treatment Plan" heading (the actual TP section, not a field label)
+  const markers = [...text.matchAll(/\bTreatment Plan\b/g)];
+  if (!markers.length) return [];
+  const tpStart = markers[markers.length - 1].index + 'Treatment Plan'.length;
+  const tpText = text.slice(tpStart);
+
+  // Each problem area looks like: "Name (category) (Last Review Date: ..., Next Review Date: ...)"
+  const problemRegex = /([A-Z][^(]{3,60}\([^)]+\))\s*\(Last Review Date:[^)]+\)/g;
+  const found = [];
+  let m;
+  while ((m = problemRegex.exec(tpText)) !== null) {
+    found.push({ name: m[1].trim(), end: m.index + m[0].length });
+  }
+  if (!found.length) return [];
+
+  return found.map((p, i) => {
+    const chunk = tpText.slice(p.end, i + 1 < found.length ? found[i + 1].end - found[i + 1].name.length - 50 : tpText.length);
+
+    function extractItems(label) {
+      const re = new RegExp(label + ' \\d+: (.*?)(?= ' + label.replace(/[()]/g,'\\$&') + ' \\d+| Long Term| Short Term| Intervention|$)', 'g');
+      const items = [];
+      let mm;
+      while ((mm = re.exec(chunk)) !== null) {
+        const val = mm[1].replace(/\s*\[Date Started:[^\]]+\]/g, '').trim();
+        if (val) items.push(val);
+      }
+      return items;
+    }
+
+    return {
+      problem:          p.name,
+      long_term_goals:  extractItems('Long Term Goal\\(s\\)'),
+      short_term_goals: extractItems('Short Term Goal\\(s\\)'),
+      interventions:    extractItems('Intervention\\(s\\)'),
+    };
+  });
+}
+
 function parseProblemList(html) {
   const idx = html.indexOf('id="dvFSProblemList"');
   if (idx === -1) return [];
@@ -596,17 +647,54 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       return res.status(401).json({ error: 'InSync session expired during facesheet load.' });
     }
 
-    const diagnoses = parseProblemList(html);
+    const diagnoses    = parseProblemList(html);
+    const encounterIds = parseEncounterIds(html);
+
+    // Step 3: fetch treatment plan via most recent encounter
+    let treatment_plan = client.insync_data?.treatment_plan || [];
+    if (encounterIds.length) {
+      const encId = encounterIds[0]; // most recent first (facesheet loads DESC)
+      const genBody = new URLSearchParams({
+        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'false',
+        'EncounterNoteBaseData[EncounterID]':         String(encId),
+        'EncounterNoteBaseData[PatientID]':            String(patientId),
+        'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
+        'EncounterNoteBaseData[PracticeId]':           '200',
+        'EncounterNoteBaseData[ConfigType]':           '0',
+        'EncounterNoteBaseData[TPChartingElementName]': '',
+        'EncounterNoteBaseData[isFromCarePlan]':       'false',
+        'EncounterNoteBaseData[FilePath]':             '',
+        'EncounterNoteBaseData[HTMLFontSize]':         '11px',
+        'EncounterNoteBaseData[HTMLFontName]':         'Arial',
+        'EncounterNoteBaseData[ReferingPhyID]':        '0',
+        'EncounterNoteBaseData[IsEncounterClose]':     'false',
+        'EncounterNoteBaseData[NotesID]':              '0',
+      });
+
+      const genRes = await fetch(`${INSYNC_BASE}/EncounterNote/GenerateEncounterNote`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': `${INSYNC_BASE}/EncounterNote/EncounterNote` },
+        body: genBody.toString(),
+      });
+
+      if (genRes.ok) {
+        const genJson = await genRes.json();
+        const noteHtml = genJson.StrEncounterNote || '';
+        const parsed = parseTreatmentPlan(noteHtml);
+        if (parsed.length) treatment_plan = parsed;
+      }
+    }
 
     // Merge into insync_data
     const updatedInsyncData = {
       ...(client.insync_data || {}),
       diagnoses,
+      treatment_plan,
       facesheet_synced_at: new Date().toISOString(),
     };
     await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', client.id);
 
-    res.json({ ok: true, diagnoses, count: diagnoses.length });
+    res.json({ ok: true, diagnoses, treatment_plan, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
   } catch (err) {
     res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
   }

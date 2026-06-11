@@ -59,7 +59,7 @@ export default function OOClientDetailPage() {
     setFsMsg('');
     try {
       const r = await api.post(`/oo/clients/${id}/sync-facesheet`, {});
-      setFsMsg(`Synced ${r.count} diagnosis${r.count !== 1 ? 'es' : ''}`);
+      setFsMsg(`${r.diagnoses_count ?? r.count ?? 0} dx · ${r.tp_count ?? 0} TP problem${(r.tp_count ?? 0) !== 1 ? 's' : ''} synced`);
       await loadClient();
     } catch (ex) {
       setFsMsg(ex.message);
@@ -146,7 +146,7 @@ export default function OOClientDetailPage() {
             )}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {fsMsg && <span style={{ fontSize: '0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('Error') ? 'var(--danger)' : 'var(--success, #16a34a)' }}>{fsMsg}</span>}
+            {fsMsg && <span style={{ fontSize: '0.75rem', color: fsMsg.includes('ailed') || fsMsg.includes('rror') ? 'var(--danger)' : 'var(--success, #16a34a)' }}>{fsMsg}</span>}
             {client.insync_patient_id && (
               <button className="btn-ghost" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={syncFacesheet} disabled={syncingFs}>
                 {syncingFs ? 'Syncing…' : 'Sync from InSync'}
@@ -181,6 +181,38 @@ export default function OOClientDetailPage() {
           </p>
         )}
       </div>
+
+      {/* Treatment Plan */}
+      {raw.treatment_plan?.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 14, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+            Treatment Plan
+          </div>
+          {raw.treatment_plan.map((p, i) => (
+            <div key={i} style={{ marginBottom: 20, padding: '14px 16px', background: 'var(--gray-50)', borderRadius: 8, border: '1px solid var(--gray-100)' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--navy)', marginBottom: 10 }}>{p.problem}</div>
+              {p.long_term_goals?.map((g, j) => (
+                <div key={j} style={{ marginBottom: 6 }}>
+                  <span style={tpLabelSt}>LTG {j + 1}</span>
+                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-700)' }}>{g}</span>
+                </div>
+              ))}
+              {p.short_term_goals?.map((g, j) => (
+                <div key={j} style={{ marginBottom: 6 }}>
+                  <span style={tpLabelSt}>STG {j + 1}</span>
+                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-700)' }}>{g}</span>
+                </div>
+              ))}
+              {p.interventions?.length > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <span style={tpLabelSt}>Interventions</span>
+                  <span style={{ fontSize: '0.84rem', color: 'var(--gray-500)' }}>{p.interventions.join(' · ')}</span>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Insurance */}
       <Section title="Insurance">
@@ -220,5 +252,6 @@ export default function OOClientDetailPage() {
   );
 }
 
-const thSt = { padding: '6px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--gray-200)' };
-const tdSt = { padding: '8px 10px', verticalAlign: 'top' };
+const thSt    = { padding: '6px 10px', textAlign: 'left', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--gray-200)' };
+const tdSt    = { padding: '8px 10px', verticalAlign: 'top' };
+const tpLabelSt = { display: 'inline-block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', minWidth: 80, marginRight: 8 };
