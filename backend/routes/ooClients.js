@@ -797,6 +797,65 @@ router.get('/:id/debug-encounter-html', requireAuth, async (req, res) => {
   });
 });
 
+router.get('/:id/debug-note-fields', requireAuth, async (req, res) => {
+  const { data: client, error: clientErr } = await supabase
+    .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();
+  if (clientErr || !client) return res.status(404).json({ error: 'Client not found' });
+  if (!client.insync_patient_id) return res.status(400).json({ error: 'No InSync Patient ID' });
+
+  const [{ data: userSetting }, { data: passSetting }] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+  ]);
+  if (!userSetting?.value || !passSetting?.value) return res.status(400).json({ error: 'InSync credentials not configured' });
+
+  const cookie = await inSyncLogin(userSetting.value, passSetting.value);
+  const patientId = client.insync_patient_id;
+  const priPhyId  = client.insync_data?.PriPhyId || '';
+
+  const headers = {
+    'Cookie': cookie,
+    'Origin': INSYNC_BASE,
+    'Referer': `${INSYNC_BASE}/Dashboard/dashboard`,
+    'X-Requested-With': 'XMLHttpRequest',
+    'User-Agent': 'Mozilla/5.0',
+  };
+
+  // Set patient context
+  await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+  });
+  await fetch(`${INSYNC_BASE}/facesheet`, {
+    headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
+  });
+
+  // Fetch the Note of Session custom form (template 101)
+  const formRes = await fetch(`${INSYNC_BASE}/CustomForm/CustomForm?patientId=${patientId}&templateId=101&encounterId=0`, {
+    headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
+  });
+  if (!formRes.ok) return res.status(500).json({ error: `CustomForm returned ${formRes.status}` });
+  const html = await formRes.text();
+
+  // Extract all labeled fields: look for label text + associated ControlId
+  const fields = [];
+  const labelRegex = /<label[^>]+for="([^"]+)"[^>]*>([\s\S]*?)<\/label>/gi;
+  let m;
+  while ((m = labelRegex.exec(html)) !== null) {
+    const controlId = m[1];
+    const label = m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (label && controlId) fields.push({ controlId, label });
+  }
+
+  // Also grab textarea/input names as fallback
+  const inputNames = [...html.matchAll(/<(?:textarea|input)[^>]+name="([^"]+)"[^>]*>/gi)]
+    .map(x => x[1])
+    .filter(n => !fields.find(f => f.controlId === n));
+
+  res.json({ fields, input_names: inputNames, html_length: html.length });
+});
+
 router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   const { data: client, error: clientErr } = await supabase
     .from('oo_clients').select('id, insync_patient_id, insync_data').eq('id', req.params.id).single();

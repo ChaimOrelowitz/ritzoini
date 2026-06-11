@@ -113,8 +113,10 @@ export default function OOClientDetailPage() {
   const [fsMsg, setFsMsg]       = useState('');
   const [editAppt, setEditAppt]     = useState(null);
   const [deleting, setDeleting]     = useState(null);
-  const [debugHtml, setDebugHtml]   = useState('');
-  const [debugging, setDebugging]   = useState(false);
+  const [debugHtml, setDebugHtml]       = useState('');
+  const [debugging, setDebugging]       = useState(false);
+  const [debugFields, setDebugFields]   = useState(null);
+  const [debuggingFields, setDebuggingFields] = useState(false);
 
   function loadClient() {
     return api.get(`/oo/clients/${id}`).then(setClient).catch(() => navigate('/oo/clients'));
@@ -139,6 +141,16 @@ export default function OOClientDetailPage() {
       setDebugHtml(r.html_preview);
     } catch (ex) { setDebugHtml(`ERROR: ${ex.message}`); }
     finally { setDebugging(false); }
+  }
+
+  async function debugNoteFields() {
+    setDebuggingFields(true);
+    setDebugFields(null);
+    try {
+      const r = await api.get(`/oo/clients/${id}/debug-note-fields`);
+      setDebugFields(r);
+    } catch (ex) { setDebugFields({ error: ex.message }); }
+    finally { setDebuggingFields(false); }
   }
 
   async function deleteAppt(apptId) {
@@ -388,6 +400,20 @@ export default function OOClientDetailPage() {
           onClose={() => setEditAppt(null)}
           onSaved={() => { setEditAppt(null); loadAppts(); }}
         />
+      )}
+
+      {/* DEBUG: note fields inspector */}
+      {client.insync_patient_id && (
+        <div style={{ marginTop: 8, marginBottom: 8 }}>
+          <button onClick={debugNoteFields} disabled={debuggingFields} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: '#f59e0b', padding: 0 }}>
+            {debuggingFields ? 'Fetching…' : '⚙ Debug: fetch note fields'}
+          </button>
+          {debugFields && (
+            <pre style={{ marginTop: 8, background: '#1e1e1e', color: '#d4d4d4', border: '1px solid #444', borderRadius: 6, padding: 14, fontSize: '0.68rem', overflowX: 'auto', maxHeight: 400, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+              {JSON.stringify(debugFields, null, 2)}
+            </pre>
+          )}
+        </div>
       )}
 
       {/* DEBUG: encounter HTML inspector */}
