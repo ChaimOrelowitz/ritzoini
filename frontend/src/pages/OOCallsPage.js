@@ -256,7 +256,7 @@ export default function OOCallsPage() {
         <div>
           <h2 style={{ margin: 0, fontSize: '1.2rem' }}>Calls</h2>
           <div style={{ fontSize: '0.8rem', color: 'var(--gray-400)', marginTop: 2 }}>
-            Week of {formatWeekRange(week_start, week_end)}
+            Next 7 days · {formatWeekRange(week_start, week_end)}
           </div>
         </div>
         <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)' }}>

@@ -20,17 +20,13 @@ router.get('/', requireAuth, async (req, res) => {
   res.json(data);
 });
 
-// GET calls page data — all active clients with current week appointment status
+// GET calls page data — all active clients with appointment in rolling 7-day window
 router.get('/calls', requireAuth, async (req, res) => {
-  // Current Sun-Sat week
   const now = new Date();
-  const day = now.getDay(); // 0=Sun
-  const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - day);
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6);
-  const ws = weekStart.toISOString().split('T')[0];
-  const we = weekEnd.toISOString().split('T')[0];
+  const windowEnd = new Date(now);
+  windowEnd.setDate(now.getDate() + 6);
+  const ws = now.toISOString().split('T')[0];
+  const we = windowEnd.toISOString().split('T')[0];
 
   const [{ data: clients }, { data: appts }] = await Promise.all([
     supabase.from('oo_clients').select('id, first_name, last_name, mrn, referral_source_id, oo_referral_sources(name)').eq('status', 'active').order('last_name'),
