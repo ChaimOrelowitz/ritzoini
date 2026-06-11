@@ -435,6 +435,49 @@ function NotesModal({ client, appt, onClose, onSaved }) {
                 <label style={labelSt}>Additional Comments</label>
                 <textarea className="input" rows={2} value={fields.additional_comments || ''} onChange={e => updateField('additional_comments', e.target.value)} style={{ resize: 'vertical', fontFamily: 'inherit' }} />
               </div>
+
+              {/* Email preview */}
+              <div style={{ marginTop: 8 }}>
+                <label style={labelSt}>Email Preview</label>
+                <pre style={{
+                  background: '#f8fafc',
+                  border: '1px solid var(--gray-200)',
+                  borderRadius: 6,
+                  padding: '12px 14px',
+                  fontSize: '0.8rem',
+                  lineHeight: 1.7,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  fontFamily: 'inherit',
+                  margin: 0,
+                  color: 'var(--gray-700)',
+                }}>
+{[
+  `Client: ${(client.first_name[0] + client.last_name[0]).toUpperCase()} (MRN: ${client.mrn || '—'})`,
+  `Date: ${appt.date || '—'}`,
+  '',
+  `Location of Meeting: ${fields.location_of_meeting || 'Telehealth - Video'}`,
+  fields.additional_persons_present ? `Additional Person(s) Present: ${fields.additional_persons_present}` : null,
+  fields.audio_only_reason ? `Audio Only Reason: ${fields.audio_only_reason}` : null,
+  '',
+  `Content Discussed:\n${fields.content_discussed || '—'}`,
+  '',
+  `Interventions Used:\n${fields.interventions_used || '—'}`,
+  '',
+  `Modality: ${(fields.modalities || []).join(', ') || '—'}`,
+  '',
+  `Patient Response:\n${fields.patient_response || '—'}`,
+  '',
+  `Progress Toward Goals:\n${fields.progress_toward_goals || '—'}`,
+  '',
+  `Changes to Treatment Plan:\n${fields.treatment_plan_changes || '—'}`,
+  fields.additional_comments ? `\nAdditional Comments:\n${fields.additional_comments}` : null,
+  '',
+  '── Treatment Plan ──',
+  tp || '(not provided)',
+].filter(l => l !== null).join('\n')}
+                </pre>
+              </div>
             </>
           )}
 
