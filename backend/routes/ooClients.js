@@ -753,11 +753,14 @@ router.get('/:id/debug-encounter-html', requireAuth, async (req, res) => {
     'User-Agent': 'Mozilla/5.0',
   };
 
-  // Set patient context
+  // Set patient context — must GET /facesheet first or FSEncounterReload returns empty
   await fetch(`${INSYNC_BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json; charset=UTF-8' },
     body: JSON.stringify({ intpatientid: patientId, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+  });
+  await fetch(`${INSYNC_BASE}/facesheet`, {
+    headers: { ...headers, 'X-Requested-With': undefined, 'Accept': 'text/html,*/*' },
   });
 
   const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
