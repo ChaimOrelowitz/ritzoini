@@ -15,6 +15,7 @@ import OOClientsPage from './pages/OOClientsPage';
 import OOClientDetailPage from './pages/OOClientDetailPage';
 import OOReferralSourcesPage from './pages/OOReferralSourcesPage';
 import OOCallsPage from './pages/OOCallsPage';
+import OOCallListPage from './pages/OOCallListPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="oo/clients"          element={<OOClientsPage />} />
           <Route path="oo/clients/:id"      element={<OOClientDetailPage />} />
           <Route path="oo/calls"            element={<OOCallsPage />} />
+          <Route path="oo/call-list"        element={<OOCallListPage />} />
           <Route path="oo/referral-sources" element={<OOReferralSourcesPage />} />
           <Route path="oo/sessions" element={<ComingSoonPage title="One-On-One Sessions" />} />
           <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />
