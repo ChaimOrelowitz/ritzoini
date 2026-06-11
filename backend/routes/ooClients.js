@@ -657,7 +657,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
       const encRes = await fetch(`${INSYNC_BASE}/Facesheet/FSEncounterReload`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `PatientID=${patientId}&PageSize=13&SortBy=VisitDateNTime+DESC`,
+        body: `PatientID=${patientId}&PageSize=50&SortBy=VisitDateNTime+DESC`,
       });
       _dbg.enc_status = encRes.status;
       if (encRes.ok) {
@@ -671,9 +671,9 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
     // Step 4: fetch treatment plan — try encounter IDs in order until one has note content
     let treatment_plan = client.insync_data?.treatment_plan || [];
     _dbg.tried_enc_ids = [];
-    for (const encId of encounterIds.slice(0, 5)) {
+    for (const encId of encounterIds.slice(0, 20)) {
       const genBody = new URLSearchParams({
-        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'false',
+        'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
         'EncounterNoteBaseData[EncounterID]':         String(encId),
         'EncounterNoteBaseData[PatientID]':            String(patientId),
         'EncounterNoteBaseData[IsSignatureControlDisplay]': 'true',
