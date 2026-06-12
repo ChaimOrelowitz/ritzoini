@@ -427,11 +427,13 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
       'objBookAppointmentss[IsFamily]':           'false',
       'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
       'objBookAppointmentss[hdnIsOverride]':            '1',
+      'objBookAppointmentss[sSameAppointmentBookedDiffFacility]': 'true',
       'objBookAppointmentss[TelemedicineSendMail]': '1,2,3',
       'objBookAppointmentss[WithStartEncounterstatus]': '0',
       'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
       'BookAndStartEncounter': 'false',
       'PageViewNo': '1',
+      'hdnIsOverride': '1',
     };
 
     const saveRes  = await insync.post('/Scheduler/SaveBookAppointment', params, cookie);
