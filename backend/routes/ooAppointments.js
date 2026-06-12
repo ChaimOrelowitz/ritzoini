@@ -353,6 +353,9 @@ router.delete('/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// CPT codes by duration (standard psych therapy codes)
+const CPT_BY_DURATION = { 30: '90832', 45: '90834', 60: '90837' };
+
 // POST /:id/push-to-insync — create appointment in InSync Scheduler
 router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
   try {
@@ -368,9 +371,9 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     if (!client?.insync_patient_id)
       return res.status(400).json({ error: 'Client has no InSync patient ID — sync from InSync first' });
 
-    const visitTypeId = VISIT_TYPE[appt.duration] || VISIT_TYPE[45];
-    if (!VISIT_TYPE[appt.duration])
-      console.warn(`[push-to-insync] Unknown duration ${appt.duration}, defaulting to 45min`);
+    const duration   = appt.duration || 45;
+    const visitTypeId = VISIT_TYPE[duration] || VISIT_TYPE[45];
+    const cptCode    = CPT_BY_DURATION[duration] || CPT_BY_DURATION[45];
 
     // Format date MM/DD/YYYY and time HH:MM AM/PM
     const [y, m, d] = appt.date.split('-');
@@ -393,6 +396,21 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
 
     const cookie = await insync.login(username, password);
 
+    // Fetch patient program from InSync (required for SaveBookAppointment)
+    const progRes  = await insync.post('/ProgramManagement/ProgramManagementSearch', {
+      ProgramManagementDetailID: '0',
+      ProgramDisplayId:          '1',
+      PatientId:                 String(client.insync_patient_id),
+      ProgramDate:               visitDate,
+      FacilityID:                INSYNC_PROVIDER.FacilityId,
+      ProviderID:                INSYNC_PROVIDER.ResourceId,
+    }, cookie);
+    const progJson = await progRes.json();
+    const prog = Array.isArray(progJson) ? progJson[0] : null;
+    const programDetailId = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
+    const programId       = prog?.ProgramManagementID       ? String(prog.ProgramManagementID)       : '0';
+    const programName     = prog?.ProgramName || '';
+
     // Book the appointment
     const params = {
       WithStartEncounter: '0',
@@ -406,34 +424,82 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
       'objBookAppointmentss[VisitDate]':          visitDate,
       'objBookAppointmentss[VisitTime]':          visitTime,
       'objBookAppointmentss[ProfileName]':        'Scheduler',
+      'objBookAppointmentss[POSCode]':            '10',
       'objBookAppointmentss[PatientId]':          String(client.insync_patient_id),
       'objBookAppointmentss[VisitID]':            '0',
       'objBookAppointmentss[VisitIDList]':        '',
       'objBookAppointmentss[VisitTypeID]':        String(visitTypeId),
+      'objBookAppointmentss[RefPhysicianID]':     '0',
       'objBookAppointmentss[VisitStatusId]':      '10',
       'objBookAppointmentss[VisitStatusDescription]': 'Pre Check In',
-      'objBookAppointmentss[Duration]':           String(appt.duration || 45),
+      'objBookAppointmentss[mappedvisitstatusid]': '10',
+      'objBookAppointmentss[SelfPay]':            'false',
+      'objBookAppointmentss[Duration]':           String(duration),
+      'objBookAppointmentss[TotalUnits]':         '1',
       'objBookAppointmentss[FacilityId]':         INSYNC_PROVIDER.FacilityId,
       'objBookAppointmentss[IsBillable]':         'true',
       'objBookAppointmentss[IsTelemedicineVisit]': 'true',
-      'objBookAppointmentss[POSCode]':            '10',
       'objBookAppointmentss[ReSchedule]':         '0',
       'objBookAppointmentss[ResByPractice]':      '0',
       'objBookAppointmentss[ResByPatient]':       '1',
+      'objBookAppointmentss[hdnIsOverride]':      '0',
+      'objBookAppointmentss[hdnRefPhyUpdateId]':  '0',
+      'objBookAppointmentss[ReferringProvide]':   '',
+      'objBookAppointmentss[hdnPDRefPhyID]':      '0',
+      'objBookAppointmentss[OldResResourceid]':   '0',
+      'objBookAppointmentss[ComfirmMsg]':         'false',
+      'objBookAppointmentss[AdditionalResourceID]': '0',
+      'objBookAppointmentss[AdditionalResTypeID]':  '',
       'objBookAppointmentss[AppointRecurren]':    'false',
       'objBookAppointmentss[IsEditAppointment]':  'false',
       'objBookAppointmentss[IsFromDashboard]':    'false',
       'objBookAppointmentss[GroupTherapyEncounter]': 'false',
       'objBookAppointmentss[IsFamily]':           'false',
-      'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
-      'objBookAppointmentss[hdnIsOverride]':            '1',
-      'objBookAppointmentss[sSameAppointmentBookedDiffFacility]': 'true',
+      'objBookAppointmentss[NoOfParticipants]':   '0',
+      'objBookAppointmentss[ProgramManagementDetailID]': programDetailId,
+      'objBookAppointmentss[ProgramManagementID]':       programId,
+      'objBookAppointmentss[ProgramDescription]':        programName,
+      'objBookAppointmentss[PatientGroupId]':     '0',
+      'objBookAppointmentss[TelemedicineDefaultsMasterId]': '0',
+      'objBookAppointmentss[TeleDefaultsCPTAction]':        '0',
+      'objBookAppointmentss[AdditionalParticipant]':        '',
       'objBookAppointmentss[TelemedicineSendMail]': '1,2,3',
+      'objBookAppointmentss[IsAntenatalVisit]':   'NaN',
       'objBookAppointmentss[WithStartEncounterstatus]': '0',
       'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
-      'BookAndStartEncounter': 'false',
-      'PageViewNo': '1',
-      'hdnIsOverride': '1',
+      'objBookAppointmentss[IsCptChange]':        '0',
+      'objBookAppointmentss[BillingProviderId]':  '0',
+      'objBookAppointmentss[IsExcludeVisitCount]': 'false',
+      'objBookAppointmentss[IsExcludeSecVisitCount]': 'false',
+      'objBookAppointmentss[IsExcludeTerVisitCount]': 'false',
+      'objBookAppointmentss[RescheduleReason]':   '',
+      'objBookAppointmentss[IsSameAppointmentBookedDiffFacility]': 'False',
+      'objBookAppointmentss[IsUpdateMasterLevelOfCare]': '0',
+      'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
+      'objBookAppointmentss[AppointmentDataID]':  '0',
+      'objBookAppointmentss[IsFromOfflineSync]':  'false',
+      'objBookAppointmentss[IsUpdatePrimaryProvider]': 'false',
+      'objBookAppointmentss[PMAlertData][ShowAlert]':             'false',
+      'objBookAppointmentss[PMAlertData][RestrictionType]':       '0',
+      'objBookAppointmentss[PMAlertData][AlertAllowedFlag]':      '0',
+      'objBookAppointmentss[PMAlertData][AllowSaveFlag]':         '0',
+      'objBookAppointmentss[PMAlertData][PracticeId]':            '0',
+      'objBookAppointmentss[PMAlertData][AlertEndEncounterFlag]': '0',
+      'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': programDetailId,
+      // CPT codes (required by InSync for visit type validation)
+      'objCpt[0][CPT_Code]':           cptCode,
+      'objCpt[0][IsSelected]':         'true',
+      'objCpt[0][M1]':                 'null',
+      'objCpt[0][M2]':                 'null',
+      'objCpt[0][M3]':                 'null',
+      'objCpt[0][M4]':                 'null',
+      'objCpt[0][Units]':              '1',
+      'objCpt[0][CPTMapTypeID]':       '1',
+      'objCpt[0][ChargeCodeId]':       '0',
+      'objCpt[0][RevenueCode]':        '',
+      'OnFlyGroupName':                '',
+      'BookAndStartEncounter':         'false',
+      'PageViewNo':                    '1',
     };
 
     const saveRes  = await insync.post('/Scheduler/SaveBookAppointment', params, cookie);
