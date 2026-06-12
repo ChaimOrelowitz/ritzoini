@@ -426,6 +426,7 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
       'objBookAppointmentss[GroupTherapyEncounter]': 'false',
       'objBookAppointmentss[IsFamily]':           'false',
       'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
+      'objBookAppointmentss[hdnIsOverride]':            '1',
       'objBookAppointmentss[TelemedicineSendMail]': '1,2,3',
       'objBookAppointmentss[WithStartEncounterstatus]': '0',
       'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
