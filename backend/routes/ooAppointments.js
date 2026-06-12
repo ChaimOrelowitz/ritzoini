@@ -353,16 +353,18 @@ router.delete('/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// CPT codes by duration (standard psych therapy codes)
 const CPT_BY_DURATION = { 30: '90832', 45: '90834', 60: '90837' };
+const CPT_DESC        = { 30: 'PSYCHOTHERAPY W/PATIENT 30 MINUTES', 45: 'PSYCHOTHERAPY W/PATIENT 45 MINUTES', 60: 'PSYCHOTHERAPY W/PATIENT 60 MINUTES' };
+const CPT_MAP_ID      = { 30: '321', 45: '322', 60: '323' };
+const VISIT_TYPE_DESC = { 30: 'Telehealth Individual Therapy - 30m-- [30  mins] ', 45: 'Telehealth Individual Therapy - 45m-- [45  mins] ', 60: 'Telehealth Individual Therapy - 60m-- [60  mins] ' };
 
 // POST /:id/push-to-insync — create appointment in InSync Scheduler
 router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
   try {
-    // Load appointment + client
+    // Load appointment + client (including insync_data for stored payer IDs)
     const { data: appt, error: ae } = await supabase
       .from('oo_appointments')
-      .select('*, oo_clients(id, first_name, last_name, insync_patient_id)')
+      .select('*, oo_clients(id, first_name, last_name, dob, insync_patient_id, insync_data)')
       .eq('id', req.params.id)
       .single();
     if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
@@ -371,18 +373,35 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     if (!client?.insync_patient_id)
       return res.status(400).json({ error: 'Client has no InSync patient ID — sync from InSync first' });
 
-    const duration   = appt.duration || 45;
-    const visitTypeId = VISIT_TYPE[duration] || VISIT_TYPE[45];
-    const cptCode    = CPT_BY_DURATION[duration] || CPT_BY_DURATION[45];
+    const duration    = appt.duration || 45;
+    const visitTypeId = String(VISIT_TYPE[duration] || VISIT_TYPE[45]);
+    const cptCode     = CPT_BY_DURATION[duration] || CPT_BY_DURATION[45];
+    const cptDesc     = CPT_DESC[duration]        || CPT_DESC[45];
+    const cptMapId    = CPT_MAP_ID[duration]      || CPT_MAP_ID[45];
+    const vtDesc      = VISIT_TYPE_DESC[duration] || VISIT_TYPE_DESC[45];
 
-    // Format date MM/DD/YYYY and time HH:MM AM/PM
+    // Format date MM/DD/YYYY
     const [y, m, d] = appt.date.split('-');
     const visitDate = `${m}/${d}/${y}`;
 
+    // Format time HH:MM AM/PM with leading zero (InSync requires it)
     const [hh, mm] = appt.time.slice(0, 5).split(':').map(Number);
-    const ampm = hh >= 12 ? 'PM' : 'AM';
-    const h12  = hh % 12 || 12;
+    const ampm     = hh >= 12 ? 'PM' : 'AM';
+    const h12      = String(hh % 12 || 12).padStart(2, '0');
     const visitTime = `${h12}:${String(mm).padStart(2, '0')} ${ampm}`;
+
+    // Patient display name for InSync (Last, First - DOB)
+    const dobStr = client.dob ? ` - ${client.dob}` : '';
+    const patientFullName = `${client.last_name}, ${client.first_name}${dobStr}`;
+
+    // Payer IDs — stored during facesheet sync; warn if missing
+    const id = client.insync_data;
+    const primaryPayerID    = id?.primaryPayerID    || '';
+    const secondaryPayerID  = id?.secondaryPayerID  || '';
+    const primaryPayerName  = id?.primaryPayerName  || '';
+    const secondaryPayerName = id?.secondaryPayerName || '';
+    if (!primaryPayerID)
+      console.warn(`[push-to-insync] No payer ID for client ${client.id} — run facesheet sync first`);
 
     // Load InSync credentials
     const [{ data: uSetting }, { data: pSetting }] = await Promise.all([
@@ -396,7 +415,7 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
 
     const cookie = await insync.login(username, password);
 
-    // Fetch patient program from InSync (required for SaveBookAppointment)
+    // Fetch patient program from InSync
     const progRes  = await insync.post('/ProgramManagement/ProgramManagementSearch', {
       ProgramManagementDetailID: '0',
       ProgramDisplayId:          '1',
@@ -407,13 +426,16 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     }, cookie);
     const progJson = await progRes.json();
     const prog = Array.isArray(progJson) ? progJson[0] : null;
-    const programDetailId = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
-    const programId       = prog?.ProgramManagementID       ? String(prog.ProgramManagementID)       : '0';
-    const programName     = prog?.ProgramName || '';
+    const programDetailId    = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
+    const programName        = prog?.ProgramName || '';
+    const consumedVisitOrUnit = prog?.VisitCount  ? String(prog.VisitCount) : '0';
 
-    // Book the appointment
+    // Book the appointment — params mirror the working HAR request exactly
     const params = {
       WithStartEncounter: '0',
+      OnFlyGroupName:     '',
+      BookAndStartEncounter: 'false',
+      PageViewNo:         '1',
       'objBookAppointmentss[ScheduleSetupID]':    INSYNC_PROVIDER.ScheduleSetupID,
       'objBookAppointmentss[ScheduleID]':         INSYNC_PROVIDER.ScheduleID,
       'objBookAppointmentss[ScheduleTypeID]':     '0',
@@ -423,17 +445,51 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
       'objBookAppointmentss[IsGroupTherapyHeaderRow]': 'False',
       'objBookAppointmentss[VisitDate]':          visitDate,
       'objBookAppointmentss[VisitTime]':          visitTime,
+      'objBookAppointmentss[bookVisitdate]':      visitDate,
+      'objBookAppointmentss[AppointmentTime]':    visitTime,
+      'objBookAppointmentss[AppointmentFacility]': ' The Derech Shalom Center ',
       'objBookAppointmentss[ProfileName]':        'Scheduler',
       'objBookAppointmentss[POSCode]':            '10',
+      'objBookAppointmentss[POSCodeDescription]': "10 - Telehealth Provided in Patient's Home",
       'objBookAppointmentss[PatientId]':          String(client.insync_patient_id),
+      'objBookAppointmentss[PatientFullName]':    patientFullName,
       'objBookAppointmentss[VisitID]':            '0',
       'objBookAppointmentss[VisitIDList]':        '',
-      'objBookAppointmentss[VisitTypeID]':        String(visitTypeId),
+      'objBookAppointmentss[VisitTypeID]':        visitTypeId,
+      'objBookAppointmentss[VisitTypeDescription]': vtDesc,
       'objBookAppointmentss[RefPhysicianID]':     '0',
       'objBookAppointmentss[VisitStatusId]':      '10',
       'objBookAppointmentss[VisitStatusDescription]': 'Pre Check In',
       'objBookAppointmentss[mappedvisitstatusid]': '10',
       'objBookAppointmentss[SelfPay]':            'false',
+      'objBookAppointmentss[SelfPayStr]':         'No',
+      'objBookAppointmentss[PrimaryPatientPayerID]':    primaryPayerID,
+      'objBookAppointmentss[PrimaryIsActivePayer]':     primaryPayerID ? 'true' : '',
+      'objBookAppointmentss[SchedulerPrimaryPayerName]': primaryPayerName,
+      'objBookAppointmentss[PrimaryInsurance]':         primaryPayerName,
+      'objBookAppointmentss[SecondaryPatientPayerID]':  secondaryPayerID,
+      'objBookAppointmentss[SecondaryInsurance]':       secondaryPayerName,
+      'objBookAppointmentss[TertiaryPatientPayerID]':   '',
+      'objBookAppointmentss[TertiaryInsurance]':        'Select',
+      'objBookAppointmentss[ExpectedCopay]':      '0.00',
+      'objBookAppointmentss[OldExpectedCopay]':   '0',
+      'objBookAppointmentss[EncTypeExpectedCopay]': '0.00',
+      'objBookAppointmentss[ExpectedCopayDetail]': '0.00',
+      'objBookAppointmentss[ExpectedAllowable]':  '0.00',
+      'objBookAppointmentss[ExpAllowableDetails]': '0.00',
+      'objBookAppointmentss[AuthNoText]':         '',
+      'objBookAppointmentss[AuthNumberID]':       '0',
+      'objBookAppointmentss[IsPrimaryAutoAttachAuthorization]': 'false',
+      'objBookAppointmentss[SecAuthNoText]':      '',
+      'objBookAppointmentss[SecAuthNumberID]':    '0',
+      'objBookAppointmentss[IsSecondaryAutoAttachAuthorization]': 'false',
+      'objBookAppointmentss[TerAuthNoText]':      '',
+      'objBookAppointmentss[TerAuthNumberID]':    '0',
+      'objBookAppointmentss[IsTertiaryAutoAttachAuthorization]': 'false',
+      'objBookAppointmentss[PriAuthorization]':   '',
+      'objBookAppointmentss[SecAuthorization]':   '',
+      'objBookAppointmentss[TerAuthorization]':   '',
+      'objBookAppointmentss[BookComment]':        '',
       'objBookAppointmentss[Duration]':           String(duration),
       'objBookAppointmentss[TotalUnits]':         '1',
       'objBookAppointmentss[FacilityId]':         INSYNC_PROVIDER.FacilityId,
@@ -444,62 +500,147 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
       'objBookAppointmentss[ResByPatient]':       '1',
       'objBookAppointmentss[hdnIsOverride]':      '0',
       'objBookAppointmentss[hdnRefPhyUpdateId]':  '0',
-      'objBookAppointmentss[ReferringProvide]':   '',
       'objBookAppointmentss[hdnPDRefPhyID]':      '0',
+      'objBookAppointmentss[ReferringProvide]':   '',
+      'objBookAppointmentss[ReferringProviderDescription]': '',
       'objBookAppointmentss[OldResResourceid]':   '0',
       'objBookAppointmentss[ComfirmMsg]':         'false',
       'objBookAppointmentss[AdditionalResourceID]': '0',
       'objBookAppointmentss[AdditionalResTypeID]':  '',
+      'objBookAppointmentss[AdditionalParticipant]': '',
       'objBookAppointmentss[AppointRecurren]':    'false',
-      'objBookAppointmentss[IsEditAppointment]':  'false',
-      'objBookAppointmentss[IsFromDashboard]':    'false',
+      'objBookAppointmentss[RecurrenceType]':     'Daily | Every: Day(s)',
+      'objBookAppointmentss[RecurrenceStartDate]': visitDate,
+      'objBookAppointmentss[RecurrenceEndAfter]': '',
+      'objBookAppointmentss[RecurrenceEndBy]':    '',
+      'objBookAppointmentss[RescheduleByText]':   'Patient',
+      'objBookAppointmentss[RescheduleReason]':   '',
+      'objBookAppointmentss[WithStartEncounterstatus]': '0',
+      'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
       'objBookAppointmentss[GroupTherapyEncounter]': 'false',
+      'objBookAppointmentss[oldVisitTypeDuration]': '',
+      'objBookAppointmentss[IsCptChange]':        '0',
+      'objBookAppointmentss[BillingProviderId]':  '0',
+      'objBookAppointmentss[BillingProviderDescription]': '',
+      'objBookAppointmentss[BillingProviderCredentialDescription]': 'Select',
+      'objBookAppointmentss[BillingProviderCredentialConfigID]': '0',
+      'objBookAppointmentss[VisitCountId]':       '',
+      'objBookAppointmentss[IsExcludeVisitCount]': 'false',
+      'objBookAppointmentss[SecVisitCountId]':    '',
+      'objBookAppointmentss[IsExcludeSecVisitCount]': 'false',
+      'objBookAppointmentss[TerVisitCountId]':    '',
+      'objBookAppointmentss[IsExcludeTerVisitCount]': 'false',
+      'objBookAppointmentss[VisitCountDetails]':  '',
       'objBookAppointmentss[IsFamily]':           'false',
       'objBookAppointmentss[NoOfParticipants]':   '0',
+      'objBookAppointmentss[ReEvalConfigId]':     '',
+      'objBookAppointmentss[ReEvaluationId]':     '',
+      'objBookAppointmentss[initReEvalId]':       '0',
+      'objBookAppointmentss[ReEvalConfigDetailId]': '',
+      'objBookAppointmentss[CaseManagementID]':   '0',
       'objBookAppointmentss[ProgramManagementDetailID]': programDetailId,
-      'objBookAppointmentss[ProgramManagementID]':       programId,
       'objBookAppointmentss[ProgramDescription]':        programName,
       'objBookAppointmentss[PatientGroupId]':     '0',
       'objBookAppointmentss[TelemedicineDefaultsMasterId]': '0',
       'objBookAppointmentss[TeleDefaultsCPTAction]':        '0',
-      'objBookAppointmentss[AdditionalParticipant]':        '',
       'objBookAppointmentss[TelemedicineSendMail]': '1,2,3',
       'objBookAppointmentss[IsAntenatalVisit]':   'NaN',
-      'objBookAppointmentss[WithStartEncounterstatus]': '0',
-      'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
-      'objBookAppointmentss[IsCptChange]':        '0',
-      'objBookAppointmentss[BillingProviderId]':  '0',
-      'objBookAppointmentss[IsExcludeVisitCount]': 'false',
-      'objBookAppointmentss[IsExcludeSecVisitCount]': 'false',
-      'objBookAppointmentss[IsExcludeTerVisitCount]': 'false',
-      'objBookAppointmentss[RescheduleReason]':   '',
-      'objBookAppointmentss[IsSameAppointmentBookedDiffFacility]': 'False',
-      'objBookAppointmentss[IsUpdateMasterLevelOfCare]': '0',
-      'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
-      'objBookAppointmentss[AppointmentDataID]':  '0',
+      'objBookAppointmentss[IsFromDashboard]':    'false',
       'objBookAppointmentss[IsFromOfflineSync]':  'false',
+      'objBookAppointmentss[IsEditAppointment]':  'false',
+      'objBookAppointmentss[IsSameAppointmentBookedDiffFacility]': 'False',
+      'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
+      'objBookAppointmentss[PatientLocationId]':  '',
+      'objBookAppointmentss[PatientLocationName]': 'Select',
+      'objBookAppointmentss[CredentialConfigID]': '0',
+      'objBookAppointmentss[CredentialDescription]': '',
+      'objBookAppointmentss[LevelID]':            '0',
+      'objBookAppointmentss[LevelofCareStartDate]': '',
+      'objBookAppointmentss[LevelofCareEndDate]': '',
+      'objBookAppointmentss[AllowToCheckInAndStartEncVisitIds]': '',
+      'objBookAppointmentss[SchedulerPatientSing]': '',
+      'objBookAppointmentss[ProcedureCodeDescription]': `${cptCode} - ${cptDesc} (Units: 1.00) |`,
+      'objBookAppointmentss[InitialVisitDescription]': 'Select',
+      'objBookAppointmentss[PageTitle]':          '',
+      'objBookAppointmentss[ShowPrimaryProviderAlert]': '0',
       'objBookAppointmentss[IsUpdatePrimaryProvider]': 'false',
+      'objBookAppointmentss[IsUpdateMasterLevelOfCare]': '0',
+      'objBookAppointmentss[IsAllowToAddPatientToCensusFromScheduler]': '',
+      'objBookAppointmentss[IsCaptureCensusStatusInAllRecVisits]': '',
+      'objBookAppointmentss[AppointmentDataID]':  '0',
+      'objBookAppointmentss[DailyCensusText]':    '',
+      'objBookAppointmentss[CensusStatusText]':   '',
       'objBookAppointmentss[PMAlertData][ShowAlert]':             'false',
       'objBookAppointmentss[PMAlertData][RestrictionType]':       '0',
       'objBookAppointmentss[PMAlertData][AlertAllowedFlag]':      '0',
+      'objBookAppointmentss[PMAlertData][AllowedUnitOrVisit]':    '0',
+      'objBookAppointmentss[PMAlertData][ConsumedUnitOrVisit]':   consumedVisitOrUnit,
+      'objBookAppointmentss[PMAlertData][RemainingUnitOrVisit]':  '0',
+      'objBookAppointmentss[PMAlertData][CurrentVisitOrUnit]':    consumedVisitOrUnit,
+      'objBookAppointmentss[PMAlertData][ActualCurrentUnitOrVisit]': '1',
       'objBookAppointmentss[PMAlertData][AllowSaveFlag]':         '0',
+      'objBookAppointmentss[PMAlertData][PatientID]':             '',
+      'objBookAppointmentss[PMAlertData][PatientName]':           '',
+      'objBookAppointmentss[PMAlertData][VisitID]':               '',
+      'objBookAppointmentss[PMAlertData][ProgramName]':           '',
       'objBookAppointmentss[PMAlertData][PracticeId]':            '0',
       'objBookAppointmentss[PMAlertData][AlertEndEncounterFlag]': '0',
+      'objBookAppointmentss[PMAlertData][ActualAllowedUnitOrVisit]': '0',
+      'objBookAppointmentss[PMAlertData][ProgramToDoAlertIDs]':   '',
       'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': programDetailId,
-      // CPT codes (required by InSync for visit type validation)
+      'objBookAppointmentss[VisitHistory][VisitStatus]':          'Pending',
+      'objBookAppointmentss[VisitHistory][VisitType]':            'Select',
+      'objBookAppointmentss[VisitHistory][Credential]':           '',
+      'objBookAppointmentss[VisitHistory][PatientLocation]':      'Select',
+      'objBookAppointmentss[VisitHistory][POSCode]':              '11 - Office',
+      'objBookAppointmentss[VisitHistory][ReferringProvider]':    '',
+      'objBookAppointmentss[VisitHistory][InitialVisit]':         '',
+      'objBookAppointmentss[VisitHistory][ProcedureCode]':        '',
+      'objBookAppointmentss[VisitHistory][Comment]':              '',
+      'objBookAppointmentss[VisitHistory][BillingProvider]':      '',
+      'objBookAppointmentss[VisitHistory][PrimaryInsurance]':     primaryPayerName,
+      'objBookAppointmentss[VisitHistory][SecondaryInsurance]':   secondaryPayerName,
+      'objBookAppointmentss[VisitHistory][TertiaryInsurance]':    '',
+      'objBookAppointmentss[VisitHistory][PriAuthorization]':     '',
+      'objBookAppointmentss[VisitHistory][SecAuthorization]':     '',
+      'objBookAppointmentss[VisitHistory][TerAuthorization]':     '',
+      'objBookAppointmentss[VisitHistory][ExpAllowable]':         '0.00',
+      'objBookAppointmentss[VisitHistory][VisitCount]':           '',
+      'objBookAppointmentss[VisitHistory][Billable]':             'No',
+      'objBookAppointmentss[VisitHistory][Program]':              '',
+      'objBookAppointmentss[VisitHistory][ProgramManagementDetailID]': '0',
+      'objBookAppointmentss[VisitHistory][LevelID]':              '0',
+      'objBookAppointmentss[VisitHistory][LevelofCareStartDateString]': '',
+      'objBookAppointmentss[VisitHistory][LevelofCareEndDateString]':   '',
+      'objBookAppointmentss[VisitHistory][Duration]':             '',
+      'objBookAppointmentss[VisitHistory][RescheduleReason]':     '',
+      'objBookAppointmentss[VisitHistory][AppointmentTime]':      '',
+      'objBookAppointmentss[VisitHistory][AppointmentFacility]':  ' The Derech Shalom Center ',
+      'objBookAppointmentss[VisitHistory][RecurrenceType]':       'Daily | Every: Day(s)',
+      'objBookAppointmentss[VisitHistory][RecurrenceStartDate]':  visitDate,
+      'objBookAppointmentss[VisitHistory][RecurrenceEndAfter]':   '',
+      'objBookAppointmentss[VisitHistory][RecurrenceEndBy]':      '',
+      'objBookAppointmentss[VisitHistory][RescheduleByText]':     'Patient',
+      'objBookAppointmentss[VisitHistory][bookVisitdate]':        '',
+      'objBookAppointmentss[VisitHistory][DailyCensusText]':      '',
+      'objBookAppointmentss[VisitHistory][CensusStatusText]':     '',
+      'objBookAppointmentss[VisitHistory][IsGrant]':              'No',
+      'objBookAppointmentss[VisitHistory][SelfPayStr]':           'No',
       'objCpt[0][CPT_Code]':           cptCode,
+      'objCpt[0][CPT_Description]':    cptDesc,
       'objCpt[0][IsSelected]':         'true',
       'objCpt[0][M1]':                 'null',
       'objCpt[0][M2]':                 'null',
       'objCpt[0][M3]':                 'null',
       'objCpt[0][M4]':                 'null',
       'objCpt[0][Units]':              '1',
+      'objCpt[0][EncounterTypeCPTMapID]': cptMapId,
       'objCpt[0][CPTMapTypeID]':       '1',
       'objCpt[0][ChargeCodeId]':       '0',
       'objCpt[0][RevenueCode]':        '',
-      'OnFlyGroupName':                '',
-      'BookAndStartEncounter':         'false',
-      'PageViewNo':                    '1',
+      'objTeleUpdateVisit[IsRescheduleAppForTelemedicine]': 'false',
+      'objTeleUpdateVisit[TelemedicineEmailReceipts]':      '',
+      'objTeleUpdateVisit[SendEMailTo]':                    '1,2,3',
     };
 
     const saveRes  = await insync.post('/Scheduler/SaveBookAppointment', params, cookie);

@@ -457,6 +457,34 @@ async function fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cook
 
   const diagnoses = parseProblemList(html);
 
+  // Extract payer IDs — InSync embeds them in JS vars or hidden inputs on facesheet
+  let primaryPayerID = null, secondaryPayerID = null;
+  let primaryPayerName = '', secondaryPayerName = '';
+  const payerPatterns = [
+    /['""]PrimaryPatientPayerID['""\s:=]+(\d+)/i,
+    /hdnPrimaryPatientPayerID[^>]*value=[""](\d+)[""]/i,
+    /PrimaryPatientPayerID.*?(\d{5,7})/i,
+  ];
+  const secPayerPatterns = [
+    /['""]SecondaryPatientPayerID['""\s:=]+(\d+)/i,
+    /hdnSecondaryPatientPayerID[^>]*value=[""](\d+)[""]/i,
+    /SecondaryPatientPayerID.*?(\d{5,7})/i,
+  ];
+  for (const p of payerPatterns) {
+    const m = html.match(p);
+    if (m) { primaryPayerID = m[1]; break; }
+  }
+  for (const p of secPayerPatterns) {
+    const m = html.match(p);
+    if (m) { secondaryPayerID = m[1]; break; }
+  }
+  // Extract payer display names (used for SchedulerPrimaryPayerName / PrimaryInsurance)
+  const nameMatch = html.match(/['""]SchedulerPrimaryPayerName['""\s:=]+[""]([^""]+)[""]/i)
+    || html.match(/PrimaryInsurance['""\s:=]+[""]([^""]+)[""]/i);
+  if (nameMatch) primaryPayerName = nameMatch[1];
+  const secNameMatch = html.match(/SecondaryInsurance['""\s:=]+[""]([^""]+)[""]/i);
+  if (secNameMatch) secondaryPayerName = secNameMatch[1];
+
   let encounterIds = [];
   let typical_session_minutes = existingInsyncData?.typical_session_minutes || null;
   try {
@@ -538,7 +566,7 @@ async function fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cook
     if (parsed.length) { treatment_plan = parsed; break; }
   }
 
-  return { diagnoses, treatment_plan, typical_session_minutes };
+  return { diagnoses, treatment_plan, typical_session_minutes, primaryPayerID, secondaryPayerID, primaryPayerName, secondaryPayerName };
 }
 
 router.post('/sync-insync', requireAuth, async (req, res) => {
@@ -650,8 +678,8 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
       if (age > TWENTY_FOUR_HOURS) {
         try {
           await sleep(500);
-          const { diagnoses, treatment_plan, typical_session_minutes } = await fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie);
-          const updatedInsyncData = { ...payload.insync_data, diagnoses, treatment_plan, facesheet_synced_at: new Date().toISOString(), ...(typical_session_minutes ? { typical_session_minutes } : {}) };
+          const { diagnoses, treatment_plan, typical_session_minutes, primaryPayerID, secondaryPayerID, primaryPayerName, secondaryPayerName } = await fetchFacesheetAndTP(patientId, priPhyId, existingInsyncData, cookie);
+          const updatedInsyncData = { ...payload.insync_data, diagnoses, treatment_plan, facesheet_synced_at: new Date().toISOString(), ...(typical_session_minutes ? { typical_session_minutes } : {}), ...(primaryPayerID ? { primaryPayerID, secondaryPayerID, primaryPayerName, secondaryPayerName } : {}) };
           await supabase.from('oo_clients').update({ insync_data: updatedInsyncData, updated_at: new Date().toISOString() }).eq('id', clientId);
           fs_synced++;
         } catch (_) { /* non-fatal — basic sync already saved */ }
@@ -969,11 +997,12 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   };
 
   try {
-    const { diagnoses, treatment_plan, typical_session_minutes } = await fetchFacesheetAndTP(patientId, priPhyId, client.insync_data, cookie);
+    const { diagnoses, treatment_plan, typical_session_minutes, primaryPayerID, secondaryPayerID, primaryPayerName, secondaryPayerName } = await fetchFacesheetAndTP(patientId, priPhyId, client.insync_data, cookie);
     const updatedInsyncData = {
       ...(client.insync_data || {}),
       diagnoses,
       treatment_plan,
+      ...(primaryPayerID ? { primaryPayerID, secondaryPayerID, primaryPayerName, secondaryPayerName } : {}),
       facesheet_synced_at: new Date().toISOString(),
       ...(typical_session_minutes ? { typical_session_minutes } : {}),
     };
