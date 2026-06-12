@@ -142,11 +142,13 @@ function BulkScheduleModal({ clients, onClose, onDone }) {
                     </th>
                   ))}
                   <th style={{ textAlign:'center', padding:'10px 6px', fontSize:'0.72rem', color:'var(--gray-400)', fontWeight:700, textTransform:'uppercase' }}>Min</th>
+                  <th style={{ textAlign:'center', padding:'10px 6px', fontSize:'0.72rem', color:'var(--gray-400)', fontWeight:700, textTransform:'uppercase' }}>Last</th>
                 </tr>
               </thead>
               <tbody>
                 {clients.map(c => {
                   const sel = selections[c.id] || { days: new Set(), duration: 45 };
+                  const lastMin = c.insync_data?.typical_session_minutes;
                   return (
                     <tr key={c.id} style={{ borderTop:'1px solid var(--gray-100)' }}>
                       <td style={{ padding:'8px 28px', fontSize:'0.88rem', fontWeight:500, whiteSpace:'nowrap' }}>
@@ -177,6 +179,9 @@ function BulkScheduleModal({ clients, onClose, onDone }) {
                             }}>{d}</button>
                           ))}
                         </div>
+                      </td>
+                      <td style={{ textAlign:'center', padding:'8px', fontSize:'0.8rem', color: lastMin ? 'var(--navy)' : 'var(--gray-300)', fontWeight: lastMin ? 600 : 400 }}>
+                        {lastMin ? `${lastMin}m` : '—'}
                       </td>
                     </tr>
                   );
