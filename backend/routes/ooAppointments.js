@@ -649,8 +649,16 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     if (!saveJson?.DataSave)
       return res.status(400).json({ error: saveJson?.MessageDispaly?.ErrorMessage || 'InSync did not confirm save', raw: saveJson });
 
-    // Extract the InSync visit ID from the response
-    const inSyncVisitId = saveJson?.BookAppoint?.ResourceList?.[0]?.VisitID || null;
+    // Log BookAppoint structure so we can find the VisitID path
+    console.log('[push-to-insync] BookAppoint:', JSON.stringify(saveJson?.BookAppoint, null, 2));
+
+    // Try multiple known response paths for VisitID
+    const ba = saveJson?.BookAppoint || {};
+    const inSyncVisitId =
+      ba?.ResourceList?.[0]?.VisitID ||
+      ba?.VisitID ||
+      saveJson?.VisitID ||
+      null;
 
     // Mark appointment as pushed
     await supabase.from('oo_appointments')
