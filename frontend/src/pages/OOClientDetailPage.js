@@ -147,6 +147,8 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   const [deleting,       setDeleting]       = useState(false);
   const [err,            setErr]            = useState('');
   const [showNoteModal,  setShowNoteModal]  = useState(false);
+  const [pushing,        setPushing]        = useState(false);
+  const [pushMsg,        setPushMsg]        = useState('');
 
   useEffect(() => {
     setAppt(initialAppt);
@@ -239,6 +241,20 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
       await api.delete(`/oo/appointments/${appt.id}`);
       onDelete(appt.id);
     } catch (ex) { alert(ex.message); setDeleting(false); }
+  }
+
+  async function handlePushToInsync() {
+    if (!window.confirm(`Push this appointment (${fmtDate(appt.date)} ${fmt12(appt.time)}) to InSync?`)) return;
+    setPushing(true); setPushMsg('');
+    try {
+      const res = await api.post(`/oo/appointments/${appt.id}/push-to-insync`, {});
+      setPushMsg(`✓ Created in InSync${res.insync_visit_id ? ` (visit ${res.insync_visit_id})` : ''}`);
+      setAppt(a => ({ ...a, insync_visit_id: res.insync_visit_id }));
+    } catch (ex) {
+      setPushMsg(`Error: ${ex.message}`);
+    } finally {
+      setPushing(false);
+    }
   }
 
   return (
@@ -334,6 +350,22 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
           >
             {fields ? 'Open Note →' : 'No AI note'}
           </button>
+          <button
+            className="btn btn-xs"
+            type="button"
+            onClick={handlePushToInsync}
+            disabled={pushing}
+            style={{
+              background: appt.insync_visit_id ? '#dcfce7' : 'var(--navy)',
+              color: appt.insync_visit_id ? '#15803d' : 'white',
+              border: `1px solid ${appt.insync_visit_id ? '#86efac' : 'var(--navy)'}`,
+              fontWeight: 600,
+            }}
+            title={appt.insync_visit_id ? `Already in InSync (visit ${appt.insync_visit_id})` : 'Create this appointment in InSync'}
+          >
+            {pushing ? 'Pushing…' : appt.insync_visit_id ? '✓ In InSync' : 'Push to InSync'}
+          </button>
+          {pushMsg && <span style={{ fontSize: '0.7rem', color: pushMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushMsg}</span>}
           {appt.note_sent_at && (
             <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>
           )}

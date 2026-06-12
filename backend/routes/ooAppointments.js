@@ -4,11 +4,24 @@ const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Resend } = require('resend');
+const insync = require('../utils/insync');
 
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 const resend    = process.env.RESEND_API_KEY    ? new Resend(process.env.RESEND_API_KEY) : null;
 
 const MODALITIES = ['CBT','EMDR','Sand Tray','Solution Focused','Client Centered','DBT','Art Therapy','Strength Based','Family Systems','Trauma Focused','Play Therapy','Mindfulness','Behavioral Role Play','Guided Imagery','Motivational Interviewing'];
+
+// duration (min) → InSync VisitTypeID for Telehealth Individual Therapy
+const VISIT_TYPE = { 30: 1169, 45: 1170, 60: 1171 };
+
+// Provider/facility constants for Chaim Orelowitz @ The Derech Shalom Center
+const INSYNC_PROVIDER = {
+  ScheduleSetupID: '1329',
+  ScheduleID:      '1399',
+  ResourceId:      '2317',
+  Provider:        'Orelowitz, Chaim (P)',
+  FacilityId:      '199',
+};
 
 // GET all appointments (with client info)
 router.get('/', requireAuth, async (req, res) => {
@@ -338,6 +351,107 @@ router.delete('/:id', requireAuth, async (req, res) => {
   const { error } = await supabase.from('oo_appointments').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// POST /:id/push-to-insync — create appointment in InSync Scheduler
+router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
+  try {
+    // Load appointment + client
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('*, oo_clients(id, first_name, last_name, insync_patient_id)')
+      .eq('id', req.params.id)
+      .single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const client = appt.oo_clients;
+    if (!client?.insync_patient_id)
+      return res.status(400).json({ error: 'Client has no InSync patient ID — sync from InSync first' });
+
+    const visitTypeId = VISIT_TYPE[appt.duration] || VISIT_TYPE[45];
+    if (!VISIT_TYPE[appt.duration])
+      console.warn(`[push-to-insync] Unknown duration ${appt.duration}, defaulting to 45min`);
+
+    // Format date MM/DD/YYYY and time HH:MM AM/PM
+    const [y, m, d] = appt.date.split('-');
+    const visitDate = `${m}/${d}/${y}`;
+
+    const [hh, mm] = appt.time.slice(0, 5).split(':').map(Number);
+    const ampm = hh >= 12 ? 'PM' : 'AM';
+    const h12  = hh % 12 || 12;
+    const visitTime = `${h12}:${String(mm).padStart(2, '0')} ${ampm}`;
+
+    // Load InSync credentials
+    const [{ data: uSetting }, { data: pSetting }] = await Promise.all([
+      supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+    ]);
+    const username = uSetting?.value || process.env.INSYNC_USERNAME;
+    const password = pSetting?.value || process.env.INSYNC_PASSWORD;
+    if (!username || !password)
+      return res.status(400).json({ error: 'InSync credentials not configured — click ⚙ in Clients page' });
+
+    const cookie = await insync.login(username, password);
+
+    // Book the appointment
+    const params = {
+      WithStartEncounter: '0',
+      'objBookAppointmentss[ScheduleSetupID]':    INSYNC_PROVIDER.ScheduleSetupID,
+      'objBookAppointmentss[ScheduleID]':         INSYNC_PROVIDER.ScheduleID,
+      'objBookAppointmentss[ScheduleTypeID]':     '0',
+      'objBookAppointmentss[ResourceId]':         INSYNC_PROVIDER.ResourceId,
+      'objBookAppointmentss[ResourceTypeId]':     '0',
+      'objBookAppointmentss[Provider]':           INSYNC_PROVIDER.Provider,
+      'objBookAppointmentss[IsGroupTherapyHeaderRow]': 'False',
+      'objBookAppointmentss[VisitDate]':          visitDate,
+      'objBookAppointmentss[VisitTime]':          visitTime,
+      'objBookAppointmentss[ProfileName]':        'Scheduler',
+      'objBookAppointmentss[PatientId]':          String(client.insync_patient_id),
+      'objBookAppointmentss[VisitID]':            '0',
+      'objBookAppointmentss[VisitIDList]':        '',
+      'objBookAppointmentss[VisitTypeID]':        String(visitTypeId),
+      'objBookAppointmentss[VisitStatusId]':      '10',
+      'objBookAppointmentss[VisitStatusDescription]': 'Pre Check In',
+      'objBookAppointmentss[Duration]':           String(appt.duration || 45),
+      'objBookAppointmentss[FacilityId]':         INSYNC_PROVIDER.FacilityId,
+      'objBookAppointmentss[IsBillable]':         'true',
+      'objBookAppointmentss[IsTelemedicineVisit]': 'true',
+      'objBookAppointmentss[POSCode]':            '10',
+      'objBookAppointmentss[ReSchedule]':         '0',
+      'objBookAppointmentss[ResByPractice]':      '0',
+      'objBookAppointmentss[ResByPatient]':       '1',
+      'objBookAppointmentss[AppointRecurren]':    'false',
+      'objBookAppointmentss[IsEditAppointment]':  'false',
+      'objBookAppointmentss[IsFromDashboard]':    'false',
+      'objBookAppointmentss[GroupTherapyEncounter]': 'false',
+      'objBookAppointmentss[IsFamily]':           'false',
+      'objBookAppointmentss[hdnAllowBookingInSameSlot]': '1',
+      'objBookAppointmentss[TelemedicineSendMail]': '1,2,3',
+      'objBookAppointmentss[WithStartEncounterstatus]': '0',
+      'objBookAppointmentss[WithStartEncounterSeesion]': 'false',
+      'BookAndStartEncounter': 'false',
+      'PageViewNo': '1',
+    };
+
+    const saveRes  = await insync.post('/Scheduler/SaveBookAppointment', params, cookie);
+    const saveJson = await saveRes.json();
+
+    if (!saveJson?.DataSave)
+      return res.status(400).json({ error: saveJson?.MessageDispaly?.ErrorMessage || 'InSync did not confirm save', raw: saveJson });
+
+    // Extract the InSync visit ID from the response
+    const inSyncVisitId = saveJson?.BookAppoint?.ResourceList?.[0]?.VisitID || null;
+
+    // Mark appointment as pushed
+    await supabase.from('oo_appointments')
+      .update({ insync_visit_id: inSyncVisitId, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+
+    res.json({ ok: true, insync_visit_id: inSyncVisitId, date: visitDate, time: visitTime });
+  } catch (err) {
+    console.error('[push-to-insync]', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
