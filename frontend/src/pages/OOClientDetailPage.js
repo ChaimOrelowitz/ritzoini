@@ -704,10 +704,11 @@ export default function OOClientDetailPage() {
             <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
           </div>
 
-          {/* DOB (age) */}
+          {/* DOB (age) · last session duration */}
           {client.dob && (
             <div style={{ fontSize: '0.85rem', color: 'var(--gray-700)', marginBottom: 4 }}>
               {fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}
+              {raw.typical_session_minutes ? <span style={{ color: 'var(--gray-400)', marginLeft: 8 }}>· {raw.typical_session_minutes} min</span> : null}
             </div>
           )}
 
@@ -794,7 +795,7 @@ export default function OOClientDetailPage() {
               <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>Click date/time to edit</span>
-                <button className="btn btn-gold btn-xs" onClick={() => { setShowAddAppt(s => !s); setAddConflicts([]); }}>
+                <button className="btn btn-gold btn-xs" onClick={() => { setShowAddAppt(s => !s); setAddConflicts([]); if (!showAddAppt && raw.typical_session_minutes) setAddForm(f => ({ ...f, duration: String(raw.typical_session_minutes) })); }}>
                   + Add Session
                 </button>
               </div>
@@ -817,7 +818,7 @@ export default function OOClientDetailPage() {
                         style={{ fontSize: '0.85rem', width: 115 }} />
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                      <label style={fldLabel}>Duration (min)</label>
+                      <label style={fldLabel}>Duration (min){raw.typical_session_minutes ? <span style={{ fontWeight: 400, color: 'var(--gray-400)', marginLeft: 4 }}>last: {raw.typical_session_minutes}</span> : null}</label>
                       <input type="number" className="form-input" value={addForm.duration} min="15" max="180"
                         onChange={e => setAddForm(f => ({ ...f, duration: e.target.value }))}
                         style={{ fontSize: '0.85rem', width: 72 }} />
