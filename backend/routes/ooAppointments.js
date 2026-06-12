@@ -394,15 +394,6 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     const dobStr = client.dob ? ` - ${client.dob}` : '';
     const patientFullName = `${client.last_name}, ${client.first_name}${dobStr}`;
 
-    // Payer IDs — stored during facesheet sync; warn if missing
-    const id = client.insync_data;
-    const primaryPayerID    = id?.primaryPayerID    || '';
-    const secondaryPayerID  = id?.secondaryPayerID  || '';
-    const primaryPayerName  = id?.primaryPayerName  || '';
-    const secondaryPayerName = id?.secondaryPayerName || '';
-    if (!primaryPayerID)
-      console.warn(`[push-to-insync] No payer ID for client ${client.id} — run facesheet sync first`);
-
     // Load InSync credentials
     const [{ data: uSetting }, { data: pSetting }] = await Promise.all([
       supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
@@ -429,6 +420,21 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     const programDetailId    = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
     const programName        = prog?.ProgramName || '';
     const consumedVisitOrUnit = prog?.VisitCount  ? String(prog.VisitCount) : '0';
+
+    // Fetch payer IDs from InSync — CaseProgramDetails returns the patient's active payers
+    let primaryPayerID = '', secondaryPayerID = '';
+    if (programDetailId !== '0') {
+      const caseRes  = await insync.post('/ProgramManagement/CaseProgramDetails', {
+        CaseManagementID:          '0',
+        ProgramManagementDetailID: programDetailId,
+      }, cookie);
+      const caseJson = await caseRes.json();
+      primaryPayerID   = caseJson?.PrimaryPayerID   ? String(caseJson.PrimaryPayerID)   : '';
+      secondaryPayerID = caseJson?.SecondaryPayerID ? String(caseJson.SecondaryPayerID) : '';
+    }
+    const primaryPayerName   = client.insync_data?.primaryPayerName   || '';
+    const secondaryPayerName = client.insync_data?.secondaryPayerName || '';
+    console.log(`[push-to-insync] Payers: primary=${primaryPayerID} secondary=${secondaryPayerID}`);
 
     // Book the appointment — params mirror the working HAR request exactly
     const params = {
@@ -649,16 +655,7 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     if (!saveJson?.DataSave)
       return res.status(400).json({ error: saveJson?.MessageDispaly?.ErrorMessage || 'InSync did not confirm save', raw: saveJson });
 
-    // Log BookAppoint structure so we can find the VisitID path
-    console.log('[push-to-insync] BookAppoint:', JSON.stringify(saveJson?.BookAppoint, null, 2));
-
-    // Try multiple known response paths for VisitID
-    const ba = saveJson?.BookAppoint || {};
-    const inSyncVisitId =
-      ba?.ResourceList?.[0]?.VisitID ||
-      ba?.VisitID ||
-      saveJson?.VisitID ||
-      null;
+    const inSyncVisitId = saveJson?.BookAppoint?.VisitID || null;
 
     // Mark appointment as pushed
     await supabase.from('oo_appointments')
