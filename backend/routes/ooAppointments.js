@@ -920,7 +920,10 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[DynamicHTML]':            filledHtml,
       'data[PatientDelegateId]':      '0',
     }, cookie);
-    const saveJson = await saveRes.json().catch(() => null);
+    const saveText = await saveRes.text();
+    console.log('[push-note] SaveDynamicTemplateDetails status:', saveRes.status, 'body:', saveText.slice(0, 500));
+    let saveJson = null;
+    try { saveJson = JSON.parse(saveText); } catch { /* non-JSON */ }
     if (saveJson?.Status !== 1)
       return res.status(400).json({ error: 'InSync did not confirm note save', raw: saveJson });
 
