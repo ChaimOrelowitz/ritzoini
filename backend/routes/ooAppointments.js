@@ -791,21 +791,26 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       secondaryPayerID = caseJson?.SecondaryPayerID ? String(caseJson.SecondaryPayerID) : '';
     }
 
-    // 1. Start encounter
-    await insync.post('/Scheduler/StartEncounter', {
+    // 1. Start encounter — capture response to check for EncounterID there too
+    const seRes  = await insync.post('/Scheduler/StartEncounter', {
       sPatientID:              String(client.insync_patient_id),
       sVisitID:                String(appt.insync_visit_id),
       sVisitStatusDescription: 'Pre Check In',
       IsCheckinAndStartEnc:    '0',
       ResourceId:              INSYNC_PROVIDER.ResourceId,
     }, cookie);
+    const seText = await seRes.text();
+    console.log('[push-note] StartEncounter status:', seRes.status, 'body:', seText.slice(0, 500));
 
     // 2. Parse EncounterID from CustomForm page (InSync stores it in session after StartEncounter)
     const cfRes  = await fetch(`${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`, { headers: stdHeaders });
     const cfHtml = await cfRes.text();
+    console.log('[push-note] CustomForm status:', cfRes.status, 'snippet:', cfHtml.slice(0, 2000));
     const encMatch = cfHtml.match(/encounterId\s*=\s*"(\d+)"/i)
       || cfHtml.match(/"EncounterID"\s*:\s*(\d+)/)
-      || cfHtml.match(/EncounterID[^0-9]{0,5}(\d{5,})/);
+      || cfHtml.match(/EncounterID[^0-9]{0,5}(\d{5,})/)
+      || seText.match(/"EncounterID"\s*:\s*(\d+)/)
+      || seText.match(/EncounterID[^0-9]{0,5}(\d{5,})/);
     if (!encMatch?.[1]) throw new Error('Could not parse EncounterID from InSync after StartEncounter');
     const encounterId = encMatch[1];
 
