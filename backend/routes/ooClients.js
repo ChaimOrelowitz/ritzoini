@@ -93,7 +93,8 @@ router.post('/', requireAuth, async (req, res) => {
 router.put('/:id', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
           referral_source_id, program, status,
-          mother_name, mother_phone, father_name, father_phone, notes } = req.body;
+          mother_name, mother_phone, mother_can_text,
+          father_name, father_phone, father_can_text, notes } = req.body;
   const updates = {};
   if (first_name   !== undefined) updates.first_name   = first_name?.trim()   || null;
   if (last_name    !== undefined) updates.last_name    = last_name?.trim()    || null;
@@ -106,10 +107,12 @@ router.put('/:id', requireAuth, async (req, res) => {
   if (referral_source_id !== undefined) updates.referral_source_id = referral_source_id || null;
   if (program      !== undefined) updates.program      = program?.trim() || null;
   if (status       !== undefined) updates.status       = status;
-  if (mother_name  !== undefined) updates.mother_name  = mother_name?.trim()  || null;
-  if (mother_phone !== undefined) updates.mother_phone = mother_phone?.trim() || null;
-  if (father_name  !== undefined) updates.father_name  = father_name?.trim()  || null;
-  if (father_phone !== undefined) updates.father_phone = father_phone?.trim() || null;
+  if (mother_name     !== undefined) updates.mother_name     = mother_name?.trim()  || null;
+  if (mother_phone    !== undefined) updates.mother_phone    = mother_phone?.trim() || null;
+  if (mother_can_text !== undefined) updates.mother_can_text = !!mother_can_text;
+  if (father_name     !== undefined) updates.father_name     = father_name?.trim()  || null;
+  if (father_phone    !== undefined) updates.father_phone    = father_phone?.trim() || null;
+  if (father_can_text !== undefined) updates.father_can_text = !!father_can_text;
   if (notes        !== undefined) updates.notes        = notes || null;
   updates.updated_at = new Date().toISOString();
 

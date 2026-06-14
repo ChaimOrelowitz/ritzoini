@@ -124,6 +124,7 @@ const EMPTY_EDIT_FORM = {
   first_name: '', last_name: '', dob: '', sex: '', phone: '', mobile: '',
   email: '', mrn: '', referral_source_id: '', status: 'active',
   mother_name: '', mother_phone: '', father_name: '', father_phone: '',
+  mother_can_text: false, father_can_text: false,
 };
 
 const EMPTY_ADD_FORM = { date: '', time: '', duration: '45', repeat_weeks: '1' };
@@ -554,10 +555,12 @@ export default function OOClientDetailPage() {
       mrn:          client.mrn          || '',
       referral_source_id: client.referral_source_id || '',
       status:       client.status       || 'active',
-      mother_name:  client.mother_name  || '',
-      mother_phone: client.mother_phone || '',
-      father_name:  client.father_name  || '',
-      father_phone: client.father_phone || '',
+      mother_name:     client.mother_name     || '',
+      mother_phone:    client.mother_phone    || '',
+      father_name:     client.father_name     || '',
+      father_phone:    client.father_phone    || '',
+      mother_can_text: client.mother_can_text || false,
+      father_can_text: client.father_can_text || false,
     });
     setShowEditModal(true);
   }
@@ -726,14 +729,14 @@ export default function OOClientDetailPage() {
             <span>
               <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Mother:</strong>{' '}
               {client.mother_name
-                ? <>{client.mother_name}{client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone}</span>}</>
+                ? <>{client.mother_name}{client.mother_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.mother_phone} {client.mother_can_text ? <span title="Can text" style={{ color: '#16a34a' }}>💬</span> : <span title="No text" style={{ color: 'var(--gray-300)' }}>🚫</span>}</span>}</>
                 : <span style={{ color: 'var(--gray-300)' }}>—</span>
               }
             </span>
             <span>
               <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Father:</strong>{' '}
               {client.father_name
-                ? <>{client.father_name}{client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone}</span>}</>
+                ? <>{client.father_name}{client.father_phone && <span style={{ color: 'var(--gray-400)', marginLeft: 6 }}>{client.father_phone} {client.father_can_text ? <span title="Can text" style={{ color: '#16a34a' }}>💬</span> : <span title="No text" style={{ color: 'var(--gray-300)' }}>🚫</span>}</span>}</>
                 : <span style={{ color: 'var(--gray-300)' }}>—</span>
               }
             </span>
@@ -1081,22 +1084,30 @@ export default function OOClientDetailPage() {
 
                   <div style={{ gridColumn: 'span 2', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', paddingBottom: 6, borderBottom: '1px solid var(--gray-100)', marginTop: 4 }}>
                     Parents / Guardians
-                    <span style={{ fontSize: '0.65rem', fontWeight: 400, textTransform: 'none', letterSpacing: 0, marginLeft: 8, color: '#f59e0b' }}>
-                      requires DB migration (see chat)
-                    </span>
                   </div>
 
                   {[
-                    { key: 'mother_name',  label: 'Mother Name'  },
-                    { key: 'mother_phone', label: 'Mother Phone', type: 'tel' },
-                    { key: 'father_name',  label: 'Father Name'  },
-                    { key: 'father_phone', label: 'Father Phone', type: 'tel' },
-                  ].map(({ key, label, type = 'text' }) => (
-                    <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      <label style={modalLabelSt}>{label}</label>
-                      <input className="form-input" type={type} value={editForm[key]}
-                        onChange={e => setEditForm(f => ({ ...f, [key]: e.target.value }))}
-                        style={{ fontSize: '0.85rem' }} />
+                    { nameKey: 'mother_name', phoneKey: 'mother_phone', textKey: 'mother_can_text', label: 'Mother' },
+                    { nameKey: 'father_name', phoneKey: 'father_phone', textKey: 'father_can_text', label: 'Father' },
+                  ].map(({ nameKey, phoneKey, textKey, label }) => (
+                    <div key={nameKey} style={{ gridColumn: 'span 2', display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <label style={modalLabelSt}>{label} Name</label>
+                        <input className="form-input" type="text" value={editForm[nameKey]}
+                          onChange={e => setEditForm(f => ({ ...f, [nameKey]: e.target.value }))}
+                          style={{ fontSize: '0.85rem' }} />
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                        <label style={modalLabelSt}>{label} Phone</label>
+                        <input className="form-input" type="tel" value={editForm[phoneKey]}
+                          onChange={e => setEditForm(f => ({ ...f, [phoneKey]: e.target.value }))}
+                          style={{ fontSize: '0.85rem' }} />
+                      </div>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-600)', cursor: 'pointer', paddingBottom: 6, whiteSpace: 'nowrap' }}>
+                        <input type="checkbox" checked={!!editForm[textKey]}
+                          onChange={e => setEditForm(f => ({ ...f, [textKey]: e.target.checked }))} />
+                        Can text
+                      </label>
                     </div>
                   ))}
                 </div>
