@@ -897,16 +897,14 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     const aeText = await aeRes.text();
     console.log('[push-note] AddEditStartEncounter status:', aeRes.status, 'body:', aeText.slice(0, 1000));
 
-    // Parse EncounterID from AddEditStartEncounter response
+    // Parse EncounterID from AddEditStartEncounter response — it's in result.Item2[0].EncounterID
     let aeJson = null;
     try { aeJson = JSON.parse(aeText); } catch { /* non-JSON response */ }
     const encounterId = String(
-      aeJson?.EncounterId   || aeJson?.EncounterID   ||
-      aeJson?.encounterId   || aeJson?.encounterID   ||
-      aeJson?.SEEncounterId || aeJson?.SEEncounterID ||
-      (aeText.match(/"EncounterId"\s*:\s*(\d+)/)?.[1]) ||
-      (aeText.match(/"EncounterID"\s*:\s*(\d+)/)?.[1]) ||
-      (aeText.match(/EncounterI[dD][^0-9]{0,5}(\d{5,})/)?.[1]) ||
+      aeJson?.result?.Item2?.[0]?.EncounterID ||
+      aeJson?.result?.Item2?.[0]?.EncounterId ||
+      aeJson?.EncounterId || aeJson?.EncounterID ||
+      (aeText.match(/"EncounterID"\s*:\s*"?(\d+)"?/)?.[1]) ||
       ''
     );
     if (!encounterId || encounterId === '0')
