@@ -37,8 +37,20 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function fillNoteTemplate(html, encounterId, fields) {
+function fillNoteTemplate(html, encounterId, fields, providerName, patientName) {
   html = html.replace(/data-encid="[^"]*"/g, `data-encid="${encounterId}"`);
+
+  // Replace provider/patient name placeholders and db-value divs
+  html = html.replace(/#ProviderName/g, escapeHtml(providerName || ''));
+  html = html.replace(/#PatientName/g,  escapeHtml(patientName  || ''));
+  html = html.replace(
+    /(<div[^>]*id="ControlId_96"[^>]*>)[^<]*/,
+    `$1${escapeHtml(providerName || '')}`
+  );
+  html = html.replace(
+    /(<div[^>]*id="ControlId_108"[^>]*>)[^<]*/,
+    `$1${escapeHtml(patientName || '')}`
+  );
 
   const textFields = [
     ['ControlId_101', fields.content_discussed      || ''],
@@ -60,15 +72,19 @@ function fillNoteTemplate(html, encounterId, fields) {
     `<label class="border-0 textAlign-left" id="ControlId_99">${escapeHtml(fields.additional_persons_present || '')}</label>`
   );
 
-  // ControlId_112 — replace the SumoSelect wrapper with a plain label
+  // ControlId_112 — blank template has raw <select>, not a SumoSelect wrapper.
+  // Replace the two hidden inputs + select with the selected-value format InSync expects.
   html = html.replace(
-    /<div[^>]*class="[^"]*SumoSelect[^"]*"[\s\S]*?<select[^>]*id="ControlId_112"[^>]*>[\s\S]*?<\/select>[\s\S]*?<\/div>\s*<\/div>/,
-    `<label class="border-0 textAlign-left" id="ControlId_112_label">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" value="2"><input type="hidden" id="hdnFieldText_112" value="Audio-Visual Telehealth">`
+    /<input[^>]*id="hdnFieldText_112"[^>]*>[\s\S]*?<\/select>/,
+    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label>`
   );
 
+  // ControlId_104 — first modality has no prefix; subsequent ones get ", " inside their label
   const modalities = (fields.modalities || []).filter(m => MODALITY_VALUE_MAP[m]);
   const modalityDisplay = modalities
-    .map(m => `<label class="chkDynamicLabel_104"><span>${escapeHtml(m)}</span></label>`)
+    .map((m, i) => i === 0
+      ? `<label class=""><span class=" ">${escapeHtml(m)}</span></label>`
+      : `<label class="">, <span class=" ">${escapeHtml(m)}</span></label>`)
     .join('');
   html = html.replace(
     /<div[^>]*id="divchkDynamicId_104"[^>]*>[\s\S]*?<\/div>/,
@@ -753,6 +769,8 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     const visitTypeId = String(VISIT_TYPE[duration] || VISIT_TYPE[45]);
     const cptFull     = `${cptCode}#*#&*&${cptMapId}`;
     const patientName = `${client.last_name}, ${client.first_name}${client.dob ? ` - ${client.dob}` : ''}`;
+    const providerDisplayName = INSYNC_PROVIDER.Provider.replace(' (P)', '').split(', ').reverse().join(' '); // "Orelowitz, Chaim" → "Chaim Orelowitz"
+    const patientDisplayName  = `${client.first_name} ${client.last_name}`;
 
     const [{ data: uRow }, { data: pRow }] = await Promise.all([
       supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
@@ -912,7 +930,12 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       throw new Error(`Could not get EncounterID from AddEditStartEncounter. Response: ${aeText.slice(0, 300)}`);
 
     // 4. Fill template with note content
-    const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields);
+    const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields, providerDisplayName, patientDisplayName);
+
+    // DynamicHTML must be HTML-encoded (InSync stores and renders it that way)
+    const htmlEncodeForDynamic = s => s
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
     // 5. Save filled note HTML — must include all ControlId fields individually + metadata
     const modalityValues = (appt.ai_fields.modalities || [])
@@ -920,7 +943,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     const saveRes  = await insync.post('/ConfigurePracticeTemplate/SaveDynamicTemplateDetails', {
       'data[FormTemplateDetailId]':        '7',
       'data[SectionConfigurationId]':      '0',
-      'data[DynamicHTML]':                 filledHtml,
+      'data[DynamicHTML]':                 htmlEncodeForDynamic(filledHtml),
       'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
       'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || '',
       'data[ControlId_101]':               appt.ai_fields.content_discussed          || '',
@@ -932,8 +955,8 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
       'data[ControlId_104]':               modalityValues,
       'data[ControlId_112]':               '2',
-      'data[ControlId_96]':                INSYNC_PROVIDER.Provider.replace(' (P)', ''),
-      'data[ControlId_108]':               '',
+      'data[ControlId_96]':                providerDisplayName,
+      'data[ControlId_108]':               patientDisplayName,
       'data[DataBaseValueCollection]':     `<ControlId_96>${INSYNC_PROVIDER.ResourceId}</ControlId_96>`,
       'data[IsClearData]':                 '0',
       'data[ProviderId]':                  '0',
@@ -1026,6 +1049,16 @@ router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
     const progJson = await progRes.json();
     const prog     = Array.isArray(progJson) ? progJson[0] : null;
     const programDetailId = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
+
+    // Load the ENDEncounter page first — InSync requires this to establish server-side session state
+    await fetch(`${insync.BASE}/ENDEncounter/ENDEncounter?eid=${appt.insync_encounter_id}&pid=${patientId}`, {
+      headers: {
+        'User-Agent': insync.UA,
+        'Accept': 'text/html,*/*',
+        'Cookie': cookie,
+      },
+      redirect: 'follow',
+    });
 
     // SaveEndEncounter — the actual close with PIN
     const endRes  = await insync.post('/ENDEncounter/SaveEndEncounter', {
