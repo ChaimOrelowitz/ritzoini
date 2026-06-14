@@ -973,7 +973,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
   }
 });
 
-// POST end InSync encounter (sign + close with PIN 1111)
+// POST end InSync encounter (SaveEndEncounter with PIN 1111)
 router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
   try {
     const { data: appt, error: ae } = await supabase
@@ -995,33 +995,156 @@ router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
 
     const cookie = await insync.login(username, password);
 
-    // Compute end time = appointment start + duration
-    const [hh, mm] = appt.time.slice(0, 5).split(':').map(Number);
-    const dur = appt.duration || 45;
-    const endMinutes = hh * 60 + mm + dur;
-    const endHH = Math.floor(endMinutes / 60) % 24;
-    const endMM = endMinutes % 60;
-    const endTime = `${String(endHH % 12 || 12).padStart(2, '0')}:${String(endMM).padStart(2, '0')} ${endHH >= 12 ? 'PM' : 'AM'}`;
+    const dur     = appt.duration || 45;
     const [yr, mo, dy] = appt.date.split('-');
-    const visitDate = `${mo}/${dy}/${yr}`;
+    const visitDate  = `${mo}/${dy}/${yr}`;         // MM/DD/YYYY
+    const visitDateM = `${Number(mo)}/${Number(dy)}/${yr}`; // M/D/YYYY (no leading zeros)
 
-    // Step 1 — get duration info (required preflight)
-    await insync.post('/ENDEncounter/GetEndEncounterDuration', {
-      EncounterId: appt.insync_encounter_id,
+    const [hh, mm] = appt.time.slice(0, 5).split(':').map(Number);
+    const startAmpm  = hh >= 12 ? 'PM' : 'AM';
+    const startH12   = hh % 12 || 12;
+    const startTime  = `${String(startH12).padStart(2,'0')}:${String(mm).padStart(2,'0')} ${startAmpm}`;
+    const startTimePadded = startTime; // same format
+
+    const endMinutes = hh * 60 + mm + dur;
+    const endHH  = Math.floor(endMinutes / 60) % 24;
+    const endMM  = endMinutes % 60;
+    const endAmpm = endHH >= 12 ? 'PM' : 'AM';
+    const endH12  = endHH % 12 || 12;
+    const endTime = `${String(endH12).padStart(2,'0')}:${String(endMM).padStart(2,'0')} ${endAmpm}`;
+
+    const visitTypeId   = String(VISIT_TYPE[dur] || VISIT_TYPE[45]);
+    const encounterType = (VISIT_TYPE_DESC[dur] || VISIT_TYPE_DESC[45]).split('--')[0].trim();
+    const patientId     = String(appt.oo_clients?.insync_patient_id || '');
+
+    // Get ProgramManagementDetailID
+    const progRes  = await insync.post('/ProgramManagement/ProgramManagementSearch', {
+      ProgramManagementDetailID: '0', ProgramDisplayId: '1',
+      PatientId: patientId, ProgramDate: visitDate,
+      FacilityID: INSYNC_PROVIDER.FacilityId, ProviderID: INSYNC_PROVIDER.ResourceId,
     }, cookie);
+    const progJson = await progRes.json();
+    const prog     = Array.isArray(progJson) ? progJson[0] : null;
+    const programDetailId = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
 
-    // Step 2 — end encounter with PIN
-    const endRes = await insync.post('/ENDEncounter/SaveEndEncounterDuration', {
-      EncounterId:       appt.insync_encounter_id,
-      EncounterEndDate:  visitDate,
-      EncounterEndTime:  endTime,
-      PIN:               '1111',
-      PatientId:         String(appt.oo_clients?.insync_patient_id || ''),
+    // SaveEndEncounter — the actual close with PIN
+    const endRes  = await insync.post('/ENDEncounter/SaveEndEncounter', {
+      'SaveEndEncounter[PatientId]':             patientId,
+      'SaveEndEncounter[EncounterId]':           appt.insync_encounter_id,
+      'SaveEndEncounter[VisitDateTime]':         `${visitDateM} ${startH12}:${String(mm).padStart(2,'0')}:00 ${startAmpm}`,
+      'SaveEndEncounter[EncounterCategoryID]':   '0',
+      'SaveEndEncounter[NoteId]':                '234',
+      'SaveEndEncounter[EncounterType]':         encounterType,
+      'SaveEndEncounter[AdditionalEncNotes][0][NoteId]':   '234',
+      'SaveEndEncounter[AdditionalEncNotes][0][NoteName]': 'Therapy',
+      'SaveEndEncounter[EPIN]':                  '1111',
+      'SaveEndEncounter[EncounterStartDate]':    `${visitDate} ${startTimePadded}`,
+      'SaveEndEncounter[EncounterEndDate]':      `${visitDate} ${endTime}`,
+      'SaveEndEncounter[IsOntheFlyCosignRequest]': 'true',
+      'SaveEndEncounter[Note]':                  '',
+      'SaveEndEncounter[IsReferralTrackingEnable]': 'true',
+      'SaveEndEncounter[IsSubmitEncounterNote]': 'false',
+      'SaveEndEncounter[IsPatientDischarge]':    'false',
+      'SaveEndEncounter[ReferringTrackingID]':   '',
+      'SaveEndEncounter[IsReferralfromTP]':      'false',
+      'SaveEndEncounter[SendToDoTemplateID]':    '',
+      'SaveEndEncounter[IsSpecificEncounterToDo]': 'false',
+      'SaveEndEncounter[IsSendToCDR]':           'false',
+      'SaveEndEncounter[IsSendToWCIS]':          'false',
+      'SaveEndEncounter[IsSendToFASAMS]':        'false',
+      'SaveEndEncounter[IsShowSendToFASAMS]':    'false',
+      'SaveEndEncounter[IsSendToCSI]':           'false',
+      'SaveEndEncounter[IsShowSendToCSI]':       'false',
+      'SaveEndEncounter[IsSendToCALOMS]':        'false',
+      'SaveEndEncounter[IsShowSendToCALOMS]':    'false',
+      'SaveEndEncounter[IsSendToIMCANS]':        'false',
+      'SaveEndEncounter[IsShowSendToIMCANS]':    'false',
+      'SaveEndEncounter[IsSendToPCP]':           'false',
+      'SaveEndEncounter[IsShowSendToPCP]':       'false',
+      'SaveEndEncounter[IsSendToPPS]':           'false',
+      'SaveEndEncounter[IsShowSendToPPS]':       'false',
+      'SaveEndEncounter[IsSendToCLTS]':          'false',
+      'SaveEndEncounter[IsSendToBHDS]':          'false',
+      'SaveEndEncounter[IsShowSendToBHDS]':      'false',
+      'SaveEndEncounter[IsShowSendToCLTS]':      'false',
+      'SaveEndEncounter[IsSendToFSP]':           'false',
+      'SaveEndEncounter[IsShowSendToFSP]':       'false',
+      'SaveEndEncounter[EncounterDurationAlertConfigID]': '',
+      'SaveEndEncounter[IsSendToWAMS]':          'false',
+      'SaveEndEncounter[IsSendToCCS]':           'false',
+      'SaveEndEncounter[SelectedReEvalStatus]':  '',
+      'SaveEndEncounter[SelectedProgramStatus]': '4',
+      'SaveEndEncounter[IsSendToOBHIS]':         'false',
+      'SaveEndEncounter[IsShowSendToOBHIS]':     'false',
+      'SaveEndEncounter[IsSendToIBHRS]':         'false',
+      'SaveEndEncounter[IsShowSendToIBHRS]':     'false',
+      'SaveEndEncounter[IsSendToMEDCO]':         'false',
+      'SaveEndEncounter[IsShowSendToMEDCO]':     'false',
+      'SaveEndEncounter[IsSendToOSHPD]':         'false',
+      'SaveEndEncounter[IsShowSendToOSHPD]':     'false',
+      'SaveEndEncounter[IsSendToOBH]':           'false',
+      'SaveEndEncounter[IsShowSendToOBH]':       'false',
+      'SaveEndEncounter[IsSendToNOMS]':          'false',
+      'SaveEndEncounter[IsShowSendToNOMS]':      'false',
+      'SaveEndEncounter[IsSendToCSS]':           'false',
+      'SaveEndEncounter[IsShowSendToCSS]':       'false',
+      'SaveEndEncounter[IsSendToGPRA]':          'false',
+      'SaveEndEncounter[IsShowSendToGPRA]':      'false',
+      'SaveEndEncounter[IsSendToDAANES]':        'false',
+      'SaveEndEncounter[IsShowSendToDAANES]':    'false',
+      'SaveEndEncounter[IsSendToCDS]':           'false',
+      'SaveEndEncounter[IsShowSendToCDS]':       'false',
+      'SaveEndEncounter[IsSendToBHSD]':          'false',
+      'SaveEndEncounter[IsShowSendToBHSD]':      'false',
+      'SaveEndEncounter[IsSendToKSTEDS]':        'false',
+      'SaveEndEncounter[IsShowSendToKSTEDS]':    'false',
+      'SaveEndEncounter[IsSendToMMCR]':          'false',
+      'SaveEndEncounter[IsShowSendToMMCR]':      'false',
+      'SaveEndEncounter[ProgramDischargeUpdateType]': '',
+      'SaveEndEncounter[IsConfirmUpdate]':       '1',
+      'SaveEndEncounter[WithinDay]':             '0',
+      'SaveEndEncounter[VisitID]':               String(appt.insync_visit_id || '0'),
+      'SaveEndEncounter[ProviderID]':            INSYNC_PROVIDER.ResourceId,
+      'SaveEndEncounter[VisitStatusID]':         '1',
+      'SaveEndEncounter[MappedVisitStatusID]':   '1',
+      'SaveEndEncounter[IsAutoCheckOutAppointmentwhileEndingEncounter]': 'false',
+      'SaveEndEncounter[CheckOutVisitStatuswhileEndingEncounter]':       '',
+      'SaveEndEncounter[CheckOutVisitStatusEncounterTypeIDs]':           '',
+      'SaveEndEncounter[EncounterTypeID]':       visitTypeId,
+      'SaveEndEncounter[ScheduleID]':            INSYNC_PROVIDER.ScheduleID,
+      'SaveEndEncounter[VisitDate]':             `${visitDateM} 12:00:00 AM`,
+      'SaveEndEncounter[StartTime]':             startTimePadded,
+      'SaveEndEncounter[IsSynchronizeEncountertypeWithVisitandViceVersa]': '1',
+      'SaveEndEncounter[GroupTherapyMainEncounterTypeID]': '0',
+      'SaveEndEncounter[IsAnyAntenatalVisitOpen]': 'false',
+      'SaveEndEncounter[IsAntenatalIconDisplay]':  'false',
+      'SaveEndEncounter[Duration]':              String(dur),
+      'SaveEndEncounter[IsAntenatalVisit]':      '3',
+      'SaveEndEncounter[CurrentVisitTypeId]':    '0',
+      'SaveEndEncounter[CurrentVisitType]':      '0',
+      'SaveEndEncounter[ChargeStatus]':          '1',
+      'SaveEndEncounter[EncounterStatus]':       '1',
+      'SaveEndEncounter[PatientLocation]':       '',
+      'SaveEndEncounter[Vdate]':                 visitDate,
+      'SaveEndEncounter[IsEnableInformationBlocking]': '',
+      'SaveEndEncounter[ProgramManagementDetailID]': programDetailId,
+      'SaveEndEncounter[POCNotesId]':            '0',
+      'SaveEndEncounter[IsSavePOCDocument]':     'false',
+      'SaveEndEncounter[VisitTypeID]':           '0',
+      'SaveEndEncounter[IsCptChange]':           '0',
+      'SaveEndEncounter[IsoverWirteVisit]':      '0',
+      'SaveEndEncounter[IsOverWriteEncounterType]': '0',
+      'SaveEndEncounter[InitialReEvaluationId]': '0',
+      'SaveEndEncounter[ReEvalConfigId]':        '0',
+      'SaveEndEncounter[IsVisitTypeChange]':     'false',
+      'SaveEndEncounter[IsUpdateForCofacilitator]': '0',
+      'SaveEndEncounter[OldVisitType]':          '',
+      'SaveEndEncounter[EncounterCategoryName]': '',
     }, cookie);
     const endText = await endRes.text();
-    console.log('[end-encounter] status:', endRes.status, 'body:', endText.slice(0, 300));
+    console.log('[end-encounter] SaveEndEncounter status:', endRes.status, 'body:', endText.slice(0, 400));
 
-    // Step 3 — mark closed by name
+    // Mark closed in scheduler (EncounterID=0 = use active session encounter)
     await fetch(`${insync.BASE}/Scheduler/setEncounterClosedByName`, {
       method: 'POST',
       headers: {
@@ -1032,10 +1155,10 @@ router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
         'Referer': `${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`,
         'Cookie': cookie,
       },
-      body: JSON.stringify({ EncounterID: appt.insync_encounter_id }),
+      body: JSON.stringify({ EncounterID: '0' }),
     });
 
-    res.json({ ok: true, endTime, raw: endText.slice(0, 200) });
+    res.json({ ok: true, endTime });
   } catch (err) {
     console.error('[end-insync-encounter]', err);
     res.status(500).json({ error: err.message });
