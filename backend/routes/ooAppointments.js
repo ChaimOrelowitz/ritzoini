@@ -961,6 +961,21 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     if (saveJson?.Status !== 1)
       return res.status(400).json({ error: 'InSync did not confirm note save', raw: saveJson });
 
+    // 6. Close the encounter
+    await fetch(`${insync.BASE}/Scheduler/setEncounterClosedByName`, {
+      method: 'POST',
+      headers: {
+        'Content-Type':    'application/json; charset=UTF-8',
+        'Accept':          'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent':      insync.UA,
+        'Origin':          insync.BASE,
+        'Referer':         `${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`,
+        'Cookie':          cookie,
+      },
+      body: JSON.stringify({ EncounterID: encounterId }),
+    });
+
     // 7. Persist encounter ID in OO
     await supabase.from('oo_appointments')
       .update({ insync_encounter_id: encounterId, updated_at: new Date().toISOString() })
