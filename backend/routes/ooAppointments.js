@@ -60,9 +60,10 @@ function fillNoteTemplate(html, encounterId, fields) {
     `<label class="border-0 textAlign-left" id="ControlId_99">${escapeHtml(fields.additional_persons_present || '')}</label>`
   );
 
+  // ControlId_112 — replace the SumoSelect wrapper with a plain label
   html = html.replace(
-    /<div[^>]*id="divDynamicId_112"[^>]*>[\s\S]*?<\/div>/,
-    `<div id="divDynamicId_112" class="elem-control has-no-label textAlign-left"><input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="2" name="NaN"></div>`
+    /<div[^>]*class="[^"]*SumoSelect[^"]*"[\s\S]*?<select[^>]*id="ControlId_112"[^>]*>[\s\S]*?<\/select>[\s\S]*?<\/div>\s*<\/div>/,
+    `<label class="border-0 textAlign-left" id="ControlId_112_label">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" value="2"><input type="hidden" id="hdnFieldText_112" value="Audio-Visual Telehealth">`
   );
 
   const modalities = (fields.modalities || []).filter(m => MODALITY_VALUE_MAP[m]);
