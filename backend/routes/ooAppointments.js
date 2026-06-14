@@ -791,30 +791,16 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       secondaryPayerID = caseJson?.SecondaryPayerID ? String(caseJson.SecondaryPayerID) : '';
     }
 
-    // 1. Start encounter — capture response to check for EncounterID there too
-    const seRes  = await insync.post('/Scheduler/StartEncounter', {
+    // 1. Start encounter
+    await insync.post('/Scheduler/StartEncounter', {
       sPatientID:              String(client.insync_patient_id),
       sVisitID:                String(appt.insync_visit_id),
       sVisitStatusDescription: 'Pre Check In',
       IsCheckinAndStartEnc:    '0',
       ResourceId:              INSYNC_PROVIDER.ResourceId,
     }, cookie);
-    const seText = await seRes.text();
-    console.log('[push-note] StartEncounter status:', seRes.status, 'body:', seText.slice(0, 500));
 
-    // 2. Parse EncounterID from CustomForm page (InSync stores it in session after StartEncounter)
-    const cfRes  = await fetch(`${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`, { headers: stdHeaders });
-    const cfHtml = await cfRes.text();
-    console.log('[push-note] CustomForm status:', cfRes.status, 'snippet:', cfHtml.slice(0, 2000));
-    const encMatch = cfHtml.match(/encounterId\s*=\s*"(\d+)"/i)
-      || cfHtml.match(/"EncounterID"\s*:\s*(\d+)/)
-      || cfHtml.match(/EncounterID[^0-9]{0,5}(\d{5,})/)
-      || seText.match(/"EncounterID"\s*:\s*(\d+)/)
-      || seText.match(/EncounterID[^0-9]{0,5}(\d{5,})/);
-    if (!encMatch?.[1]) throw new Error('Could not parse EncounterID from InSync after StartEncounter');
-    const encounterId = encMatch[1];
-
-    // 3. Fetch blank note template
+    // 2. Fetch blank note template
     const tplRes = await insync.post('/ConfigurePracticeTemplate/PreviewConfigTemplateById', {
       tempId: '101', isPrev: 'false', sectionConfigId: '0', templateDetailsId: '7',
       FormTableName: 'tbldf200_101_200',
@@ -823,100 +809,113 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     }, cookie);
     const blankHtml = await tplRes.text();
 
+    // 3. Save encounter metadata — EncounterId=0 lets InSync create/assign it; response contains the ID
+    const aeRes  = await insync.post('/EncounterDetail/AddEditStartEncounter', {
+      'SEEncounterDetails.IsPrimaryAutoAttachAuthorization':    'False',
+      'SEEncounterDetails.IsSecondaryyAutoAttachAuthorization': 'False',
+      'SEEncounterDetails.IstertiaryAutoAttachAuthorization':   'False',
+      'SEEncounterDetails.EncounterDurationAlertConfigID':      '0',
+      'SEEncounterDetails.UpdatePayerFromProgram':              '0',
+      'IsCheckInStartEncounter':                                '0',
+      'SEEncounterDetails.IsRequiredToUpdateBedBoardPayers':    'False',
+      'hdnAlertTypeForProviderOverlappingEncounter':            '0',
+      'hdnAlertOverlappingAppointmentEncounter':                '1',
+      'hdnchkSEIsAccident':                                     'false',
+      'SEEncounterDetails.TelemedicineSendMail':                '1,2,3',
+      'SEEncounterDetails.IsAntenatalVisit':                    '0',
+      'SEEncounterDetails.SEEncounterTypeID':                   visitTypeId,
+      'SEEncounterDetails.SEProviderID':                        INSYNC_PROVIDER.ResourceId,
+      'SEEncounterDetails.SEReferringProviderId':               '0',
+      'SEEncounterDetails.IsUpdateRefPhyPD':                    '0',
+      'SEEncounterDetails.SEOldReferringProviderId':            '0',
+      'SEEncounterDetails.SEPrimaryFacilityID':                 INSYNC_PROVIDER.FacilityId,
+      'SEEncounterDetails.SEPOSCode':                           '10',
+      'SEEncounterDetails.SEVisitStartDate':                    visitDate,
+      'SEEncounterDetails.SEVisitStartTime':                    visitTime,
+      'SEEncounterDetails.SEEncounterStartDate':                visitDate,
+      'SEEncounterDetails.SEEncounterStartTime':                visitTime,
+      'SEEncounterDetails.SEEncounterStartDateTime':            visitDate,
+      'SEEncounterDetails.SEVisitStartDateTime':                `${visitDate} ${visitTime}`,
+      'SEEncounterDetails.IsTelemedicine':                      'true',
+      'SEEncounterDetails.TeleDefaultsCPTAction':               '0',
+      'SEEncounterDetails.TeleDefaultsMasterID':                '0',
+      'SEEncounterDetails.TeleDefaultsPOSAction':               '0',
+      'SEEncounterDetails.InitialReEvalID':                     '0',
+      'SEEncounterDetails.SEPatientPayerId':                    primaryPayerID,
+      'SEEncounterDetails.SEPatientPayerId1':                   secondaryPayerID,
+      'oldSEPatientPayerId':                                    primaryPayerID,
+      'oldSEPatientPayerId1':                                   secondaryPayerID,
+      'oldSEPatientPayerId2':                                   '0',
+      'SEClinicalSummary_EncounterTypeIDs':                     '0',
+      'SEEncounterDetails.SECPTModifiers':                      `${cptFull},,,,,1.00,&*%^1,&*%^1`,
+      'SEEncounterDetails.SECPTDescription':                    `${cptFull} -  ${CPT_DESC[duration] || CPT_DESC[45]}(Units: 1.00) `,
+      'SEEncounterDetails.SECPTCode':                           cptFull,
+      'SEEncounterDetails_SECPTCode':                           cptFull,
+      'SEEncounterDetails.ChargeCodeId':                        '0',
+      'SEEncounterDetails.SERevenueCode':                       'NULL',
+      'SEEncounterDetails.SEBillable':                          'true',
+      'SEEncounterDetails.SEIsAccident':                        'false',
+      'SEEncounterDetails.IsSelfPay':                           'false',
+      'SEEncounterDetails.SEAuthorizationId':                   '0',
+      'SEEncounterDetails.SEAuthorizationId1':                  '0',
+      'SEEncounterDetails.CaseManagementID':                    '0',
+      'SEEncounterDetails.CaseEncounterConfirm':                '0',
+      'SEEncounterDetails.ProgramManagementID':                 programId,
+      'SEEncounterDetails.ProgramManagementDetailID':           programDetailId,
+      'SEEncounterDetails.ProgramName':                         programName,
+      'SEEncounterDetails.IsUpdateMasterLevelOfCare':           '0',
+      'SEEncounterDetails.SEEncounterCategoryId':               '0',
+      'SEEncounterDetails.ProgramEncounterConfirm':             '2',
+      'SEEncounterDetails.SEChargeID':                          '0',
+      'SEEncounterDetails.IsChargeGeneratedFlage':              'False',
+      'SEEncounterDetails.SEDuration':                          String(duration),
+      'SEEncounterDetails.EncounterId':                         '0',
+      'SEEncounterDetails.SEVisitID':                           String(appt.insync_visit_id),
+      'SEEncounterDetails.SEVisitTypeID':                       '0',
+      'SEEncounterDetails.ScheduleID':                          INSYNC_PROVIDER.ScheduleID,
+      'SEEncounterDetails.VisitDuration':                       String(duration),
+      'SEEncounterDetails.SEPatientId':                         String(client.insync_patient_id),
+      'SEEncounterDetails.SEPatientName':                       patientName,
+      'SEEncounterDetails.IsClosedEncounter':                   '1',
+      'SEEncounterDetails.hdnEncounterTimeLog':                 '1',
+      'SEEncounterDetails.IsFetchEncounterTypeWithMapping':     'True',
+      'SEEncounterDetails.PrimaryInsurance':                    client.insync_data?.primaryPayerName || '',
+      'SEEncounterDetails.SecondaryInsurance':                  client.insync_data?.secondaryPayerName || '',
+      'SEEncounterDetails.SEProviderName':                      INSYNC_PROVIDER.Provider,
+      'SEEncounterDetails.SEEncounterType':                     (VISIT_TYPE_DESC[duration] || VISIT_TYPE_DESC[45]).trim(),
+      'SEEncounterDetails.SEPOSDescription':                    "Telehealth Provided in Patient's Home",
+      'ChartWOScheduler':                                       '0',
+      'WEResourceId':                                           INSYNC_PROVIDER.ResourceId,
+      'ResourceTypeId':                                         '0',
+      'SEEncounterDetails.OldSEEncounterTypeID':                visitTypeId,
+      'SEEncounterDetails.BedBookDetailID':                     '0',
+      'SEEncounterDetails.hdnAllowToUpdateAntenatalVisitFlag':  '3',
+      'ISCurrentDate':                                          visitDate,
+      'EncounterDataID':                                        '0',
+      'X-Requested-With':                                       'XMLHttpRequest',
+    }, cookie);
+    const aeText = await aeRes.text();
+    console.log('[push-note] AddEditStartEncounter status:', aeRes.status, 'body:', aeText.slice(0, 1000));
+
+    // Parse EncounterID from AddEditStartEncounter response
+    let aeJson = null;
+    try { aeJson = JSON.parse(aeText); } catch { /* non-JSON response */ }
+    const encounterId = String(
+      aeJson?.EncounterId   || aeJson?.EncounterID   ||
+      aeJson?.encounterId   || aeJson?.encounterID   ||
+      aeJson?.SEEncounterId || aeJson?.SEEncounterID ||
+      (aeText.match(/"EncounterId"\s*:\s*(\d+)/)?.[1]) ||
+      (aeText.match(/"EncounterID"\s*:\s*(\d+)/)?.[1]) ||
+      (aeText.match(/EncounterI[dD][^0-9]{0,5}(\d{5,})/)?.[1]) ||
+      ''
+    );
+    if (!encounterId || encounterId === '0')
+      throw new Error(`Could not get EncounterID from AddEditStartEncounter. Response: ${aeText.slice(0, 300)}`);
+
     // 4. Fill template with note content
     const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields);
 
-    // 5. Save encounter metadata (AddEditStartEncounter)
-    await fetch(`${insync.BASE}/EncounterDetail/AddEditStartEncounter?Length=15`, {
-      method: 'POST',
-      headers: { ...stdHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        'SEEncounterDetails.IsPrimaryAutoAttachAuthorization':    'False',
-        'SEEncounterDetails.IsSecondaryyAutoAttachAuthorization': 'False',
-        'SEEncounterDetails.IstertiaryAutoAttachAuthorization':   'False',
-        'SEEncounterDetails.EncounterDurationAlertConfigID':      '0',
-        'SEEncounterDetails.UpdatePayerFromProgram':              '0',
-        'IsCheckInStartEncounter':                                '0',
-        'SEEncounterDetails.IsRequiredToUpdateBedBoardPayers':    'False',
-        'hdnAlertTypeForProviderOverlappingEncounter':            '0',
-        'hdnAlertOverlappingAppointmentEncounter':                '1',
-        'hdnchkSEIsAccident':                                     'false',
-        'SEEncounterDetails.TelemedicineSendMail':                '1,2,3',
-        'SEEncounterDetails.IsAntenatalVisit':                    '0',
-        'SEEncounterDetails.SEEncounterTypeID':                   visitTypeId,
-        'SEEncounterDetails.SEProviderID':                        INSYNC_PROVIDER.ResourceId,
-        'SEEncounterDetails.SEReferringProviderId':               '0',
-        'SEEncounterDetails.IsUpdateRefPhyPD':                    '0',
-        'SEEncounterDetails.SEOldReferringProviderId':            '0',
-        'SEEncounterDetails.SEPrimaryFacilityID':                 INSYNC_PROVIDER.FacilityId,
-        'SEEncounterDetails.SEPOSCode':                           '10',
-        'SEEncounterDetails.SEVisitStartDate':                    visitDate,
-        'SEEncounterDetails.SEVisitStartTime':                    visitTime,
-        'SEEncounterDetails.SEEncounterStartDate':                visitDate,
-        'SEEncounterDetails.SEEncounterStartTime':                visitTime,
-        'SEEncounterDetails.SEEncounterStartDateTime':            visitDate,
-        'SEEncounterDetails.SEVisitStartDateTime':                `${visitDate} ${visitTime}`,
-        'SEEncounterDetails.IsTelemedicine':                      'true',
-        'SEEncounterDetails.TeleDefaultsCPTAction':               '0',
-        'SEEncounterDetails.TeleDefaultsMasterID':                '0',
-        'SEEncounterDetails.TeleDefaultsPOSAction':               '0',
-        'SEEncounterDetails.InitialReEvalID':                     '0',
-        'SEEncounterDetails.SEPatientPayerId':                    primaryPayerID,
-        'SEEncounterDetails.SEPatientPayerId1':                   secondaryPayerID,
-        'oldSEPatientPayerId':                                    primaryPayerID,
-        'oldSEPatientPayerId1':                                   secondaryPayerID,
-        'oldSEPatientPayerId2':                                   '0',
-        'SEClinicalSummary_EncounterTypeIDs':                     '0',
-        'SEEncounterDetails.SECPTModifiers':                      `${cptFull},,,,,1.00,&*%^1,&*%^1`,
-        'SEEncounterDetails.SECPTDescription':                    `${cptFull} -  ${CPT_DESC[duration] || CPT_DESC[45]}(Units: 1.00) `,
-        'SEEncounterDetails.SECPTCode':                           cptFull,
-        'SEEncounterDetails_SECPTCode':                           cptFull,
-        'SEEncounterDetails.ChargeCodeId':                        '0',
-        'SEEncounterDetails.SERevenueCode':                       'NULL',
-        'SEEncounterDetails.SEBillable':                          'true',
-        'SEEncounterDetails.SEIsAccident':                        'false',
-        'SEEncounterDetails.IsSelfPay':                           'false',
-        'SEEncounterDetails.SEAuthorizationId':                   '0',
-        'SEEncounterDetails.SEAuthorizationId1':                  '0',
-        'SEEncounterDetails.CaseManagementID':                    '0',
-        'SEEncounterDetails.CaseEncounterConfirm':                '0',
-        'SEEncounterDetails.ProgramManagementID':                 programId,
-        'SEEncounterDetails.ProgramManagementDetailID':           programDetailId,
-        'SEEncounterDetails.ProgramName':                         programName,
-        'SEEncounterDetails.IsUpdateMasterLevelOfCare':           '0',
-        'SEEncounterDetails.SEEncounterCategoryId':               '0',
-        'SEEncounterDetails.ProgramEncounterConfirm':             '2',
-        'SEEncounterDetails.SEChargeID':                          '0',
-        'SEEncounterDetails.IsChargeGeneratedFlage':              'False',
-        'SEEncounterDetails.SEDuration':                          String(duration),
-        'SEEncounterDetails.EncounterId':                         encounterId,
-        'SEEncounterDetails.SEVisitID':                           String(appt.insync_visit_id),
-        'SEEncounterDetails.SEVisitTypeID':                       '0',
-        'SEEncounterDetails.ScheduleID':                          INSYNC_PROVIDER.ScheduleID,
-        'SEEncounterDetails.VisitDuration':                       String(duration),
-        'SEEncounterDetails.SEPatientId':                         String(client.insync_patient_id),
-        'SEEncounterDetails.SEPatientName':                       patientName,
-        'SEEncounterDetails.IsClosedEncounter':                   '1',
-        'SEEncounterDetails.hdnEncounterTimeLog':                 '1',
-        'SEEncounterDetails.IsFetchEncounterTypeWithMapping':     'True',
-        'SEEncounterDetails.PrimaryInsurance':                    client.insync_data?.primaryPayerName || '',
-        'SEEncounterDetails.SecondaryInsurance':                  client.insync_data?.secondaryPayerName || '',
-        'SEEncounterDetails.SEProviderName':                      INSYNC_PROVIDER.Provider,
-        'SEEncounterDetails.SEEncounterType':                     (VISIT_TYPE_DESC[duration] || VISIT_TYPE_DESC[45]).trim(),
-        'SEEncounterDetails.SEPOSDescription':                    "Telehealth Provided in Patient's Home",
-        'ChartWOScheduler':                                       '0',
-        'WEResourceId':                                           INSYNC_PROVIDER.ResourceId,
-        'ResourceTypeId':                                         '0',
-        'SEEncounterDetails.OldSEEncounterTypeID':                visitTypeId,
-        'SEEncounterDetails.BedBookDetailID':                     '0',
-        'SEEncounterDetails.hdnAllowToUpdateAntenatalVisitFlag':  '3',
-        'ISCurrentDate':                                          visitDate,
-        'EncounterDataID':                                        '0',
-        'X-Requested-With':                                       'XMLHttpRequest',
-      }).toString(),
-    });
-
-    // 6. Save filled note HTML
+    // 5. Save filled note HTML
     const saveRes  = await insync.post('/ConfigurePracticeTemplate/SaveDynamicTemplateDetails', {
       'data[FormTemplateDetailId]':   '7',
       'data[SectionConfigurationId]': '0',
