@@ -913,15 +913,48 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     // 4. Fill template with note content
     const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields);
 
-    // 5. Save filled note HTML
+    // 5. Save filled note HTML — must include all ControlId fields individually + metadata
+    const modalityValues = (appt.ai_fields.modalities || [])
+      .map(m => MODALITY_VALUE_MAP[m]).filter(Boolean).join(',');
     const saveRes  = await insync.post('/ConfigurePracticeTemplate/SaveDynamicTemplateDetails', {
-      'data[FormTemplateDetailId]':   '7',
-      'data[SectionConfigurationId]': '0',
-      'data[DynamicHTML]':            filledHtml,
-      'data[PatientDelegateId]':      '0',
+      'data[FormTemplateDetailId]':        '7',
+      'data[SectionConfigurationId]':      '0',
+      'data[DynamicHTML]':                 filledHtml,
+      'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
+      'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || '',
+      'data[ControlId_101]':               appt.ai_fields.content_discussed          || '',
+      'data[ControlId_102]':               appt.ai_fields.interventions_used         || '',
+      'data[ControlId_105]':               '',
+      'data[ControlId_63]':                appt.ai_fields.patient_response           || '',
+      'data[ControlId_60]':                appt.ai_fields.progress_toward_goals      || '',
+      'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
+      'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
+      'data[ControlId_104]':               modalityValues,
+      'data[ControlId_112]':               '2',
+      'data[ControlId_96]':                INSYNC_PROVIDER.Provider.replace(' (P)', ''),
+      'data[ControlId_108]':               '',
+      'data[DataBaseValueCollection]':     `<ControlId_96>${INSYNC_PROVIDER.ResourceId}</ControlId_96>`,
+      'data[IsClearData]':                 '0',
+      'data[ProviderId]':                  '0',
+      'data[MatrixIds]':                   '',
+      'data[IsSubmitted]':                 'false',
+      'data[SubPatientFormID]':            '0',
+      'data[PatientId]':                   String(client.insync_patient_id),
+      'data[IsCallFromPortal]':            '0',
+      'data[TemplateId]':                  '101',
+      'data[FunctionId]':                  '10070',
+      'data[SignRefusalReason]':           '',
+      'data[IsResent]':                    'false',
+      'data[IsOverrideForm]':              'false',
+      'data[IsCallFromRegistration]':      'false',
+      'data[IsSendFormToPatient]':         'false',
+      'data[ControlXML]':                  '',
+      'data[SaveMode]':                    '1',
+      'data[SaveAsToDM]':                  'false',
+      'data[PatientDelegateId]':           '0',
     }, cookie);
     const saveText = await saveRes.text();
-    console.log('[push-note] SaveDynamicTemplateDetails status:', saveRes.status, 'body:', saveText.slice(0, 500));
+    console.log('[push-note] SaveDynamicTemplateDetails status:', saveRes.status, 'body:', saveText.slice(0, 300));
     let saveJson = null;
     try { saveJson = JSON.parse(saveText); } catch { /* non-JSON */ }
     if (saveJson?.Status !== 1)
