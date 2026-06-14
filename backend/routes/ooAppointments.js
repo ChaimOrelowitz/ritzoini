@@ -961,22 +961,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     if (saveJson?.Status !== 1)
       return res.status(400).json({ error: 'InSync did not confirm note save', raw: saveJson });
 
-    // 6. Close the encounter
-    await fetch(`${insync.BASE}/Scheduler/setEncounterClosedByName`, {
-      method: 'POST',
-      headers: {
-        'Content-Type':    'application/json; charset=UTF-8',
-        'Accept':          'application/json, text/javascript, */*; q=0.01',
-        'X-Requested-With': 'XMLHttpRequest',
-        'User-Agent':      insync.UA,
-        'Origin':          insync.BASE,
-        'Referer':         `${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`,
-        'Cookie':          cookie,
-      },
-      body: JSON.stringify({ EncounterID: encounterId }),
-    });
-
-    // 7. Persist encounter ID in OO
+    // 6. Persist encounter ID in OO
     await supabase.from('oo_appointments')
       .update({ insync_encounter_id: encounterId, updated_at: new Date().toISOString() })
       .eq('id', req.params.id);
@@ -984,6 +969,75 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     res.json({ ok: true, insync_encounter_id: encounterId });
   } catch (err) {
     console.error('[push-note-to-insync]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST end InSync encounter (sign + close with PIN 1111)
+router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
+  try {
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('*, oo_clients(insync_patient_id)')
+      .eq('id', req.params.id).single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+    if (!appt.insync_encounter_id)
+      return res.status(400).json({ error: 'No encounter ID — push note first' });
+
+    const [{ data: uRow }, { data: pRow }] = await Promise.all([
+      supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+    ]);
+    const username = uRow?.value || process.env.INSYNC_USERNAME;
+    const password = pRow?.value || process.env.INSYNC_PASSWORD;
+    if (!username || !password)
+      return res.status(400).json({ error: 'InSync credentials not configured' });
+
+    const cookie = await insync.login(username, password);
+
+    // Compute end time = appointment start + duration
+    const [hh, mm] = appt.time.slice(0, 5).split(':').map(Number);
+    const dur = appt.duration || 45;
+    const endMinutes = hh * 60 + mm + dur;
+    const endHH = Math.floor(endMinutes / 60) % 24;
+    const endMM = endMinutes % 60;
+    const endTime = `${String(endHH % 12 || 12).padStart(2, '0')}:${String(endMM).padStart(2, '0')} ${endHH >= 12 ? 'PM' : 'AM'}`;
+    const [yr, mo, dy] = appt.date.split('-');
+    const visitDate = `${mo}/${dy}/${yr}`;
+
+    // Step 1 — get duration info (required preflight)
+    await insync.post('/ENDEncounter/GetEndEncounterDuration', {
+      EncounterId: appt.insync_encounter_id,
+    }, cookie);
+
+    // Step 2 — end encounter with PIN
+    const endRes = await insync.post('/ENDEncounter/SaveEndEncounterDuration', {
+      EncounterId:       appt.insync_encounter_id,
+      EncounterEndDate:  visitDate,
+      EncounterEndTime:  endTime,
+      PIN:               '1111',
+      PatientId:         String(appt.oo_clients?.insync_patient_id || ''),
+    }, cookie);
+    const endText = await endRes.text();
+    console.log('[end-encounter] status:', endRes.status, 'body:', endText.slice(0, 300));
+
+    // Step 3 — mark closed by name
+    await fetch(`${insync.BASE}/Scheduler/setEncounterClosedByName`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': insync.UA,
+        'Origin': insync.BASE,
+        'Referer': `${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`,
+        'Cookie': cookie,
+      },
+      body: JSON.stringify({ EncounterID: appt.insync_encounter_id }),
+    });
+
+    res.json({ ok: true, endTime, raw: endText.slice(0, 200) });
+  } catch (err) {
+    console.error('[end-insync-encounter]', err);
     res.status(500).json({ error: err.message });
   }
 });
