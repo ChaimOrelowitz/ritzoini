@@ -23,6 +23,61 @@ const INSYNC_PROVIDER = {
   FacilityId:      '199',
 };
 
+// ─── InSync note-push helpers ─────────────────────────────────────────────────
+const MODALITY_VALUE_MAP = {
+  'CBT': '1', 'EMDR': '3', 'Sand Tray': '5', 'Solution Focused': '6',
+  'Client Centered': '7', 'DBT': '8', 'Art Therapy': '9',
+  'Strength Based': '10', 'Family Systems': '11', 'Trauma Focused': '12',
+  'Play Therapy': '13',
+};
+
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fillNoteTemplate(html, encounterId, fields) {
+  html = html.replace(/data-encid="[^"]*"/g, `data-encid="${encounterId}"`);
+
+  const textFields = [
+    ['ControlId_101', fields.content_discussed      || ''],
+    ['ControlId_102', fields.interventions_used     || ''],
+    ['ControlId_63',  fields.patient_response       || ''],
+    ['ControlId_60',  fields.progress_toward_goals  || ''],
+    ['ControlId_107', fields.treatment_plan_changes || ''],
+    ['ControlId_37',  fields.additional_comments    || ''],
+  ];
+  for (const [cid, text] of textFields) {
+    html = html.replace(
+      new RegExp(`<textarea[^>]*id="${cid}"[^>]*>[\\s\\S]*?<\\/textarea>`),
+      `<label class="border-0 textAlign-left" id="${cid}">${escapeHtml(text)}</label>`
+    );
+  }
+
+  html = html.replace(
+    /<input[^>]*id="ControlId_99"[^>]*>/,
+    `<label class="border-0 textAlign-left" id="ControlId_99">${escapeHtml(fields.additional_persons_present || '')}</label>`
+  );
+
+  html = html.replace(
+    /<div[^>]*id="divDynamicId_112"[^>]*>[\s\S]*?<\/div>/,
+    `<div id="divDynamicId_112" class="elem-control has-no-label textAlign-left"><input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="2" name="NaN"></div>`
+  );
+
+  const modalities = (fields.modalities || []).filter(m => MODALITY_VALUE_MAP[m]);
+  const modalityDisplay = modalities
+    .map(m => `<label class="chkDynamicLabel_104"><span>${escapeHtml(m)}</span></label>`)
+    .join('');
+  html = html.replace(
+    /<div[^>]*id="divchkDynamicId_104"[^>]*>[\s\S]*?<\/div>/,
+    `<div id="divchkDynamicId_104" class="elem-control has-no-label textAlign-left">${modalityDisplay}</div>`
+  );
+
+  return html;
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 // GET all appointments (with client info)
 router.get('/', requireAuth, async (req, res) => {
   const { client_id, week_start, week_end } = req.query;
@@ -665,6 +720,216 @@ router.post('/:id/push-to-insync', requireAuth, async (req, res) => {
     res.json({ ok: true, insync_visit_id: inSyncVisitId, date: visitDate, time: visitTime });
   } catch (err) {
     console.error('[push-to-insync]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST push session note to InSync encounter
+router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
+  try {
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('*, oo_clients(id, first_name, last_name, dob, insync_patient_id, insync_data)')
+      .eq('id', req.params.id)
+      .single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const client = appt.oo_clients;
+    if (!client?.insync_patient_id)
+      return res.status(400).json({ error: 'Client has no InSync patient ID — sync from InSync first' });
+    if (!appt.insync_visit_id)
+      return res.status(400).json({ error: 'Appointment not in InSync — push appointment first' });
+    if (!appt.ai_fields?.content_discussed)
+      return res.status(400).json({ error: 'No processed note — write and process notes first' });
+
+    const duration    = appt.duration || 45;
+    const [yr, mo, dy] = appt.date.split('-');
+    const visitDate   = `${mo}/${dy}/${yr}`;
+    const [hh, mm]    = appt.time.slice(0, 5).split(':').map(Number);
+    const visitTime   = `${String(hh % 12 || 12).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${hh >= 12 ? 'PM' : 'AM'}`;
+    const cptCode     = CPT_BY_DURATION[duration] || CPT_BY_DURATION[45];
+    const cptMapId    = CPT_MAP_ID[duration]      || CPT_MAP_ID[45];
+    const visitTypeId = String(VISIT_TYPE[duration] || VISIT_TYPE[45]);
+    const cptFull     = `${cptCode}#*#&*&${cptMapId}`;
+    const patientName = `${client.last_name}, ${client.first_name}${client.dob ? ` - ${client.dob}` : ''}`;
+
+    const [{ data: uRow }, { data: pRow }] = await Promise.all([
+      supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+      supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+    ]);
+    const username = uRow?.value || process.env.INSYNC_USERNAME;
+    const password = pRow?.value || process.env.INSYNC_PASSWORD;
+    if (!username || !password)
+      return res.status(400).json({ error: 'InSync credentials not configured' });
+
+    const cookie = await insync.login(username, password);
+    const stdHeaders = {
+      'Cookie': cookie, 'User-Agent': insync.UA,
+      'X-Requested-With': 'XMLHttpRequest',
+      'Origin': insync.BASE, 'Referer': `${insync.BASE}/Scheduler/Index`,
+      'Accept': 'text/html,*/*',
+    };
+
+    // Live payer IDs
+    const progRes  = await insync.post('/ProgramManagement/ProgramManagementSearch', {
+      ProgramManagementDetailID: '0', ProgramDisplayId: '1',
+      PatientId: String(client.insync_patient_id), ProgramDate: visitDate,
+      FacilityID: INSYNC_PROVIDER.FacilityId, ProviderID: INSYNC_PROVIDER.ResourceId,
+    }, cookie);
+    const progJson = await progRes.json();
+    const prog     = Array.isArray(progJson) ? progJson[0] : null;
+    const programDetailId = prog?.ProgramManagementDetailID ? String(prog.ProgramManagementDetailID) : '0';
+    const programId       = prog?.ProgramManagementID       ? String(prog.ProgramManagementID)       : '18';
+    const programName     = prog?.ProgramName || 'OH';
+
+    let primaryPayerID = '', secondaryPayerID = '';
+    if (programDetailId !== '0') {
+      const caseRes  = await insync.post('/ProgramManagement/CaseProgramDetails',
+        { CaseManagementID: '0', ProgramManagementDetailID: programDetailId }, cookie);
+      const caseJson = await caseRes.json();
+      primaryPayerID   = caseJson?.PrimaryPayerID   ? String(caseJson.PrimaryPayerID)   : '';
+      secondaryPayerID = caseJson?.SecondaryPayerID ? String(caseJson.SecondaryPayerID) : '';
+    }
+
+    // 1. Start encounter
+    await insync.post('/Scheduler/StartEncounter', {
+      sPatientID:              String(client.insync_patient_id),
+      sVisitID:                String(appt.insync_visit_id),
+      sVisitStatusDescription: 'Pre Check In',
+      IsCheckinAndStartEnc:    '0',
+      ResourceId:              INSYNC_PROVIDER.ResourceId,
+    }, cookie);
+
+    // 2. Parse EncounterID from CustomForm page (InSync stores it in session after StartEncounter)
+    const cfRes  = await fetch(`${insync.BASE}/CustomForm/CustomForm?IsZoomTelemedicineVisitType=true`, { headers: stdHeaders });
+    const cfHtml = await cfRes.text();
+    const encMatch = cfHtml.match(/encounterId\s*=\s*"(\d+)"/i)
+      || cfHtml.match(/"EncounterID"\s*:\s*(\d+)/)
+      || cfHtml.match(/EncounterID[^0-9]{0,5}(\d{5,})/);
+    if (!encMatch?.[1]) throw new Error('Could not parse EncounterID from InSync after StartEncounter');
+    const encounterId = encMatch[1];
+
+    // 3. Fetch blank note template
+    const tplRes = await insync.post('/ConfigurePracticeTemplate/PreviewConfigTemplateById', {
+      tempId: '101', isPrev: 'false', sectionConfigId: '0', templateDetailsId: '7',
+      FormTableName: 'tbldf200_101_200',
+      InsertColumn: 'ControlId_100,ControlId_101,ControlId_102,ControlId_103,ControlId_104,ControlId_105,ControlId_106,ControlId_107,ControlId_108,ControlId_109,ControlId_110,ControlId_111,ControlId_112,ControlId_14,ControlId_20,ControlId_26,ControlId_36,ControlId_37,ControlId_60,ControlId_63,ControlId_67,ControlId_90,ControlId_93,ControlId_96,ControlId_99',
+      isDisabled: 'false', providerId: '0',
+    }, cookie);
+    const blankHtml = await tplRes.text();
+
+    // 4. Fill template with note content
+    const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields);
+
+    // 5. Save encounter metadata (AddEditStartEncounter)
+    await fetch(`${insync.BASE}/EncounterDetail/AddEditStartEncounter?Length=15`, {
+      method: 'POST',
+      headers: { ...stdHeaders, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        'SEEncounterDetails.IsPrimaryAutoAttachAuthorization':    'False',
+        'SEEncounterDetails.IsSecondaryyAutoAttachAuthorization': 'False',
+        'SEEncounterDetails.IstertiaryAutoAttachAuthorization':   'False',
+        'SEEncounterDetails.EncounterDurationAlertConfigID':      '0',
+        'SEEncounterDetails.UpdatePayerFromProgram':              '0',
+        'IsCheckInStartEncounter':                                '0',
+        'SEEncounterDetails.IsRequiredToUpdateBedBoardPayers':    'False',
+        'hdnAlertTypeForProviderOverlappingEncounter':            '0',
+        'hdnAlertOverlappingAppointmentEncounter':                '1',
+        'hdnchkSEIsAccident':                                     'false',
+        'SEEncounterDetails.TelemedicineSendMail':                '1,2,3',
+        'SEEncounterDetails.IsAntenatalVisit':                    '0',
+        'SEEncounterDetails.SEEncounterTypeID':                   visitTypeId,
+        'SEEncounterDetails.SEProviderID':                        INSYNC_PROVIDER.ResourceId,
+        'SEEncounterDetails.SEReferringProviderId':               '0',
+        'SEEncounterDetails.IsUpdateRefPhyPD':                    '0',
+        'SEEncounterDetails.SEOldReferringProviderId':            '0',
+        'SEEncounterDetails.SEPrimaryFacilityID':                 INSYNC_PROVIDER.FacilityId,
+        'SEEncounterDetails.SEPOSCode':                           '10',
+        'SEEncounterDetails.SEVisitStartDate':                    visitDate,
+        'SEEncounterDetails.SEVisitStartTime':                    visitTime,
+        'SEEncounterDetails.SEEncounterStartDate':                visitDate,
+        'SEEncounterDetails.SEEncounterStartTime':                visitTime,
+        'SEEncounterDetails.SEEncounterStartDateTime':            visitDate,
+        'SEEncounterDetails.SEVisitStartDateTime':                `${visitDate} ${visitTime}`,
+        'SEEncounterDetails.IsTelemedicine':                      'true',
+        'SEEncounterDetails.TeleDefaultsCPTAction':               '0',
+        'SEEncounterDetails.TeleDefaultsMasterID':                '0',
+        'SEEncounterDetails.TeleDefaultsPOSAction':               '0',
+        'SEEncounterDetails.InitialReEvalID':                     '0',
+        'SEEncounterDetails.SEPatientPayerId':                    primaryPayerID,
+        'SEEncounterDetails.SEPatientPayerId1':                   secondaryPayerID,
+        'oldSEPatientPayerId':                                    primaryPayerID,
+        'oldSEPatientPayerId1':                                   secondaryPayerID,
+        'oldSEPatientPayerId2':                                   '0',
+        'SEClinicalSummary_EncounterTypeIDs':                     '0',
+        'SEEncounterDetails.SECPTModifiers':                      `${cptFull},,,,,1.00,&*%^1,&*%^1`,
+        'SEEncounterDetails.SECPTDescription':                    `${cptFull} -  ${CPT_DESC[duration] || CPT_DESC[45]}(Units: 1.00) `,
+        'SEEncounterDetails.SECPTCode':                           cptFull,
+        'SEEncounterDetails_SECPTCode':                           cptFull,
+        'SEEncounterDetails.ChargeCodeId':                        '0',
+        'SEEncounterDetails.SERevenueCode':                       'NULL',
+        'SEEncounterDetails.SEBillable':                          'true',
+        'SEEncounterDetails.SEIsAccident':                        'false',
+        'SEEncounterDetails.IsSelfPay':                           'false',
+        'SEEncounterDetails.SEAuthorizationId':                   '0',
+        'SEEncounterDetails.SEAuthorizationId1':                  '0',
+        'SEEncounterDetails.CaseManagementID':                    '0',
+        'SEEncounterDetails.CaseEncounterConfirm':                '0',
+        'SEEncounterDetails.ProgramManagementID':                 programId,
+        'SEEncounterDetails.ProgramManagementDetailID':           programDetailId,
+        'SEEncounterDetails.ProgramName':                         programName,
+        'SEEncounterDetails.IsUpdateMasterLevelOfCare':           '0',
+        'SEEncounterDetails.SEEncounterCategoryId':               '0',
+        'SEEncounterDetails.ProgramEncounterConfirm':             '2',
+        'SEEncounterDetails.SEChargeID':                          '0',
+        'SEEncounterDetails.IsChargeGeneratedFlage':              'False',
+        'SEEncounterDetails.SEDuration':                          String(duration),
+        'SEEncounterDetails.EncounterId':                         encounterId,
+        'SEEncounterDetails.SEVisitID':                           String(appt.insync_visit_id),
+        'SEEncounterDetails.SEVisitTypeID':                       '0',
+        'SEEncounterDetails.ScheduleID':                          INSYNC_PROVIDER.ScheduleID,
+        'SEEncounterDetails.VisitDuration':                       String(duration),
+        'SEEncounterDetails.SEPatientId':                         String(client.insync_patient_id),
+        'SEEncounterDetails.SEPatientName':                       patientName,
+        'SEEncounterDetails.IsClosedEncounter':                   '1',
+        'SEEncounterDetails.hdnEncounterTimeLog':                 '1',
+        'SEEncounterDetails.IsFetchEncounterTypeWithMapping':     'True',
+        'SEEncounterDetails.PrimaryInsurance':                    client.insync_data?.primaryPayerName || '',
+        'SEEncounterDetails.SecondaryInsurance':                  client.insync_data?.secondaryPayerName || '',
+        'SEEncounterDetails.SEProviderName':                      INSYNC_PROVIDER.Provider,
+        'SEEncounterDetails.SEEncounterType':                     (VISIT_TYPE_DESC[duration] || VISIT_TYPE_DESC[45]).trim(),
+        'SEEncounterDetails.SEPOSDescription':                    "Telehealth Provided in Patient's Home",
+        'ChartWOScheduler':                                       '0',
+        'WEResourceId':                                           INSYNC_PROVIDER.ResourceId,
+        'ResourceTypeId':                                         '0',
+        'SEEncounterDetails.OldSEEncounterTypeID':                visitTypeId,
+        'SEEncounterDetails.BedBookDetailID':                     '0',
+        'SEEncounterDetails.hdnAllowToUpdateAntenatalVisitFlag':  '3',
+        'ISCurrentDate':                                          visitDate,
+        'EncounterDataID':                                        '0',
+        'X-Requested-With':                                       'XMLHttpRequest',
+      }).toString(),
+    });
+
+    // 6. Save filled note HTML
+    const saveRes  = await insync.post('/ConfigurePracticeTemplate/SaveDynamicTemplateDetails', {
+      'data[FormTemplateDetailId]':   '7',
+      'data[SectionConfigurationId]': '0',
+      'data[DynamicHTML]':            filledHtml,
+      'data[PatientDelegateId]':      '0',
+    }, cookie);
+    const saveJson = await saveRes.json().catch(() => null);
+    if (saveJson?.Status !== 1)
+      return res.status(400).json({ error: 'InSync did not confirm note save', raw: saveJson });
+
+    // 7. Persist encounter ID in OO
+    await supabase.from('oo_appointments')
+      .update({ insync_encounter_id: encounterId, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+
+    res.json({ ok: true, insync_encounter_id: encounterId });
+  } catch (err) {
+    console.error('[push-note-to-insync]', err);
     res.status(500).json({ error: err.message });
   }
 });

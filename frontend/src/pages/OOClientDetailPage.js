@@ -150,6 +150,8 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
   const [showNoteModal,  setShowNoteModal]  = useState(false);
   const [pushing,        setPushing]        = useState(false);
   const [pushMsg,        setPushMsg]        = useState('');
+  const [pushingNote,    setPushingNote]    = useState(false);
+  const [pushNoteMsg,    setPushNoteMsg]    = useState('');
 
   useEffect(() => {
     setAppt(initialAppt);
@@ -242,6 +244,20 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
       await api.delete(`/oo/appointments/${appt.id}`);
       onDelete(appt.id);
     } catch (ex) { alert(ex.message); setDeleting(false); }
+  }
+
+  async function handlePushNoteToInsync() {
+    if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync?`)) return;
+    setPushingNote(true); setPushNoteMsg('');
+    try {
+      const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
+      setPushNoteMsg(`✓ Note saved in InSync (encounter ${res.insync_encounter_id})`);
+      setAppt(a => ({ ...a, insync_encounter_id: res.insync_encounter_id }));
+    } catch (ex) {
+      setPushNoteMsg(`Error: ${ex.message}`);
+    } finally {
+      setPushingNote(false);
+    }
   }
 
   async function handlePushToInsync() {
@@ -367,6 +383,24 @@ function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
             {pushing ? 'Pushing…' : appt.insync_visit_id ? '✓ In InSync' : 'Push to InSync'}
           </button>
           {pushMsg && <span style={{ fontSize: '0.7rem', color: pushMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushMsg}</span>}
+          {appt.insync_visit_id && fields && (
+            <button
+              className="btn btn-xs"
+              type="button"
+              onClick={handlePushNoteToInsync}
+              disabled={pushingNote}
+              style={{
+                background: appt.insync_encounter_id ? '#dcfce7' : '#1e40af',
+                color: appt.insync_encounter_id ? '#15803d' : 'white',
+                border: `1px solid ${appt.insync_encounter_id ? '#86efac' : '#1e40af'}`,
+                fontWeight: 600,
+              }}
+              title={appt.insync_encounter_id ? `Note already in InSync (encounter ${appt.insync_encounter_id})` : 'Push session note to InSync encounter'}
+            >
+              {pushingNote ? 'Pushing Note…' : appt.insync_encounter_id ? '✓ Note in InSync' : 'Push Note to InSync'}
+            </button>
+          )}
+          {pushNoteMsg && <span style={{ fontSize: '0.7rem', color: pushNoteMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushNoteMsg}</span>}
           {appt.note_sent_at && (
             <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>
           )}
