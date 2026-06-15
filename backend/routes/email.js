@@ -107,9 +107,13 @@ router.post('/check-replies', async (req, res) => {
         .eq('session_date', info.sessionDate)
         .eq('status', 'completed');
 
-      const match = (sessions || []).find(s => {
+      // Sort longest internal_name first so the most specific match wins
+      const sorted = (sessions || []).slice().sort((a, b) =>
+        (b.group?.internal_name?.length || 0) - (a.group?.internal_name?.length || 0)
+      );
+      const match = sorted.find(s => {
         const internal = s.group?.internal_name || '';
-        return info.subjectPrefix.toLowerCase().startsWith(internal.toLowerCase().slice(0, 20));
+        return internal && info.subjectPrefix.toLowerCase().startsWith(internal.toLowerCase());
       });
 
       if (!match) { skipped++; continue; }
