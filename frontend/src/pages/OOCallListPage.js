@@ -33,11 +33,22 @@ function age(dob) {
   return a;
 }
 
-function getRolling7() {
-  const today = new Date();
-  const start = today.toISOString().split('T')[0];
-  const end   = new Date(today.getTime() + 6 * 86400000).toISOString().split('T')[0];
-  return { start, end };
+function getWeekBounds(anchor) {
+  const d = new Date(anchor + 'T12:00:00Z');
+  const sun = new Date(d);
+  sun.setUTCDate(d.getUTCDate() - d.getUTCDay());
+  const sat = new Date(sun);
+  sat.setUTCDate(sun.getUTCDate() + 6);
+  return { start: sun.toISOString().split('T')[0], end: sat.toISOString().split('T')[0] };
+}
+
+function fmtWeekLabel(start, end) {
+  if (!start) return '';
+  const fmt = (iso) => {
+    const [, m, d] = iso.split('-');
+    return `${parseInt(m)}/${parseInt(d)}`;
+  };
+  return `${fmt(start)} – ${fmt(end)}`;
 }
 
 // ── Phone with copy button ────────────────────────────────────────────────────
@@ -484,13 +495,16 @@ function CallRow({ appt: initialAppt, selectedClientId, onSelectClient, onUpdate
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function OOCallListPage() {
+  const today = new Date().toISOString().split('T')[0];
+  const [anchor, setAnchor]               = useState(today);
   const [appts,           setAppts]           = useState([]);
   const [loading,         setLoading]         = useState(true);
   const [selectedClientId, setSelectedClientId] = useState(null);
 
-  const { start, end } = getRolling7();
+  const { start, end } = getWeekBounds(anchor);
 
   useEffect(() => {
+    setLoading(true);
     api.get(`/oo/appointments?week_start=${start}&week_end=${end}`)
       .then(d => {
         const sorted = (Array.isArray(d) ? d : [])
@@ -500,7 +514,13 @@ export default function OOCallListPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []); // eslint-disable-line
+  }, [start, end]);
+
+  function shiftWeek(dir) {
+    const d = new Date(start + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() + dir * 7);
+    setAnchor(d.toISOString().split('T')[0]);
+  }
 
   function handleUpdate(updated) {
     setAppts(prev => prev.map(a => a.id === updated.id ? updated : a));
@@ -524,14 +544,35 @@ export default function OOCallListPage() {
 
       {/* ── Left: call list ── */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '28px 24px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 20 }}>
-          <h2 style={{ margin: 0 }}>Calls</h2>
-          <span style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>Next 7 days · ▸ expand for notes</span>
-          {!loading && (
-            <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-              {pending.length} to call · {done.length} called
-            </span>
-          )}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20, flexWrap: 'wrap', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
+            <h2 style={{ margin: 0 }}>Calls</h2>
+            <span style={{ fontSize: '0.78rem', color: 'var(--gray-400)' }}>▸ expand for notes</span>
+            {!loading && (
+              <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+                {pending.length} to call · {done.length} called
+              </span>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <button
+              onClick={() => shiftWeek(-1)}
+              style={{ padding: '4px 10px', fontSize: '0.82rem', border: '1px solid var(--gray-200)', background: 'white', borderRadius: 5, cursor: 'pointer', color: 'var(--gray-600)' }}
+            >←</button>
+            <button
+              onClick={() => setAnchor(today)}
+              style={{
+                padding: '4px 14px', fontSize: '0.82rem', border: '1px solid var(--gray-200)',
+                background: 'white', borderRadius: 5, cursor: 'pointer',
+                minWidth: 130, fontWeight: start <= today && today <= end ? 700 : 400,
+                color: 'var(--navy)',
+              }}
+            >{fmtWeekLabel(start, end)}</button>
+            <button
+              onClick={() => shiftWeek(1)}
+              style={{ padding: '4px 10px', fontSize: '0.82rem', border: '1px solid var(--gray-200)', background: 'white', borderRadius: 5, cursor: 'pointer', color: 'var(--gray-600)' }}
+            >→</button>
+          </div>
         </div>
 
         {loading ? (
@@ -539,7 +580,7 @@ export default function OOCallListPage() {
         ) : appts.length === 0 ? (
           <div className="empty-state">
             <div className="empty-icon">📞</div>
-            <p>No scheduled sessions in the next 7 days.</p>
+            <p>No scheduled sessions this week.</p>
           </div>
         ) : (
           <>
