@@ -112,6 +112,7 @@ async function sendSoapNoteEmail(sessionId) {
     console.log(`[mailer] Sent SOAP note email for session ${sessionId}`);
   } catch (err) {
     console.error(`[mailer] Failed to send email for session ${sessionId}:`, err.message);
+    throw err;
   }
 }
 

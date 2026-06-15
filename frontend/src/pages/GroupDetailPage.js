@@ -121,8 +121,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
   async function handleSendEmail() {
     setSendingEmail(true);
     try {
-      await api.sendEmail(session.id);
-      const updated = await api.updateSession(session.id, { email_sent: true });
+      const updated = await api.sendEmail(session.id);
       onUpdate(updated);
     } catch (err) { alert('Failed to send email: ' + err.message); }
     finally { setSendingEmail(false); }

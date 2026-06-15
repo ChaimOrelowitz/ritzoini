@@ -105,7 +105,7 @@ async function autoCompleteSessions(groupId) {
       shouldEmail = !!currentNote?.trim();
     }
 
-    if (shouldEmail) await sendSoapNoteEmail(s.id);
+    if (shouldEmail) await sendSoapNoteEmail(s.id).catch(e => console.error('[auto-email]', e.message));
   }
 
   await checkGroupAutoComplete(groupId);
@@ -322,7 +322,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
       const freshNote = updates.soap_note || session.soap_note || session.notes;
       if (group?.ai_notes || freshNote?.trim()) {
-        await sendSoapNoteEmail(req.params.id);
+        await sendSoapNoteEmail(req.params.id).catch(e => console.error('[auto-email]', e.message));
       }
     }
 
@@ -767,7 +767,8 @@ router.post('/:id/send-email', requireAuth, async (req, res) => {
     const note = session.soap_note || session.notes;
     if (!note?.trim()) return res.status(400).json({ error: 'No note to send' });
     await sendSoapNoteEmail(req.params.id);
-    res.json({ success: true });
+    const { data: updated } = await supabase.from('sessions').select('*').eq('id', req.params.id).single();
+    res.json(updated || { success: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -788,7 +789,7 @@ router.post('/:id/submit-notes', requireAuth, async (req, res) => {
       })
       .eq('id', req.params.id).select().single();
     if (error) throw error;
-    await sendSoapNoteEmail(req.params.id);
+    await sendSoapNoteEmail(req.params.id).catch(e => console.error('[auto-email]', e.message));
     res.json(data);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
