@@ -1032,6 +1032,19 @@ export default function OOClientDetailPage() {
           {ehr && (
             <RSection title="EHR">
               <RField label="Name" value={ehr.name} />
+              {client.insync_patient_id && (
+                <div style={{ marginBottom: 10 }}>
+                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>Facesheet</div>
+                  <a
+                    href={`https://thedscenter.insynchcs.com/facesheet?pid=${client.insync_patient_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ fontSize: '0.82rem', color: '#1e40af', textDecoration: 'underline', fontWeight: 500 }}
+                  >
+                    Open in InSync ↗
+                  </a>
+                </div>
+              )}
             </RSection>
           )}
 
