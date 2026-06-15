@@ -4,7 +4,7 @@ const supabase = require('../db/supabase');
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 // In-memory cache — loaded from Supabase on startup, persisted on change
-let emailEnabled = process.env.EMAIL_ENABLED === 'true';
+let emailEnabled = process.env.EMAIL_ENABLED !== 'false';
 
 async function loadEmailEnabled() {
   try {
