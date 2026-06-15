@@ -19,11 +19,17 @@ router.get('/referral-sources', requireAuth, async (req, res) => {
 });
 
 router.post('/referral-sources', requireAuth, async (req, res) => {
-  const { name, notes_email } = req.body;
+  const { name, notes_email, type, ehr_username, ehr_password } = req.body;
   if (!name) return res.status(400).json({ error: 'name required' });
   const { data, error } = await supabase
     .from('oo_referral_sources')
-    .insert({ name: name.trim(), notes_email: notes_email?.trim() || null })
+    .insert({
+      name: name.trim(),
+      type: type || 'referral',
+      notes_email:   type === 'ehr' ? null  : (notes_email?.trim()  || null),
+      ehr_username:  type === 'ehr' ? (ehr_username?.trim() || null) : null,
+      ehr_password:  type === 'ehr' ? (ehr_password?.trim() || null) : null,
+    })
     .select()
     .single();
   if (error) return res.status(500).json({ error: error.message });
@@ -31,10 +37,13 @@ router.post('/referral-sources', requireAuth, async (req, res) => {
 });
 
 router.put('/referral-sources/:id', requireAuth, async (req, res) => {
-  const { name, notes_email } = req.body;
+  const { name, notes_email, type, ehr_username, ehr_password } = req.body;
   const updates = {};
-  if (name !== undefined) updates.name = name.trim();
-  if (notes_email !== undefined) updates.notes_email = notes_email?.trim() || null;
+  if (name         !== undefined) updates.name         = name.trim();
+  if (type         !== undefined) updates.type         = type || 'referral';
+  if (notes_email  !== undefined) updates.notes_email  = notes_email?.trim()  || null;
+  if (ehr_username !== undefined) updates.ehr_username = ehr_username?.trim() || null;
+  if (ehr_password !== undefined) updates.ehr_password = ehr_password?.trim() || null;
   const { data, error } = await supabase
     .from('oo_referral_sources')
     .update(updates)
@@ -59,7 +68,7 @@ router.delete('/referral-sources/:id', requireAuth, async (req, res) => {
 router.get('/', requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('oo_clients')
-    .select('*, oo_referral_sources(id, name)')
+    .select('*, referral:oo_referral_sources!referral_source_id(id, name), ehr:oo_referral_sources!ehr_id(id, name)')
     .order('last_name')
     .order('first_name');
   if (error) return res.status(500).json({ error: error.message });
@@ -68,7 +77,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 router.post('/', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
-          referral_source_id, program, status } = req.body;
+          referral_source_id, ehr_id, program, status } = req.body;
   const { data, error } = await supabase
     .from('oo_clients')
     .insert({
@@ -81,10 +90,11 @@ router.post('/', requireAuth, async (req, res) => {
       email:      email?.trim()  || null,
       mrn:        mrn?.trim()    || null,
       referral_source_id: referral_source_id || null,
+      ehr_id:     ehr_id || null,
       program:    program?.trim() || null,
       status:     status || 'active',
     })
-    .select('*, oo_referral_sources(id, name)')
+    .select('*, referral:oo_referral_sources!referral_source_id(id, name), ehr:oo_referral_sources!ehr_id(id, name)')
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -92,7 +102,7 @@ router.post('/', requireAuth, async (req, res) => {
 
 router.put('/:id', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
-          referral_source_id, program, status,
+          referral_source_id, ehr_id, program, status,
           mother_name, mother_phone, mother_can_text,
           father_name, father_phone, father_can_text, notes } = req.body;
   const updates = {};
@@ -105,6 +115,7 @@ router.put('/:id', requireAuth, async (req, res) => {
   if (email        !== undefined) updates.email        = email?.trim()  || null;
   if (mrn          !== undefined) updates.mrn          = mrn?.trim()    || null;
   if (referral_source_id !== undefined) updates.referral_source_id = referral_source_id || null;
+  if (ehr_id       !== undefined) updates.ehr_id       = ehr_id || null;
   if (program      !== undefined) updates.program      = program?.trim() || null;
   if (status       !== undefined) updates.status       = status;
   if (mother_name     !== undefined) updates.mother_name     = mother_name?.trim()  || null;
@@ -120,7 +131,7 @@ router.put('/:id', requireAuth, async (req, res) => {
     .from('oo_clients')
     .update(updates)
     .eq('id', req.params.id)
-    .select('*, oo_referral_sources(id, name)')
+    .select('*, referral:oo_referral_sources!referral_source_id(id, name), ehr:oo_referral_sources!ehr_id(id, name)')
     .single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -613,6 +624,15 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
   const rows = insyncData?.data;
   if (!Array.isArray(rows)) return res.status(502).json({ error: 'Unexpected InSync response — login may have failed' });
 
+  // Find the InSync EHR record so we can tag synced clients
+  const { data: insyncEhr } = await supabase
+    .from('oo_referral_sources')
+    .select('id')
+    .eq('type', 'ehr')
+    .ilike('name', '%insync%')
+    .maybeSingle();
+  const insyncEhrId = insyncEhr?.id || null;
+
   let created = 0, updated = 0, skipped = 0, fs_synced = 0;
 
   for (const row of rows) {
@@ -660,6 +680,7 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
         treatment_plan:      existingInsyncData.treatment_plan      || [],
         facesheet_synced_at: existingInsyncData.facesheet_synced_at || null,
       },
+      ...(insyncEhrId ? { ehr_id: insyncEhrId } : {}),
       updated_at: new Date().toISOString(),
     };
 
@@ -1019,7 +1040,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
 router.get('/:id', requireAuth, async (req, res) => {
   const { data, error } = await supabase
     .from('oo_clients')
-    .select('*, oo_referral_sources(id, name, notes_email)')
+    .select('*, referral:oo_referral_sources!referral_source_id(id, name, notes_email), ehr:oo_referral_sources!ehr_id(id, name)')
     .eq('id', req.params.id)
     .single();
   if (error) return res.status(404).json({ error: 'Client not found' });

@@ -337,7 +337,7 @@ function CallRow({ appt: initialAppt, selectedClientId, onSelectClient, onUpdate
   }, [initialAppt]);
 
   const c  = appt.oo_clients;
-  const rs = c?.oo_referral_sources;
+  const rs = c?.referral;
   const isSelected = selectedClientId === appt.client_id;
 
   async function patch(fields) {

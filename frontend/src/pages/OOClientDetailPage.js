@@ -122,7 +122,7 @@ const modalLabelSt = { fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-
 
 const EMPTY_EDIT_FORM = {
   first_name: '', last_name: '', dob: '', sex: '', phone: '', mobile: '',
-  email: '', mrn: '', referral_source_id: '', status: 'active',
+  email: '', mrn: '', referral_source_id: '', ehr_id: '', status: 'active',
   mother_name: '', mother_phone: '', father_name: '', father_phone: '',
   mother_can_text: false, father_can_text: false,
 };
@@ -605,7 +605,7 @@ export default function OOClientDetailPage() {
     Promise.all([
       loadClientData(),
       loadAppts(),
-      api.get('/oo/clients/referral-sources').then(setSources).catch(() => {}),
+      api.get('/oo/clients/referral-sources').then(all => setSources(Array.isArray(all) ? all : [])).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
@@ -621,6 +621,7 @@ export default function OOClientDetailPage() {
       email:        client.email        || '',
       mrn:          client.mrn          || '',
       referral_source_id: client.referral_source_id || '',
+      ehr_id:       client.ehr_id       || '',
       status:       client.status       || 'active',
       mother_name:     client.mother_name     || '',
       mother_phone:    client.mother_phone    || '',
@@ -636,7 +637,7 @@ export default function OOClientDetailPage() {
     e.preventDefault();
     setSavingClient(true); setClientSaveErr('');
     try {
-      const payload = { ...editForm, referral_source_id: editForm.referral_source_id || null };
+      const payload = { ...editForm, referral_source_id: editForm.referral_source_id || null, ehr_id: editForm.ehr_id || null };
       const updated = await api.put(`/oo/clients/${id}`, payload);
       setClient(updated);
       setShowEditModal(false);
@@ -713,7 +714,8 @@ export default function OOClientDetailPage() {
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!client) return null;
 
-  const rs  = client.oo_referral_sources;
+  const rs  = client.referral;
+  const ehr = client.ehr;
   const raw = client.insync_data || {};
   const age = calcAge(client.dob);
   const sexBadge = client.sex === 'M' ? 'M' : client.sex === 'F' ? 'F' : client.sex ? 'U' : null;
@@ -770,7 +772,8 @@ export default function OOClientDetailPage() {
               </span>
             )}
             <span className={`badge badge-${client.status}`}>{client.status}</span>
-            {rs && <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{rs.name}</span>}
+            {rs  && <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{rs.name}</span>}
+            {ehr && <span style={{ background: '#1e40af', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{ehr.name}</span>}
             <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
           </div>
 
@@ -1025,6 +1028,13 @@ export default function OOClientDetailPage() {
             </RSection>
           )}
 
+          {/* EHR */}
+          {ehr && (
+            <RSection title="EHR">
+              <RField label="Name" value={ehr.name} />
+            </RSection>
+          )}
+
           {/* Insurance */}
           <RSection title="Insurance">
             <RField label="Current Payer" value={client.payer_plan_name} />
@@ -1141,11 +1151,19 @@ export default function OOClientDetailPage() {
                     </select>
                   </div>
 
-                  <div style={{ gridColumn: 'span 2', display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <label style={modalLabelSt}>Referral Source</label>
                     <select className="form-input" value={editForm.referral_source_id} onChange={e => setEditForm(f => ({ ...f, referral_source_id: e.target.value }))} style={{ fontSize: '0.85rem' }}>
                       <option value="">— None —</option>
-                      {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      {sources.filter(s => s.type !== 'ehr').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <label style={modalLabelSt}>EHR</label>
+                    <select className="form-input" value={editForm.ehr_id} onChange={e => setEditForm(f => ({ ...f, ehr_id: e.target.value }))} style={{ fontSize: '0.85rem' }}>
+                      <option value="">— None —</option>
+                      {sources.filter(s => s.type === 'ehr').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                   </div>
 

@@ -100,7 +100,7 @@ router.get('/', requireAuth, async (req, res) => {
   const { client_id, week_start, week_end } = req.query;
   let query = supabase
     .from('oo_appointments')
-    .select('*, oo_clients(id, first_name, last_name, mrn, phone, mobile, status, referral_source_id, oo_referral_sources(id, name, notes_email))')
+    .select('*, oo_clients(id, first_name, last_name, mrn, phone, mobile, status, referral_source_id, referral:oo_referral_sources!referral_source_id(id, name, notes_email))')
     .order('date').order('time');
 
   if (client_id)  query = query.eq('client_id', client_id);
@@ -121,7 +121,7 @@ router.get('/calls', requireAuth, async (req, res) => {
   const we = windowEnd.toISOString().split('T')[0];
 
   const [{ data: clients }, { data: appts }] = await Promise.all([
-    supabase.from('oo_clients').select('id, first_name, last_name, mrn, referral_source_id, insync_data, oo_referral_sources(name)').eq('status', 'active').order('last_name'),
+    supabase.from('oo_clients').select('id, first_name, last_name, mrn, referral_source_id, insync_data, referral:oo_referral_sources!referral_source_id(name)').eq('status', 'active').order('last_name'),
     supabase.from('oo_appointments').select('*').gte('date', ws).lte('date', we).eq('status', 'scheduled'),
   ]);
 
@@ -344,13 +344,13 @@ router.post('/:id/send-note', requireAuth, async (req, res) => {
     // Fetch appointment + client + referral source
     const { data: appt, error: ae } = await supabase
       .from('oo_appointments')
-      .select('*, oo_clients(id, first_name, last_name, mrn, referral_source_id, oo_referral_sources(name, notes_email))')
+      .select('*, oo_clients(id, first_name, last_name, mrn, referral_source_id, referral:oo_referral_sources!referral_source_id(name, notes_email))')
       .eq('id', req.params.id)
       .single();
     if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
 
     const client = appt.oo_clients;
-    const ref    = client?.oo_referral_sources;
+    const ref    = client?.referral;
     const toEmail = ref?.notes_email;
     if (!toEmail) return res.status(400).json({ error: 'No notes_email for this referral source' });
 

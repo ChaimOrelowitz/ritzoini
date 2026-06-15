@@ -82,9 +82,9 @@ function ClientCard({ client, nextAppt }) {
         </div>
       )}
 
-      {client.oo_referral_sources && (
+      {client.referral && (
         <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>
-          {client.oo_referral_sources.name}
+          {client.referral.name}
         </span>
       )}
 
@@ -314,7 +314,7 @@ export default function OOClientsPage() {
       (c.first_name || '').toLowerCase().includes(q) ||
       (c.last_name  || '').toLowerCase().includes(q) ||
       (c.mrn        || '').toLowerCase().includes(q) ||
-      (c.oo_referral_sources?.name || '').toLowerCase().includes(q)
+      (c.referral?.name || '').toLowerCase().includes(q)
     );
   });
 
@@ -421,7 +421,7 @@ export default function OOClientsPage() {
               <label style={labelSt}>Referral Source</label>
               <select className="input" value={assignSourceId} onChange={e => { setAssignSourceId(e.target.value); setAssignPreview(null); }} style={{ fontSize: '0.85rem' }}>
                 <option value="">— Select —</option>
-                {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {sources.filter(s => s.type !== 'ehr').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
               </select>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 300px' }}>
@@ -577,7 +577,7 @@ export default function OOClientsPage() {
                     <label style={labelSt}>Referral Source</label>
                     <select className="input" value={form.referral_source_id} onChange={e => setForm(f => ({ ...f, referral_source_id: e.target.value }))} style={{ fontSize: '0.85rem' }}>
                       <option value="">— None —</option>
-                      {sources.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                      {sources.filter(s => s.type !== 'ehr').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                   </div>
                 </div>
