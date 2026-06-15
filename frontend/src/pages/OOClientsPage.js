@@ -354,7 +354,7 @@ export default function OOClientsPage() {
           style={{ width: 240, fontSize: '0.85rem' }}
         />
         <button className="btn btn-outline btn-sm" onClick={handleSync} disabled={syncing}>
-          {syncing ? 'Syncing…' : 'Sync from InSync'}
+          {syncing ? 'Syncing…' : 'Sync from InSync DSC'}
         </button>
         <button className="btn btn-outline btn-sm" onClick={() => setShowInSyncSettings(s => !s)} title="Configure InSync credentials">⚙</button>
         <button className="btn btn-outline btn-sm" onClick={() => setShowImport(s => !s)}>Import Excel</button>
