@@ -80,6 +80,10 @@ export default function OOClientDetailPage() {
   const [notesSaveState,  setNotesSaveState]  = useState('idle');
   const notesSaveTimer = useRef(null);
 
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleting,          setDeleting]          = useState(false);
+  const [archiving,         setArchiving]         = useState(false);
+
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
   const [debugFields,     setDebugFields]     = useState(null);
@@ -200,6 +204,37 @@ export default function OOClientDetailPage() {
     finally { setSyncingFs(false); }
   }
 
+  async function handleArchiveToggle() {
+    const newStatus = client.status === 'archived' ? 'active' : 'archived';
+    setArchiving(true);
+    try {
+      const updated = await api.put(`/oo/clients/${id}`, { status: newStatus });
+      setClient(updated);
+    } catch (ex) { alert(ex.message); }
+    finally { setArchiving(false); }
+  }
+
+  async function handleArchiveFromDeleteModal() {
+    setDeleting(true);
+    try {
+      const updated = await api.put(`/oo/clients/${id}`, { status: 'archived' });
+      setClient(updated);
+      setShowDeleteConfirm(false);
+    } catch (ex) { alert(ex.message); }
+    finally { setDeleting(false); }
+  }
+
+  async function handleDeletePermanently() {
+    setDeleting(true);
+    try {
+      await api.delete(`/oo/clients/${id}`);
+      navigate('/oo/clients');
+    } catch (ex) {
+      alert(ex.message);
+      setDeleting(false);
+    }
+  }
+
   async function debugNoteFields() {
     setDebuggingFields(true); setDebugFields(null);
     try { setDebugFields(await api.get(`/oo/clients/${id}/debug-note-fields`)); }
@@ -254,6 +289,12 @@ export default function OOClientDetailPage() {
     <div style={{ padding: '24px 32px 48px', maxWidth: 1400 }}>
       <button className="back-link" onClick={() => navigate('/oo/clients')}>← Back to Clients</button>
 
+      {client.status === 'archived' && (
+        <div style={{ marginBottom: 14, padding: '8px 14px', background: '#f3f4f6', border: '1px solid #d1d5db', borderRadius: 6, fontSize: '0.8rem', color: '#6b7280', fontWeight: 600 }}>
+          This client is archived — hidden from the main clients list and Calls screen.
+        </div>
+      )}
+
       {/* ── Header ── */}
       <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', marginBottom: 20 }}>
 
@@ -292,6 +333,21 @@ export default function OOClientDetailPage() {
             {rs  && <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{rs.name}</span>}
             {ehr && <span style={{ background: '#1e40af', color: '#fff', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, letterSpacing: '0.02em' }}>{ehr.name}</span>}
             <button className="btn btn-outline btn-sm" onClick={openEditClient}>Edit Client</button>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleArchiveToggle}
+              disabled={archiving}
+              style={{ color: '#6b7280', borderColor: '#d1d5db' }}
+            >
+              {archiving ? '…' : client.status === 'archived' ? 'Unarchive' : 'Archive'}
+            </button>
+            <button
+              className="btn btn-sm"
+              onClick={() => setShowDeleteConfirm(true)}
+              style={{ color: '#dc2626', border: '1px solid #fca5a5', background: 'white' }}
+            >
+              Delete
+            </button>
           </div>
 
           {/* DOB (age) · last session duration */}
@@ -628,6 +684,37 @@ export default function OOClientDetailPage() {
         </div>
       </div>
 
+      {/* ── Delete Confirmation Modal ── */}
+      {showDeleteConfirm && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ width: 460, maxWidth: '95vw' }}>
+            <div className="modal-header">
+              <h3 style={{ margin: 0, fontSize: '1rem', fontWeight: 700, color: '#dc2626' }}>
+                Delete {client.first_name} {client.last_name}?
+              </h3>
+              <button onClick={() => setShowDeleteConfirm(false)} disabled={deleting} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', lineHeight: 1 }}>✕</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: '0.85rem', color: 'var(--gray-700)', lineHeight: 1.6, margin: 0 }}>
+                This permanently removes all their appointments, notes, and transcripts and cannot be undone.
+                Archive instead to hide them without losing data.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-sm" onClick={handleArchiveFromDeleteModal} disabled={deleting}
+                style={{ marginRight: 'auto', background: '#059669', borderColor: '#059669', color: 'white' }}>
+                Archive Instead
+              </button>
+              <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowDeleteConfirm(false)} disabled={deleting}>Cancel</button>
+              <button type="button" className="btn btn-sm" onClick={handleDeletePermanently} disabled={deleting}
+                style={{ background: '#dc2626', borderColor: '#dc2626', color: 'white' }}>
+                {deleting ? 'Deleting…' : 'Delete Permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Edit Client Modal ── */}
       {showEditModal && (
         <div className="modal-overlay">
@@ -678,6 +765,7 @@ export default function OOClientDetailPage() {
                     <select className="form-input" value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))} style={{ fontSize: '0.85rem' }}>
                       <option value="active">Active</option>
                       <option value="inactive">Inactive</option>
+                      {editForm.status === 'archived' && <option value="archived">Archived</option>}
                     </select>
                   </div>
 

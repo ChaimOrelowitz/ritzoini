@@ -66,11 +66,13 @@ router.delete('/referral-sources/:id', requireAuth, async (req, res) => {
 // ── Clients ──────────────────────────────────────────────────────
 
 router.get('/', requireAuth, async (req, res) => {
-  const { data, error } = await supabase
+  let q = supabase
     .from('oo_clients')
     .select('*, referral:oo_referral_sources!referral_source_id(id, name), ehr:oo_referral_sources!ehr_id(id, name)')
     .order('last_name')
     .order('first_name');
+  if (req.query.show_archived !== 'true') q = q.neq('status', 'archived');
+  const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
@@ -138,12 +140,24 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 router.delete('/:id', requireAuth, async (req, res) => {
-  const { error } = await supabase
-    .from('oo_clients')
-    .delete()
-    .eq('id', req.params.id);
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ ok: true });
+  const { id } = req.params;
+  try {
+    // Get appointment IDs so we can cascade through transcripts
+    const { data: appts } = await supabase.from('oo_appointments').select('id').eq('client_id', id);
+    const apptIds = (appts || []).map(a => a.id);
+
+    if (apptIds.length) {
+      await supabase.from('zoom_call_transcripts').delete().in('matched_appointment_id', apptIds);
+    }
+    await supabase.from('zoom_call_transcripts').delete().eq('matched_client_id', id);
+    await supabase.from('oo_appointments').delete().eq('client_id', id);
+
+    const { error } = await supabase.from('oo_clients').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── InSync Excel Import ──────────────────────────────────────────
@@ -651,11 +665,11 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
     // Match by MRN first, then first+last+dob, then first+last
     let existing = null;
     if (mrn) {
-      const { data } = await supabase.from('oo_clients').select('id, insync_data').eq('mrn', mrn).maybeSingle();
+      const { data } = await supabase.from('oo_clients').select('id, insync_data, status').eq('mrn', mrn).maybeSingle();
       existing = data;
     }
     if (!existing && first && last) {
-      let q = supabase.from('oo_clients').select('id, insync_data').eq('first_name', first).eq('last_name', last);
+      let q = supabase.from('oo_clients').select('id, insync_data, status').eq('first_name', first).eq('last_name', last);
       if (dob) q = q.eq('dob', dob);
       const { data } = await q.maybeSingle();
       existing = data;
@@ -667,7 +681,9 @@ router.post('/sync-insync', requireAuth, async (req, res) => {
     // Preserve existing dx/tp so the basic sync doesn't wipe them
     const existingInsyncData = existing?.insync_data || {};
     const payload = {
-      first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email, status,
+      first_name: first, last_name: last, dob, mrn, sex, phone, mobile, email,
+      // Don't overwrite a locally-archived client's status back to active/inactive
+      ...(!existing || existing.status !== 'archived' ? { status } : {}),
       insync_patient_id: patientId,
       address:           (row.Address || '').trim() || null,
       payer_plan_name:   (row.PayerPlanName || '').trim() || null,

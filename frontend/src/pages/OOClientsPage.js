@@ -51,20 +51,22 @@ const EMPTY_FORM = {
 function ClientCard({ client, nextAppt }) {
   const navigate = useNavigate();
   const age = calcAge(client.dob);
+  const isArchived = client.status === 'archived';
 
   return (
     <div
       onClick={() => navigate(`/oo/clients/${client.id}`)}
       style={{
         display: 'flex', alignItems: 'center', gap: 14, padding: '9px 14px',
-        borderRadius: 8, background: 'white', border: '1px solid var(--gray-100)',
+        borderRadius: 8, background: isArchived ? 'var(--gray-50)' : 'white',
+        border: '1px solid var(--gray-100)', opacity: isArchived ? 0.7 : 1,
         cursor: 'pointer', marginBottom: 5, transition: 'background 0.1s, box-shadow 0.1s',
       }}
-      onMouseEnter={e => { e.currentTarget.style.background = 'var(--gray-50)'; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)'; }}
-      onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.boxShadow = 'none'; }}
+      onMouseEnter={e => { e.currentTarget.style.background = 'var(--gray-100)'; e.currentTarget.style.boxShadow = '0 1px 4px rgba(0,0,0,0.06)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = isArchived ? 'var(--gray-50)' : 'white'; e.currentTarget.style.boxShadow = 'none'; }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>
+        <div style={{ fontWeight: 700, color: isArchived ? 'var(--gray-500)' : 'var(--navy)', fontSize: '0.9rem' }}>
           {client.last_name}, {client.first_name}
         </div>
         {nextAppt ? (
@@ -82,7 +84,13 @@ function ClientCard({ client, nextAppt }) {
         </div>
       )}
 
-      {client.referral && (
+      {isArchived && (
+        <span style={{ background: 'var(--gray-200)', color: 'var(--gray-500)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>
+          Archived
+        </span>
+      )}
+
+      {!isArchived && client.referral && (
         <span style={{ background: 'var(--navy)', color: 'rgba(255,255,255,0.9)', borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', fontWeight: 600, whiteSpace: 'nowrap', letterSpacing: '0.02em' }}>
           {client.referral.name}
         </span>
@@ -164,6 +172,9 @@ export default function OOClientsPage() {
   const [importing,    setImporting]    = useState(false);
   const fileRef = useRef();
 
+  // Archived toggle
+  const [showArchived, setShowArchived] = useState(false);
+
   // InSync
   const [showInSyncSettings, setShowInSyncSettings] = useState(false);
   const [inSyncUser, setInSyncUser] = useState('');
@@ -178,14 +189,14 @@ export default function OOClientsPage() {
   const [assignPreview, setAssignPreview] = useState(null);
   const [assignLoading, setAssignLoading] = useState(false);
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => { loadAll(false); }, []);
 
-  async function loadAll() {
+  async function loadAll(withArchived = false) {
     setLoading(true);
     try {
       const today = new Date().toISOString().split('T')[0];
       const [clientsData, sourcesData, apptData] = await Promise.all([
-        api.get('/oo/clients'),
+        api.get(withArchived ? '/oo/clients?show_archived=true' : '/oo/clients'),
         api.get('/oo/clients/referral-sources'),
         api.get(`/oo/appointments?week_start=${today}`),
       ]);
@@ -235,10 +246,10 @@ export default function OOClientsPage() {
     }
   }
 
-  async function handleDelete(id) {
-    if (!window.confirm('Delete this client?')) return;
-    await api.delete(`/oo/clients/${id}`);
-    setClients(cs => cs.filter(c => c.id !== id));
+  async function handleToggleArchived() {
+    const next = !showArchived;
+    setShowArchived(next);
+    await loadAll(next);
   }
 
   // ── InSync ─────────────────────────────────────────────────────────────
@@ -256,7 +267,7 @@ export default function OOClientsPage() {
     try {
       const result = await api.post('/oo/clients/sync-insync', {});
       setSyncResult(result);
-      await loadAll();
+      await loadAll(showArchived);
     } catch (err) {
       setSyncResult({ error: err.message });
     } finally { setSyncing(false); }
@@ -284,7 +295,7 @@ export default function OOClientsPage() {
         referral_source_id: assignSourceId,
         client_ids: assignPreview.matched.map(c => c.id),
       });
-      await loadAll();
+      await loadAll(showArchived);
       setShowAssign(false); setAssignPaste(''); setAssignPreview(null); setAssignSourceId('');
     } finally { setAssignLoading(false); }
   }
@@ -300,7 +311,7 @@ export default function OOClientsPage() {
       formData.append('file', file);
       const result = await api.postForm('/oo/clients/import/insync', formData);
       setImportResult(result);
-      await loadAll();
+      await loadAll(showArchived);
     } catch (err) { setImportResult({ error: err.message }); }
     finally { setImporting(false); fileRef.current.value = ''; }
   }
@@ -320,9 +331,13 @@ export default function OOClientsPage() {
 
   const sorted = [...filtered].sort((a, b) => (a.last_name || '').localeCompare(b.last_name || ''));
 
-  // Group by day of week of next scheduled appointment (0=Sun…5=Fri); else notAssigned
+  // Separate archived from active/inactive so they render in their own section
+  const archivedClients = sorted.filter(c => c.status === 'archived');
+  const mainClients     = sorted.filter(c => c.status !== 'archived');
+
+  // Group non-archived by day of week of next scheduled appointment (0=Sun…5=Fri); else notAssigned
   const groups = { notAssigned: [], 0: [], 1: [], 2: [], 3: [], 4: [], 5: [] };
-  for (const client of sorted) {
+  for (const client of mainClients) {
     const nextAppt = nextApptMap[client.id];
     if (!nextAppt) {
       groups.notAssigned.push(client);
@@ -353,6 +368,13 @@ export default function OOClientsPage() {
           onChange={e => setSearch(e.target.value)}
           style={{ width: 240, fontSize: '0.85rem' }}
         />
+        <button
+          className="btn btn-sm btn-outline"
+          onClick={handleToggleArchived}
+          style={showArchived ? { background: 'var(--gray-600)', borderColor: 'var(--gray-600)', color: 'white' } : {}}
+        >
+          {showArchived ? 'Showing Archived' : 'Show Archived'}
+        </button>
         <button className="btn btn-outline btn-sm" onClick={handleSync} disabled={syncing}>
           {syncing ? 'Syncing…' : 'Sync from InSync DSC'}
         </button>
@@ -518,6 +540,15 @@ export default function OOClientsPage() {
               defaultOpen
             />
           ))}
+          {showArchived && archivedClients.length > 0 && (
+            <DaySection
+              title="Archived"
+              clients={archivedClients}
+              nextApptMap={nextApptMap}
+              style={{ dot: 'var(--gray-300)', muted: true }}
+              defaultOpen
+            />
+          )}
         </>
       )}
 
