@@ -9,8 +9,8 @@ Estimated time: **30–45 minutes** for someone technical, longer if brand new.
 
 | Part | Technology | Where It Lives |
 |------|-----------|----------------|
-| Frontend (the website) | React | Vercel (free) |
-| Backend (the API) | Node.js + Express | Vercel or Railway (free) |
+| Frontend (the website) | React | Static site on Render, served from the committed `frontend/build/` |
+| Backend (the API) | Node.js + Express | Render (Web Service) |
 | Database + Auth | PostgreSQL via Supabase | Supabase (free) |
 
 ---
@@ -64,19 +64,17 @@ npm run dev
 
 Your API will be running at `http://localhost:4000`
 
-### Option B: Deploy to Railway (free hosting)
+### Option B: Deploy to Render (current production host)
 
-1. Go to **https://railway.app** and sign up
-2. Click **New Project → Deploy from GitHub** (push your code to GitHub first)
-3. Add these environment variables in Railway's dashboard:
-   ```
-   SUPABASE_URL=https://xxxxx.supabase.co
-   SUPABASE_SERVICE_KEY=your-service-role-key
-   FRONTEND_URL=https://your-vercel-app.vercel.app
-   PORT=4000
-   NOTIFICATION_EMAIL=notes@yourcompany.com
-   ```
-4. Railway gives you a public URL like `https://ritzoini-api.up.railway.app`
+1. Go to **https://render.com** and sign up
+2. Click **New → Web Service**, connect this GitHub repo, set the root
+   directory to `backend`
+3. Build command: `npm install` · Start command: `npm start`
+4. Add your env vars in Render's dashboard (see `backend/.env.example` for
+   the full list — Supabase keys, `ANTHROPIC_API_KEY`, `RESEND_API_KEY`,
+   `CRON_SECRET`, `ZOOM_*`, etc.)
+5. Render gives you a public URL like `https://ritzoini.onrender.com`, and
+   auto-deploys on every push to `main`
 
 ---
 
@@ -94,19 +92,22 @@ npm start
 
 Your app will open at `http://localhost:3000`
 
-### Option B: Deploy to Vercel (free hosting)
+### Option B: Deploy to Render (current production host)
 
-1. Push your code to GitHub
-2. Go to **https://vercel.com** and sign up
-3. Click **Add New Project → Import from GitHub**
-4. Set the root directory to `frontend`
-5. Add environment variables:
+The production frontend is a Render **Static Site** that serves the
+already-built `frontend/build/` folder directly — there's no build step on
+Render's side, which is why `frontend/build/` is committed to git instead of
+gitignored.
+
+1. Build and commit before pushing:
+   ```bash
+   cd frontend
+   CI=true npm run build
+   git add build && git commit -m "Rebuild frontend"
    ```
-   REACT_APP_SUPABASE_URL=https://xxxxx.supabase.co
-   REACT_APP_SUPABASE_ANON_KEY=your-anon-key
-   REACT_APP_API_URL=https://your-railway-api.up.railway.app
-   ```
-6. Click **Deploy** — you'll get a live URL!
+2. In Render: **New → Static Site**, connect this repo, root directory
+   `frontend`, publish directory `build`, no build command
+3. Render auto-redeploys (re-serves the new `build/`) on every push to `main`
 
 ---
 
@@ -143,16 +144,23 @@ SCHEDULED → (supervisor submits notes) → COMPLETED + email sent → READY TO
 ritzoini/
 ├── backend/
 │   ├── db/
-│   │   ├── schema.sql          ← Run this in Supabase
+│   │   ├── schema.sql          ← Partial — predates the OO/Zoom tables, see CLAUDE.md
 │   │   └── supabase.js         ← DB client
 │   ├── middleware/
-│   │   └── auth.js             ← JWT verification
+│   │   └── auth.js             ← JWT verification (requireAuth / requireAdmin)
 │   ├── routes/
-│   │   ├── groups.js           ← Group endpoints
-│   │   ├── sessions.js         ← Session endpoints
-│   │   └── users.js            ← User/invite endpoints
-│   ├── services/
-│   │   └── email.js            ← Email sender (simulated for now)
+│   │   ├── groups.js           ← Group endpoints (core domain)
+│   │   ├── sessions.js         ← Session endpoints (core domain)
+│   │   ├── users.js            ← User/invite endpoints
+│   │   ├── instructors.js, payPeriods.js, payments.js, billing.js, bulkImport.js
+│   │   ├── cron.js             ← Secret-header-gated auto-complete cron
+│   │   ├── ooClients.js, ooAppointments.js   ← OO (one-on-one) domain
+│   │   └── zoomWebhooks.js     ← Zoom Phone transcript webhook + OO domain
+│   ├── utils/
+│   │   ├── insync.js           ← InSync EHR client
+│   │   ├── mailer.js           ← Resend-based email (see "Email" below)
+│   │   ├── noteGenerator.js    ← Claude session-note generation
+│   │   └── zoomTranscripts.js  ← Zoom Phone transcript matching/auth
 │   ├── .env.example            ← Copy to .env and fill in
 │   ├── package.json
 │   └── server.js               ← Entry point
@@ -160,34 +168,39 @@ ritzoini/
 └── frontend/
     ├── src/
     │   ├── components/
-    │   │   ├── admin/          ← CreateGroupModal, EditGroupModal
+    │   │   ├── admin/          ← CreateGroupModal, EditGroupModal, BulkImportModal
     │   │   ├── supervisor/     ← SubmitNotesModal
-    │   │   └── shared/         ← Layout, EditSessionModal
+    │   │   ├── shared/         ← EditSessionModal, OOApptCard (OO domain)
+    │   │   └── layout/         ← Layout.js (the one actually used by App.js)
     │   ├── context/
     │   │   └── AuthContext.js  ← Login state
     │   ├── pages/
-    │   │   ├── LoginPage.js
-    │   │   ├── DashboardPage.js
-    │   │   ├── GroupDetailPage.js
-    │   │   └── AdminUsersPage.js
+    │   │   ├── LoginPage.js, DashboardPage.js, GroupDetailPage.js, CalendarPage.js,
+    │   │   │   SessionsPage.js, AdminUsersPage.js, InstructorsPage.js, PaymentsPage.js
+    │   │   └── OOClientsPage.js, OOClientDetailPage.js, OOCallsPage.js,
+    │   │       OOTranscriptsPage.js   ← OO domain
     │   ├── utils/
-    │   │   └── api.js          ← All API calls
+    │   │   └── api.js          ← All API calls (authFetch wrapper)
     │   ├── App.js
     │   └── index.css           ← All styles
+    ├── build/                  ← Committed — see "Deploy to Render" above
     ├── .env.example
     └── package.json
 ```
 
+See `CLAUDE.md` for the full breakdown of the two domains (core
+group-supervision vs. OO one-on-one) and how the OO ↔ InSync ↔ Zoom pipeline
+fits together.
+
 ---
 
-## Enabling Real Email
+## Email
 
-Currently email is **simulated** (it logs to the terminal). To send real emails:
-
-1. Sign up for **SendGrid** or **Mailgun** (both have free tiers)
-2. Get your SMTP credentials
-3. Update `backend/services/email.js` — uncomment the nodemailer block and fill in your SMTP details
-4. Add SMTP env vars to your `.env` / Railway dashboard
+Real email already goes out via **Resend** (`utils/mailer.js`), not the old
+SMTP/simulated path. Set `RESEND_API_KEY`, `FROM_EMAIL`, and `TO_EMAIL` in
+your `.env`. Sending can be toggled off per-user (`profiles.email_enabled`)
+or globally via the DB-backed `app_settings`/`app_config` toggle without a
+redeploy.
 
 ---
 
