@@ -38,17 +38,18 @@ function escapeHtml(str) {
 }
 
 function fillNoteTemplate(html, encounterId, fields, providerName, patientName) {
-  html = html.replace(/data-encid="[^"]*"/g, `data-encid="${encounterId}"`);
+  // data-EncId uses mixed case in the blank template — replace case-insensitively
+  html = html.replace(/data-[Ee]nc[Ii]d="[^"]*"/g, `data-encid="${encounterId}"`);
 
-  // Replace provider/patient name placeholders and db-value divs
-  html = html.replace(/#ProviderName/g, escapeHtml(providerName || ''));
-  html = html.replace(/#PatientName/g,  escapeHtml(patientName  || ''));
+  // Fill db-value divs for provider/patient — use \s before id= so we don't accidentally
+  // match the outer wrapper div whose data-currentcontrolid attribute contains "id=ControlId_96"
+  // as a substring, which would inject the name as stray text and produce a duplicate in the PDF.
   html = html.replace(
-    /(<div[^>]*id="ControlId_96"[^>]*>)[^<]*/,
+    /(<div[^>]*\sid="ControlId_96"[^>]*>)[^<]*/,
     `$1${escapeHtml(providerName || '')}`
   );
   html = html.replace(
-    /(<div[^>]*id="ControlId_108"[^>]*>)[^<]*/,
+    /(<div[^>]*\sid="ControlId_108"[^>]*>)[^<]*/,
     `$1${escapeHtml(patientName || '')}`
   );
 
@@ -73,10 +74,11 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName) 
   );
 
   // ControlId_112 — blank template has raw <select>, not a SumoSelect wrapper.
-  // Replace the two hidden inputs + select with the selected-value format InSync expects.
+  // Replace the hidden inputs + select with the selected-value format InSync expects.
+  // Must include hdnFieldVal_112 (numeric value) in addition to hdnFieldText_112 (display text).
   html = html.replace(
     /<input[^>]*id="hdnFieldText_112"[^>]*>[\s\S]*?<\/select>/,
-    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label>`
+    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="2" name="NaN">`
   );
 
   // ControlId_104 — first modality has no prefix; subsequent ones get ", " inside their label
@@ -937,7 +939,9 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-    // 5. Save filled note HTML — must include all ControlId fields individually + metadata
+    // 5. Save filled note HTML — send only the params the browser sends (matched to Save Note HAR).
+    // Text fields (101, 102, 63, 60) are already embedded in DynamicHTML; sending them again
+    // as separate params causes InSync to render content twice in the PDF.
     const modalityValues = (appt.ai_fields.modalities || [])
       .map(m => MODALITY_VALUE_MAP[m]).filter(Boolean).join(',');
     const saveRes  = await insync.post('/ConfigurePracticeTemplate/SaveDynamicTemplateDetails', {
@@ -946,11 +950,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[DynamicHTML]':                 htmlEncodeForDynamic(filledHtml),
       'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
       'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || '',
-      'data[ControlId_101]':               appt.ai_fields.content_discussed          || '',
-      'data[ControlId_102]':               appt.ai_fields.interventions_used         || '',
       'data[ControlId_105]':               '',
-      'data[ControlId_63]':                appt.ai_fields.patient_response           || '',
-      'data[ControlId_60]':                appt.ai_fields.progress_toward_goals      || '',
       'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
       'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
       'data[ControlId_104]':               modalityValues,
