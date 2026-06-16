@@ -114,6 +114,8 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [showNoteModal,  setShowNoteModal]  = useState(false);
   const [pushing,        setPushing]        = useState(false);
   const [pushMsg,        setPushMsg]        = useState('');
+  const [pushConfirm,    setPushConfirm]    = useState(false);
+  const pushConfirmTimer = useRef(null);
   const [pushingNote,      setPushingNote]      = useState(false);
   const [pushNoteMsg,      setPushNoteMsg]      = useState('');
 
@@ -210,23 +212,17 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     } catch (ex) { alert(ex.message); setDeleting(false); }
   }
 
-  // Pushes the note to InSync (if not already pushed) and closes the encounter
-  // in one click — the backend marks the appointment "completed" once the
-  // encounter is actually closed.
+  // Pushes the note to InSync only — does NOT close the encounter, so the
+  // note can be reviewed in InSync first before ending it separately.
   async function handlePushNoteToInsync() {
-    if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync and close the encounter?`)) return;
+    if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync?`)) return;
     setPushingNote(true); setPushNoteMsg('');
     try {
-      let encounterId = appt.insync_encounter_id;
-      if (!encounterId) {
-        const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
-        encounterId = res.insync_encounter_id;
-      }
-      const endRes = await api.post(`/oo/appointments/${appt.id}/end-insync-encounter`, {});
-      const updates = { insync_encounter_id: encounterId, note_done_at: endRes.note_done_at, status: 'completed' };
+      const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
+      const updates = { insync_encounter_id: res.insync_encounter_id };
       setAppt(a => ({ ...a, ...updates }));
       onUpdate({ ...appt, ...updates });
-      setPushNoteMsg('✓ Note pushed and encounter closed');
+      setPushNoteMsg(`✓ Note saved in InSync (encounter ${res.insync_encounter_id})`);
     } catch (ex) {
       setPushNoteMsg(`Error: ${ex.message}`);
     } finally {
@@ -234,8 +230,21 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     }
   }
 
+  // First click arms the button (shows "Confirm?" in place of a popup);
+  // second click within 3s actually pushes. Clicking elsewhere lets it expire.
+  function handlePushToInsyncClick() {
+    if (!pushConfirm) {
+      setPushConfirm(true);
+      clearTimeout(pushConfirmTimer.current);
+      pushConfirmTimer.current = setTimeout(() => setPushConfirm(false), 3000);
+      return;
+    }
+    clearTimeout(pushConfirmTimer.current);
+    setPushConfirm(false);
+    handlePushToInsync();
+  }
+
   async function handlePushToInsync() {
-    if (!window.confirm(`Push this appointment (${fmtDate(appt.date)} ${fmt12(appt.time)}) to InSync?`)) return;
     setPushing(true); setPushMsg('');
     try {
       const res = await api.post(`/oo/appointments/${appt.id}/push-to-insync`, {});
@@ -333,17 +342,17 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         <div style={{ marginTop: 8 }}>
 
           <div style={{ display: 'flex', gap: 8 }}>
-            {/* 1. Push appointment to InSync */}
-            <button className="btn" type="button" onClick={handlePushToInsync} disabled={pushing}
+            {/* 1. Push appointment to InSync — click once to arm, again to confirm */}
+            <button className="btn" type="button" onClick={handlePushToInsyncClick} disabled={pushing}
               style={{
                 ...SQUARE_BTN, fontWeight: 700,
-                background: appt.insync_visit_id ? '#dcfce7' : 'var(--navy)',
-                color: appt.insync_visit_id ? '#15803d' : 'white',
-                borderColor: appt.insync_visit_id ? '#86efac' : 'var(--navy)',
+                background: pushConfirm ? '#fef3c7' : appt.insync_visit_id ? '#dcfce7' : 'var(--navy)',
+                color: pushConfirm ? '#92400e' : appt.insync_visit_id ? '#15803d' : 'white',
+                borderColor: pushConfirm ? '#fde68a' : appt.insync_visit_id ? '#86efac' : 'var(--navy)',
               }}
-              title={appt.insync_visit_id ? `Visit ${appt.insync_visit_id} in InSync` : 'Create appointment in InSync'}
+              title={pushConfirm ? 'Click again to confirm' : appt.insync_visit_id ? `Visit ${appt.insync_visit_id} in InSync` : 'Create appointment in InSync'}
             >
-              {pushing ? 'Pushing…' : appt.insync_visit_id ? '✓ Pushed' : 'Push to InSync'}
+              {pushing ? 'Pushing…' : pushConfirm ? 'Confirm Push?' : appt.insync_visit_id ? 'Pushed Appt to InSync' : 'Push Appt to InSync'}
             </button>
 
             {/* 2. Process note */}
@@ -368,24 +377,24 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
               {fields ? 'View Note' : 'No Note'}
             </button>
 
-            {/* 4. Push note to InSync — also closes the encounter and marks the session completed */}
+            {/* 4. Push note to InSync — doesn't close the encounter; that's a separate manual step in InSync for now */}
             <button className="btn" type="button" onClick={handlePushNoteToInsync}
-              disabled={pushingNote || !appt.insync_visit_id || !fields || !!appt.note_done_at}
+              disabled={pushingNote || !appt.insync_visit_id || !fields}
               style={{
                 ...SQUARE_BTN, fontWeight: 700,
-                background: appt.note_done_at ? '#dcfce7' : (!appt.insync_visit_id || !fields) ? 'var(--gray-100)' : '#1e40af',
-                color: appt.note_done_at ? '#15803d' : (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
-                borderColor: appt.note_done_at ? '#86efac' : (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af',
-                cursor: (!appt.insync_visit_id || !fields || appt.note_done_at) ? 'default' : 'pointer',
+                background: appt.insync_encounter_id ? '#dcfce7' : (!appt.insync_visit_id || !fields) ? 'var(--gray-100)' : '#1e40af',
+                color: appt.insync_encounter_id ? '#15803d' : (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
+                borderColor: appt.insync_encounter_id ? '#86efac' : (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af',
+                cursor: (!appt.insync_visit_id || !fields) ? 'default' : 'pointer',
               }}
               title={
                 !appt.insync_visit_id ? 'Push appointment to InSync first'
                 : !fields ? 'Process note with AI first'
-                : appt.note_done_at ? `Completed — encounter ${appt.insync_encounter_id}`
-                : 'Push note to InSync and close the encounter'
+                : appt.insync_encounter_id ? `Encounter ${appt.insync_encounter_id} in InSync — push again to update`
+                : 'Push note to InSync'
               }
             >
-              {pushingNote ? 'Pushing…' : appt.note_done_at ? '✓ Done' : 'Push Note'}
+              {pushingNote ? 'Pushing…' : appt.insync_encounter_id ? '✓ Note Pushed' : 'Push Note'}
             </button>
           </div>
 

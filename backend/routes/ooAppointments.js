@@ -365,15 +365,23 @@ Return exactly this JSON structure:
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 1500,
+      max_tokens: 4096,
       messages: [{ role: 'user', content: prompt }],
     });
+
+    if (response.stop_reason === 'max_tokens')
+      return res.status(500).json({ error: 'AI response was cut off (raw notes too long for one pass) — try trimming the notes and re-processing' });
 
     const text = response.content[0].text.trim();
     const jsonStart = text.indexOf('{');
     const jsonEnd   = text.lastIndexOf('}');
     if (jsonStart === -1) return res.status(500).json({ error: 'AI returned no JSON', raw: text });
-    const fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    let fields;
+    try {
+      fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    } catch (parseErr) {
+      return res.status(500).json({ error: `AI response was not valid JSON: ${parseErr.message}` });
+    }
     await supabase.from('oo_appointments')
       .update({ ai_fields: fields, updated_at: new Date().toISOString() })
       .eq('id', req.params.id);
