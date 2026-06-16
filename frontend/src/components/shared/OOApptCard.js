@@ -248,7 +248,6 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     setPushing(true); setPushMsg('');
     try {
       const res = await api.post(`/oo/appointments/${appt.id}/push-to-insync`, {});
-      setPushMsg(`✓ Created in InSync${res.insync_visit_id ? ` (visit ${res.insync_visit_id})` : ''}`);
       setAppt(a => ({ ...a, insync_visit_id: res.insync_visit_id }));
     } catch (ex) {
       setPushMsg(`Error: ${ex.message}`);
@@ -342,18 +341,39 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         <div style={{ marginTop: 8 }}>
 
           <div style={{ display: 'flex', gap: 8 }}>
-            {/* 1. Push appointment to InSync — click once to arm, again to confirm */}
-            <button className="btn" type="button" onClick={handlePushToInsyncClick} disabled={pushing}
-              style={{
-                ...SQUARE_BTN, fontWeight: 700,
-                background: pushConfirm ? '#fef3c7' : appt.insync_visit_id ? '#dcfce7' : 'var(--navy)',
-                color: pushConfirm ? '#92400e' : appt.insync_visit_id ? '#15803d' : 'white',
-                borderColor: pushConfirm ? '#fde68a' : appt.insync_visit_id ? '#86efac' : 'var(--navy)',
-              }}
-              title={pushConfirm ? 'Click again to confirm' : appt.insync_visit_id ? `Visit ${appt.insync_visit_id} in InSync` : 'Create appointment in InSync'}
-            >
-              {pushing ? 'Pushing…' : pushConfirm ? 'Confirm Push?' : appt.insync_visit_id ? 'Pushed Appt to InSync' : 'Push Appt to InSync'}
-            </button>
+            {/* 1. Push appointment to InSync — once pushed, the whole box becomes the InSync link */}
+            {appt.insync_visit_id ? (
+              <>
+                <div style={{
+                  ...SQUARE_BTN, fontWeight: 700,
+                  background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
+                  cursor: 'default',
+                }}>
+                  <span>✓ Appt Pushed</span>
+                </div>
+                <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
+                  style={{
+                    ...SQUARE_BTN, fontWeight: 700, textDecoration: 'none', cursor: 'pointer',
+                    background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
+                  }}
+                  title={`Visit ${appt.insync_visit_id} in InSync`}
+                >
+                  <span style={{ textDecoration: 'underline' }}>Visit {appt.insync_visit_id} ↗</span>
+                </a>
+              </>
+            ) : (
+              <button className="btn" type="button" onClick={handlePushToInsyncClick} disabled={pushing}
+                style={{
+                  ...SQUARE_BTN, fontWeight: 700,
+                  background: pushConfirm ? '#fef3c7' : 'var(--navy)',
+                  color: pushConfirm ? '#92400e' : 'white',
+                  borderColor: pushConfirm ? '#fde68a' : 'var(--navy)',
+                }}
+                title={pushConfirm ? 'Click again to confirm' : 'Create appointment in InSync'}
+              >
+                {pushing ? 'Pushing…' : pushConfirm ? 'Confirm Push?' : 'Push Appt to InSync'}
+              </button>
+            )}
 
             {/* 2. Process note */}
             <button className="btn" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}
@@ -399,12 +419,6 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
           </div>
 
           <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 8, flexWrap: 'wrap', fontSize: '0.72rem' }}>
-            {appt.insync_visit_id && (
-              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
-                style={{ color: '#15803d', textDecoration: 'underline', fontWeight: 600 }}>
-                Visit {appt.insync_visit_id} ↗
-              </a>
-            )}
             {appt.insync_encounter_id && (
               <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
                 style={{ color: '#1e40af', textDecoration: 'underline', fontWeight: 600 }}>
