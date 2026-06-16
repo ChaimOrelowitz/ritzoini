@@ -107,7 +107,7 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName) 
   );
   html = html.replace(
     /<input[^>]*id="ControlId_109"[^>]*>/,
-    `<label class="border-0 textAlign-left" id="ControlId_109">${escapeHtml(fields.audio_only_reason || '')}</label>`
+    `<label class="border-0 textAlign-left" id="ControlId_109">${escapeHtml(fields.audio_only_reason || 'patient does not have internet access')}</label>`
   );
 
   // ControlId_112 — blank template has raw <select>, not a SumoSelect wrapper.
@@ -115,7 +115,7 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName) 
   // Must include hdnFieldVal_112 (numeric value) in addition to hdnFieldText_112 (display text).
   html = html.replace(
     /<input[^>]*id="hdnFieldText_112"[^>]*>[\s\S]*?<\/select>/,
-    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio-Visual Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio-Visual Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="2" name="NaN">`
+    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio only Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio only Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="3" name="NaN">`
   );
 
   // ControlId_104 — first modality has no prefix; subsequent ones get ", " inside their label
@@ -986,12 +986,12 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[SectionConfigurationId]':      '0',
       'data[DynamicHTML]':                 htmlEncodeForDynamic(filledHtml),
       'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
-      'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || '',
+      'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || 'patient does not have internet access',
       'data[ControlId_105]':               '',
       'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
       'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
       'data[ControlId_104]':               modalityValues,
-      'data[ControlId_112]':               '2',
+      'data[ControlId_112]':               '3',
       'data[ControlId_96]':                providerDisplayName,
       'data[ControlId_108]':               patientDisplayName,
       'data[DataBaseValueCollection]':     `<ControlId_96>${INSYNC_PROVIDER.ResourceId}</ControlId_96>`,
