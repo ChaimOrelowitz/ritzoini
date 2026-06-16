@@ -7,7 +7,7 @@ const {
   getZoomAccessToken,
   normalizePhone,
   findMatchingClients,
-  attachToNearestBlankAppointment,
+  matchClientToTranscript,
   verifyZoomSignature,
 } = require('../utils/zoomTranscripts');
 
@@ -105,17 +105,7 @@ async function processRecording(recording, payload) {
     return;
   }
 
-  const client = clients[0];
-  const attached = await attachToNearestBlankAppointment(inserted.id, client.id, recording.date_time);
-  if (!attached) {
-    await supabase.from('zoom_call_transcripts')
-      .update({ status: 'pending_appointment', matched_client_id: client.id })
-      .eq('id', inserted.id);
-  } else {
-    await supabase.from('zoom_call_transcripts')
-      .update({ matched_client_id: client.id })
-      .eq('id', inserted.id);
-  }
+  await matchClientToTranscript(inserted.id, clients[0].id, recording.date_time);
 }
 
 async function downloadTranscript(url) {
@@ -179,6 +169,50 @@ router.get('/transcripts', requireAuth, async (req, res) => {
   }));
 
   res.json({ transcripts });
+});
+
+// POST /api/zoom/transcripts/:id/retry-match — re-runs phone-number matching
+// now, for cases like a client being added to the system after the call came in.
+router.post('/transcripts/:id/retry-match', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { data: row, error } = await supabase
+    .from('zoom_call_transcripts')
+    .select('id, other_party_number_normalized, call_date_time')
+    .eq('id', id)
+    .single();
+  if (error || !row) return res.status(404).json({ error: 'Transcript not found' });
+
+  const clients = await findMatchingClients(row.other_party_number_normalized);
+
+  if (clients.length === 0) {
+    return res.status(409).json({ error: 'Still no client matches this phone number' });
+  }
+  if (clients.length > 1) {
+    await supabase.from('zoom_call_transcripts')
+      .update({ status: 'unmatched', candidate_client_ids: clients.map(c => c.id) })
+      .eq('id', id);
+    return res.status(409).json({ error: 'Multiple clients match this phone number — assign one manually' });
+  }
+
+  await matchClientToTranscript(id, clients[0].id, row.call_date_time);
+  res.json({ ok: true });
+});
+
+// POST /api/zoom/transcripts/:id/assign-client — manual override, skips phone matching.
+router.post('/transcripts/:id/assign-client', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { client_id } = req.body || {};
+  if (!client_id) return res.status(400).json({ error: 'client_id is required' });
+
+  const { data: row, error } = await supabase
+    .from('zoom_call_transcripts')
+    .select('id, call_date_time')
+    .eq('id', id)
+    .single();
+  if (error || !row) return res.status(404).json({ error: 'Transcript not found' });
+
+  await matchClientToTranscript(id, client_id, row.call_date_time);
+  res.json({ ok: true });
 });
 
 module.exports = router;

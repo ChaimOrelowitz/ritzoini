@@ -28,16 +28,42 @@ function StatusBadge({ status }) {
   );
 }
 
-function TranscriptRow({ t }) {
+function TranscriptRow({ t, clients, onChanged }) {
   const [expanded, setExpanded] = useState(false);
-  const clientName = t.matched_client
-    ? `${t.matched_client.last_name}, ${t.matched_client.first_name}`
-    : t.candidate_clients?.length
-      ? `Could be: ${t.candidate_clients.map(c => `${c.first_name} ${c.last_name}`).join(' or ')}`
-      : '—';
+  const [busy, setBusy] = useState(false);
+  const candidateHint = !t.matched_client && t.candidate_clients?.length
+    ? `Could be: ${t.candidate_clients.map(c => `${c.first_name} ${c.last_name}`).join(' or ')}`
+    : null;
   const apptLabel = t.matched_appointment
     ? `${t.matched_appointment.date} ${(t.matched_appointment.time || '').slice(0, 5)}`
     : '—';
+
+  async function handleAssign(e) {
+    const clientId = e.target.value;
+    if (!clientId) return;
+    setBusy(true);
+    try {
+      await api.post(`/zoom/transcripts/${t.id}/assign-client`, { client_id: clientId });
+      await onChanged();
+    } catch (ex) {
+      alert(ex.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRetryMatch(e) {
+    e.stopPropagation();
+    setBusy(true);
+    try {
+      await api.post(`/zoom/transcripts/${t.id}/retry-match`);
+      await onChanged();
+    } catch (ex) {
+      alert(ex.message);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <>
@@ -50,8 +76,40 @@ function TranscriptRow({ t }) {
         </td>
         <td style={{ padding: '8px 10px', fontSize: '0.82rem', whiteSpace: 'nowrap' }}>{fmtDateTime(t.call_date_time)}</td>
         <td style={{ padding: '8px 10px', fontSize: '0.82rem' }}>{t.other_party_number || '—'}</td>
-        <td style={{ padding: '8px 10px' }}><StatusBadge status={t.status} /></td>
-        <td style={{ padding: '8px 10px', fontSize: '0.82rem' }}>{clientName}</td>
+        <td style={{ padding: '8px 10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <StatusBadge status={t.status} />
+            {t.status === 'unmatched' && (
+              <button
+                onClick={handleRetryMatch}
+                disabled={busy}
+                style={{
+                  fontSize: '0.68rem', fontWeight: 600, padding: '2px 6px', borderRadius: 4,
+                  border: '1px solid var(--gray-200)', background: 'white', color: 'var(--navy)',
+                  cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.5 : 1,
+                }}
+              >
+                Retry match
+              </button>
+            )}
+          </div>
+        </td>
+        <td style={{ padding: '8px 10px', fontSize: '0.82rem' }} onClick={e => e.stopPropagation()}>
+          <select
+            value={t.matched_client?.id || ''}
+            onChange={handleAssign}
+            disabled={busy}
+            style={{
+              fontSize: '0.78rem', padding: '3px 4px', borderRadius: 4,
+              border: '1px solid var(--gray-200)', background: 'white', maxWidth: 170,
+            }}
+          >
+            <option value="">{candidateHint || '— unassigned —'}</option>
+            {clients.map(c => (
+              <option key={c.id} value={c.id}>{c.last_name}, {c.first_name}</option>
+            ))}
+          </select>
+        </td>
         <td style={{ padding: '8px 10px', fontSize: '0.82rem', color: 'var(--gray-500)' }}>{apptLabel}</td>
       </tr>
       {expanded && (
@@ -77,13 +135,18 @@ function TranscriptRow({ t }) {
 
 export default function OOTranscriptsPage() {
   const [transcripts, setTranscripts] = useState([]);
+  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  function loadTranscripts() {
+    return api.get('/zoom/transcripts').then(d => setTranscripts(d.transcripts || []));
+  }
+
   useEffect(() => {
-    api.get('/zoom/transcripts')
-      .then(d => setTranscripts(d.transcripts || []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([
+      loadTranscripts(),
+      api.get('/oo/clients').then(d => setClients((d || []).filter(c => c.status === 'active'))),
+    ]).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
   const attachedCount = transcripts.filter(t => t.status === 'attached').length;
@@ -123,7 +186,9 @@ export default function OOTranscriptsPage() {
               </tr>
             </thead>
             <tbody>
-              {transcripts.map(t => <TranscriptRow key={t.id} t={t} />)}
+              {transcripts.map(t => (
+                <TranscriptRow key={t.id} t={t} clients={clients} onChanged={loadTranscripts} />
+              ))}
             </tbody>
           </table>
         </div>

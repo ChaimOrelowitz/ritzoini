@@ -102,6 +102,41 @@ async function attachToNearestBlankAppointment(transcriptId, clientId, callDateT
   return true;
 }
 
+// Clears a transcript's existing attachment (if any) before re-matching, so
+// reassigning to a different client doesn't leave that transcript's text
+// sitting in the wrong client's appointment note.
+async function detachFromAppointment(transcriptId) {
+  const { data: row } = await supabase
+    .from('zoom_call_transcripts')
+    .select('matched_appointment_id')
+    .eq('id', transcriptId)
+    .single();
+  if (!row?.matched_appointment_id) return;
+
+  await supabase.from('oo_appointments').update({
+    raw_notes: null,
+    transcript_attached_at: null,
+  }).eq('id', row.matched_appointment_id);
+}
+
+// Single place that resolves "client X is the match for this transcript" —
+// used by the webhook's auto-match step and by the manual retry/assign
+// actions, so attached vs pending_appointment is decided consistently.
+async function matchClientToTranscript(transcriptId, clientId, callDateTime) {
+  await detachFromAppointment(transcriptId);
+  const attached = await attachToNearestBlankAppointment(transcriptId, clientId, callDateTime);
+  if (attached) {
+    await supabase.from('zoom_call_transcripts')
+      .update({ matched_client_id: clientId, candidate_client_ids: null })
+      .eq('id', transcriptId);
+  } else {
+    await supabase.from('zoom_call_transcripts')
+      .update({ status: 'pending_appointment', matched_client_id: clientId, candidate_client_ids: null })
+      .eq('id', transcriptId);
+  }
+  return attached;
+}
+
 // Called after new appointments are created — checks for transcripts already
 // waiting on this client and attaches the oldest one to the nearest new row.
 async function attachPendingTranscriptsForClients(clientIds, newAppointmentsByClient) {
@@ -155,6 +190,7 @@ module.exports = {
   findMatchingClients,
   attachTranscriptToAppointment,
   attachToNearestBlankAppointment,
+  matchClientToTranscript,
   attachPendingTranscriptsForClients,
   verifyZoomSignature,
 };
