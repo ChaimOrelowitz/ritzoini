@@ -83,6 +83,16 @@ export const APPT_STATUS_STYLE = {
 export const fldLabel = { display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
 export const modalLabelSt = { fontSize: '0.72rem', fontWeight: 600, color: 'var(--gray-500)', textTransform: 'uppercase', letterSpacing: '0.05em' };
 
+// flex + aspect-ratio (instead of a fixed px size) so the 4 buttons always
+// share the row evenly and stay square, regardless of how narrow the
+// surrounding column is.
+const SQUARE_BTN = {
+  flex: '1 1 0', minWidth: 0, aspectRatio: '1', display: 'flex', flexDirection: 'column',
+  alignItems: 'center', justifyContent: 'center', textAlign: 'center', gap: 3,
+  fontSize: '0.68rem', lineHeight: 1.2, padding: '4px', overflow: 'hidden',
+  borderRadius: 12, borderWidth: 1.5, borderStyle: 'solid', boxSizing: 'border-box',
+};
+
 // ── Appointment Card ──────────────────────────────────────────────────────────
 
 export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete }) {
@@ -106,8 +116,6 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [pushMsg,        setPushMsg]        = useState('');
   const [pushingNote,      setPushingNote]      = useState(false);
   const [pushNoteMsg,      setPushNoteMsg]      = useState('');
-  const [endingEncounter,  setEndingEncounter]  = useState(false);
-  const [endEncounterMsg,  setEndEncounterMsg]  = useState('');
 
   useEffect(() => {
     setAppt(initialAppt);
@@ -202,32 +210,27 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     } catch (ex) { alert(ex.message); setDeleting(false); }
   }
 
+  // Pushes the note to InSync (if not already pushed) and closes the encounter
+  // in one click — the backend marks the appointment "completed" once the
+  // encounter is actually closed.
   async function handlePushNoteToInsync() {
-    if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync?`)) return;
+    if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync and close the encounter?`)) return;
     setPushingNote(true); setPushNoteMsg('');
     try {
-      const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
-      setPushNoteMsg(`✓ Note saved in InSync (encounter ${res.insync_encounter_id})`);
-      setAppt(a => ({ ...a, insync_encounter_id: res.insync_encounter_id }));
+      let encounterId = appt.insync_encounter_id;
+      if (!encounterId) {
+        const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
+        encounterId = res.insync_encounter_id;
+      }
+      const endRes = await api.post(`/oo/appointments/${appt.id}/end-insync-encounter`, {});
+      const updates = { insync_encounter_id: encounterId, note_done_at: endRes.note_done_at, status: 'completed' };
+      setAppt(a => ({ ...a, ...updates }));
+      onUpdate({ ...appt, ...updates });
+      setPushNoteMsg('✓ Note pushed and encounter closed');
     } catch (ex) {
       setPushNoteMsg(`Error: ${ex.message}`);
     } finally {
       setPushingNote(false);
-    }
-  }
-
-  async function handleEndEncounter() {
-    if (!window.confirm('End and close this encounter in InSync?')) return;
-    setEndingEncounter(true); setEndEncounterMsg('');
-    try {
-      const res = await api.post(`/oo/appointments/${appt.id}/end-insync-encounter`, {});
-      setEndEncounterMsg('✓ Encounter closed');
-      setAppt(a => ({ ...a, note_done_at: res.note_done_at || a.note_done_at }));
-      onUpdate({ ...appt, note_done_at: res.note_done_at });
-    } catch (ex) {
-      setEndEncounterMsg(`Error: ${ex.message}`);
-    } finally {
-      setEndingEncounter(false);
     }
   }
 
@@ -327,78 +330,81 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         <textarea className="form-textarea" value={rawNotes} onChange={e => handleNoteChange(e.target.value)}
           placeholder="Session notes…" style={{ minHeight: 72, fontSize: '0.875rem' }} />
         {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+        <div style={{ marginTop: 8 }}>
 
-          {/* Line 1: Push appointment to InSync */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn btn-xs" type="button" onClick={handlePushToInsync} disabled={pushing}
+          <div style={{ display: 'flex', gap: 8 }}>
+            {/* 1. Push appointment to InSync */}
+            <button className="btn" type="button" onClick={handlePushToInsync} disabled={pushing}
               style={{
+                ...SQUARE_BTN, fontWeight: 700,
                 background: appt.insync_visit_id ? '#dcfce7' : 'var(--navy)',
                 color: appt.insync_visit_id ? '#15803d' : 'white',
-                border: `1px solid ${appt.insync_visit_id ? '#86efac' : 'var(--navy)'}`,
-                fontWeight: 600,
+                borderColor: appt.insync_visit_id ? '#86efac' : 'var(--navy)',
               }}
               title={appt.insync_visit_id ? `Visit ${appt.insync_visit_id} in InSync` : 'Create appointment in InSync'}
             >
-              {pushing ? 'Pushing…' : appt.insync_visit_id ? '✓ Pushed to InSync' : 'Push to InSync'}
+              {pushing ? 'Pushing…' : appt.insync_visit_id ? '✓ Pushed' : 'Push to InSync'}
             </button>
-            {appt.insync_visit_id && (
-              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: '0.72rem', color: '#15803d', textDecoration: 'underline', fontWeight: 600 }}>
-                Visit {appt.insync_visit_id} ↗
-              </a>
-            )}
-            {pushMsg && <span style={{ fontSize: '0.7rem', color: pushMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushMsg}</span>}
-          </div>
 
-          {/* Line 2: AI note */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn btn-outline btn-xs" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}>
-              {processing ? 'Processing…' : fields ? 'Re-process' : 'Process with AI'}
+            {/* 2. Process note */}
+            <button className="btn" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}
+              style={{ ...SQUARE_BTN, fontWeight: 700, background: 'white', color: 'var(--navy)', borderColor: 'var(--gray-200)' }}
+              title={!rawNotes.trim() ? 'Write notes first' : fields ? 'Re-run AI processing' : 'Generate structured note with AI'}
+            >
+              {processing ? 'Processing…' : fields ? 'Re-process' : 'Process Note'}
             </button>
-            <button className="btn btn-xs" type="button" onClick={() => fields && setShowNoteModal(true)}
+
+            {/* 3. View note — always present, grey until a note exists */}
+            <button className="btn" type="button" onClick={() => fields && setShowNoteModal(true)}
               style={{
+                ...SQUARE_BTN, fontWeight: 700,
                 background: fields ? 'var(--gold)' : 'var(--gray-100)',
                 color: fields ? 'var(--navy)' : 'var(--gray-400)',
-                border: `1px solid ${fields ? 'var(--gold)' : 'var(--gray-200)'}`,
-                cursor: fields ? 'pointer' : 'default', fontWeight: 600,
+                borderColor: fields ? 'var(--gold)' : 'var(--gray-200)',
+                cursor: fields ? 'pointer' : 'default',
               }}
               title={fields ? 'Open AI note' : 'No AI note yet'}
             >
-              {fields ? 'Open Note →' : 'No AI note'}
+              {fields ? 'View Note' : 'No Note'}
             </button>
-            {appt.note_sent_at && <span style={{ fontSize: '0.7rem', color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>}
+
+            {/* 4. Push note to InSync — also closes the encounter and marks the session completed */}
+            <button className="btn" type="button" onClick={handlePushNoteToInsync}
+              disabled={pushingNote || !appt.insync_visit_id || !fields || !!appt.note_done_at}
+              style={{
+                ...SQUARE_BTN, fontWeight: 700,
+                background: appt.note_done_at ? '#dcfce7' : (!appt.insync_visit_id || !fields) ? 'var(--gray-100)' : '#1e40af',
+                color: appt.note_done_at ? '#15803d' : (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
+                borderColor: appt.note_done_at ? '#86efac' : (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af',
+                cursor: (!appt.insync_visit_id || !fields || appt.note_done_at) ? 'default' : 'pointer',
+              }}
+              title={
+                !appt.insync_visit_id ? 'Push appointment to InSync first'
+                : !fields ? 'Process note with AI first'
+                : appt.note_done_at ? `Completed — encounter ${appt.insync_encounter_id}`
+                : 'Push note to InSync and close the encounter'
+              }
+            >
+              {pushingNote ? 'Pushing…' : appt.note_done_at ? '✓ Done' : 'Push Note'}
+            </button>
           </div>
 
-          {/* Line 3: Push note + End Encounter */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button className="btn btn-xs" type="button" onClick={handlePushNoteToInsync}
-              disabled={pushingNote || (!appt.insync_visit_id || !fields)}
-              style={{
-                background: appt.insync_encounter_id ? '#dcfce7' : '#1e40af',
-                color: appt.insync_encounter_id ? '#15803d' : (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
-                border: `1px solid ${appt.insync_encounter_id ? '#86efac' : (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af'}`,
-                fontWeight: 600,
-                cursor: (!appt.insync_visit_id || !fields) ? 'default' : 'pointer',
-              }}
-              title={!appt.insync_visit_id ? 'Push appointment to InSync first' : !fields ? 'Process note with AI first' : appt.insync_encounter_id ? `Encounter ${appt.insync_encounter_id} in InSync` : 'Push note to InSync'}
-            >
-              {pushingNote ? 'Pushing Note…' : appt.insync_encounter_id ? '✓ Note in InSync' : 'Push Note to InSync'}
-            </button>
-            {appt.insync_encounter_id && (
+          <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 8, flexWrap: 'wrap', fontSize: '0.72rem' }}>
+            {appt.insync_visit_id && (
               <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
-                style={{ fontSize: '0.72rem', color: '#1e40af', textDecoration: 'underline', fontWeight: 600 }}>
-                Encounter {appt.insync_encounter_id} ↗
+                style={{ color: '#15803d', textDecoration: 'underline', fontWeight: 600 }}>
+                Visit {appt.insync_visit_id} ↗
               </a>
             )}
             {appt.insync_encounter_id && (
-              <button className="btn btn-xs" type="button" onClick={handleEndEncounter} disabled={endingEncounter}
-                style={{ background: 'var(--navy)', color: 'white', border: '1px solid var(--navy)', fontWeight: 600 }}>
-                {endingEncounter ? 'Ending…' : 'End Encounter'}
-              </button>
+              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
+                style={{ color: '#1e40af', textDecoration: 'underline', fontWeight: 600 }}>
+                Encounter {appt.insync_encounter_id} ↗
+              </a>
             )}
-            {pushNoteMsg && <span style={{ fontSize: '0.7rem', color: pushNoteMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushNoteMsg}</span>}
-            {endEncounterMsg && <span style={{ fontSize: '0.7rem', color: endEncounterMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{endEncounterMsg}</span>}
+            {appt.note_sent_at && <span style={{ color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>}
+            {pushMsg && <span style={{ color: pushMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushMsg}</span>}
+            {pushNoteMsg && <span style={{ color: pushNoteMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushNoteMsg}</span>}
           </div>
 
         </div>

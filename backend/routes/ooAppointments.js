@@ -1240,9 +1240,11 @@ router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
     });
 
     const doneAt = appt.note_done_at || new Date().toISOString();
-    await supabase.from('oo_appointments').update({ note_done_at: doneAt }).eq('id', appt.id);
+    await supabase.from('oo_appointments')
+      .update({ note_done_at: doneAt, status: 'completed' })
+      .eq('id', appt.id);
 
-    res.json({ ok: true, endTime, note_done_at: doneAt });
+    res.json({ ok: true, endTime, note_done_at: doneAt, status: 'completed' });
   } catch (err) {
     console.error('[end-insync-encounter]', err);
     res.status(500).json({ error: err.message });
