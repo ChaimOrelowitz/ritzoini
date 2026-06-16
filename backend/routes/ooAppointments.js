@@ -58,7 +58,7 @@ function extractFormHtml(pageHtml) {
   return pageHtml.slice(start);
 }
 
-function fillNoteTemplate(html, encounterId, fields, providerName, patientName) {
+function fillNoteTemplate(html, encounterId, fields, providerName, patientName, locationValue, locationLabel) {
   // data-EncId uses mixed case in the blank template — replace case-insensitively
   html = html.replace(/data-[Ee]nc[Ii]d="[^"]*"/g, `data-encid="${encounterId}"`);
 
@@ -114,9 +114,11 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName) 
   // ControlId_112 — blank template has raw <select>, not a SumoSelect wrapper.
   // Replace the hidden inputs + select with the selected-value format InSync expects.
   // Must include hdnFieldVal_112 (numeric value) in addition to hdnFieldText_112 (display text).
+  const _locLabel = locationLabel || 'Audio only Telehealth';
+  const _locValue = locationValue  || '3';
   html = html.replace(
     /<input[^>]*id="hdnFieldText_112"[^>]*>[\s\S]*?<\/select>/,
-    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="Audio only Telehealth" name="NaN"><label class="full-width has-no-control textAlign-left">Audio only Telehealth</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="3" name="NaN">`
+    `<input type="hidden" id="hdnFieldText_112" class="SumoSelectedText" value="${escapeHtml(_locLabel)}" name="NaN"><label class="full-width has-no-control textAlign-left">${escapeHtml(_locLabel)}</label><input type="hidden" id="hdnFieldVal_112" class="SumoSelectedVal" value="${_locValue}" name="NaN">`
   );
 
   // ControlId_104 — first modality has no prefix; subsequent ones get ", " inside their label
@@ -339,21 +341,17 @@ ${treatment_plan || '(none provided)'}
 
 Fields to populate:
 1. additional_persons_present — string, who else was on the call if anyone (leave empty string if none)
-2. location_of_meeting — always exactly: "Telehealth - Video"
-3. audio_only_reason — string, reason if audio-only (usually leave empty)
-4. content_discussed — paragraph, what was discussed in the session
-5. interventions_used — paragraph, what therapeutic interventions were used
-6. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
-7. patient_response — paragraph, how the patient responded to the interventions
-8. progress_toward_goals — paragraph, progress made toward treatment goals
-9. treatment_plan_changes — string, any changes needed to the treatment plan (or "No changes at this time")
-10. additional_comments — string, any other relevant clinical observations
+2. content_discussed — paragraph, what was discussed in the session
+3. interventions_used — paragraph, what therapeutic interventions were used
+4. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
+5. patient_response — paragraph, how the patient responded to the interventions
+6. progress_toward_goals — paragraph, progress made toward treatment goals
+7. treatment_plan_changes — string, any changes needed to the treatment plan (or "No changes at this time")
+8. additional_comments — string, any other relevant clinical observations
 
 Return exactly this JSON structure:
 {
   "additional_persons_present": "",
-  "location_of_meeting": "Telehealth - Video",
-  "audio_only_reason": "",
   "content_discussed": "",
   "interventions_used": "",
   "modalities": [],
@@ -817,6 +815,12 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     if (!appt.ai_fields?.content_discussed)
       return res.status(400).json({ error: 'No processed note — write and process notes first' });
 
+    const locationValue   = req.body.location_value  || '3';
+    const locationLabel   = req.body.location_label  || 'Audio only Telehealth';
+    const audioOnlyReason = req.body.audio_only_reason
+      || appt.ai_fields.audio_only_reason
+      || 'patient does not have internet access';
+
     const duration    = appt.duration || 45;
     const [yr, mo, dy] = appt.date.split('-');
     const visitDate   = `${mo}/${dy}/${yr}`;
@@ -988,7 +992,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       throw new Error(`Could not get EncounterID from AddEditStartEncounter. Response: ${aeText.slice(0, 300)}`);
 
     // 4. Fill template with note content
-    const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields, providerDisplayName, patientDisplayName);
+    const filledHtml = fillNoteTemplate(blankHtml, encounterId, appt.ai_fields, providerDisplayName, patientDisplayName, locationValue, locationLabel);
 
     // DynamicHTML must be HTML-encoded (InSync stores and renders it that way)
     const htmlEncodeForDynamic = s => s
@@ -1005,12 +1009,12 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[SectionConfigurationId]':      '0',
       'data[DynamicHTML]':                 htmlEncodeForDynamic(filledHtml),
       'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
-      'data[ControlId_109]':               appt.ai_fields.audio_only_reason          || 'patient does not have internet access',
+      'data[ControlId_109]':               audioOnlyReason,
       'data[ControlId_105]':               '',
       'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
       'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
       'data[ControlId_104]':               modalityValues,
-      'data[ControlId_112]':               '3',
+      'data[ControlId_112]':               locationValue,
       'data[ControlId_96]':                providerDisplayName,
       'data[ControlId_108]':               patientDisplayName,
       'data[DataBaseValueCollection]':     `<ControlId_96>${INSYNC_PROVIDER.ResourceId}</ControlId_96>`,

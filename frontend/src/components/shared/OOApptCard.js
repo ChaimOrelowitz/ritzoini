@@ -48,7 +48,7 @@ function buildPreviewText(client, appt, fields, tp) {
     `Client: ${initials} (MRN: ${mrn})`,
     `Date: ${appt.date || '—'}`,
     '',
-    `Location of Meeting: ${fields.location_of_meeting || 'Telehealth - Video'}`,
+    `Location of Meeting: ${fields.location_of_meeting || 'Audio only Telehealth'}`,
     fields.additional_persons_present ? `Additional Person(s) Present: ${fields.additional_persons_present}` : null,
     fields.audio_only_reason          ? `Audio Only Reason: ${fields.audio_only_reason}` : null,
     '',
@@ -73,6 +73,12 @@ function buildPreviewText(client, appt, fields, tp) {
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 export const MODALITIES_LIST = ['CBT', 'EMDR', 'Sand Tray', 'Solution Focused', 'Client Centered', 'DBT', 'Art Therapy', 'Strength Based', 'Family Systems', 'Trauma Focused', 'Play Therapy', 'Mindfulness', 'Behavioral Role Play', 'Guided Imagery', 'Motivational Interviewing'];
+
+// InSync ControlId_112 location options. Values confirmed from HAR; extend when remaining IDs are provided.
+export const LOCATION_OPTIONS = [
+  { value: '3', label: 'Audio only Telehealth' },
+];
+const AUTO_AUDIO_REASON = 'Client does not have internet access.';
 
 export const APPT_STATUS_STYLE = {
   scheduled: { bg: '#dbeafe', color: '#1e40af', border: '#93c5fd' },
@@ -106,18 +112,18 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [rawNotes,  setRawNotes]  = useState(initialAppt.raw_notes || '');
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
-  const [processing,     setProcessing]     = useState(false);
-  const [fields,         setFields]         = useState(initialAppt.ai_fields || null);
-  const [sending,        setSending]        = useState(false);
-  const [deleting,       setDeleting]       = useState(false);
-  const [err,            setErr]            = useState('');
-  const [showNoteModal,  setShowNoteModal]  = useState(false);
-  const [pushing,        setPushing]        = useState(false);
-  const [pushMsg,        setPushMsg]        = useState('');
-  const [pushConfirm,    setPushConfirm]    = useState(false);
+  const [processing,      setProcessing]      = useState(false);
+  const [fields,          setFields]          = useState(initialAppt.ai_fields || null);
+  const [deleting,        setDeleting]        = useState(false);
+  const [err,             setErr]             = useState('');
+  const [showNoteModal,   setShowNoteModal]   = useState(false);
+  const [pushing,         setPushing]         = useState(false);
+  const [pushMsg,         setPushMsg]         = useState('');
+  const [pushConfirm,     setPushConfirm]     = useState(false);
   const pushConfirmTimer = useRef(null);
-  const [pushingNote,      setPushingNote]      = useState(false);
-  const [pushNoteMsg,      setPushNoteMsg]      = useState('');
+  const [pushingNote,     setPushingNote]     = useState(false);
+  const [pushNoteMsg,     setPushNoteMsg]     = useState('');
+  const [endingEncounter, setEndingEncounter] = useState(false);
 
   useEffect(() => {
     setAppt(initialAppt);
@@ -183,15 +189,58 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     finally { setProcessing(false); }
   }
 
-  async function handleSend() {
-    setSending(true); setErr('');
+  function handleLocationChange(val) {
+    const opt = LOCATION_OPTIONS.find(o => o.value === val) || LOCATION_OPTIONS[0];
+    setFields(prev => ({
+      ...prev,
+      location_value: opt.value,
+      location_of_meeting: opt.label,
+      audio_only_reason: opt.value === '3'
+        ? (!prev.audio_only_reason || prev.audio_only_reason === AUTO_AUDIO_REASON ? AUTO_AUDIO_REASON : prev.audio_only_reason)
+        : (prev.audio_only_reason === AUTO_AUDIO_REASON ? '' : prev.audio_only_reason),
+    }));
+  }
+
+  async function handleStatusChange(newStatus) {
+    const prev = appt.status;
+    setAppt(a => ({ ...a, status: newStatus }));
     try {
-      await api.post(`/oo/appointments/${appt.id}/send-note`, { fields, treatment_plan: tp });
-      const sentAt = new Date().toISOString();
-      setAppt(prev => ({ ...prev, note_sent_at: sentAt }));
-      onUpdate({ ...appt, note_sent_at: sentAt });
-    } catch (ex) { setErr(ex.message); }
-    finally { setSending(false); }
+      const updated = await api.patch(`/oo/appointments/${appt.id}`, { status: newStatus });
+      setAppt(a => ({ ...a, ...updated }));
+      onUpdate({ ...appt, ...updated, status: newStatus });
+    } catch (ex) {
+      setAppt(a => ({ ...a, status: prev }));
+      alert(ex.message);
+    }
+  }
+
+  async function handleEndEncounter() {
+    if (!window.confirm('End this InSync encounter?')) return;
+    setEndingEncounter(true);
+    try {
+      const res = await api.post(`/oo/appointments/${appt.id}/end-insync-encounter`, {});
+      const updates = { note_done_at: res.note_done_at, status: res.status || 'completed' };
+      setAppt(a => ({ ...a, ...updates }));
+      onUpdate({ ...appt, ...updates });
+    } catch (ex) {
+      alert(ex.message);
+    } finally {
+      setEndingEncounter(false);
+    }
+  }
+
+  function openNoteModal() {
+    if (!fields) return;
+    // Pre-fill location defaults when modal opens for the first time
+    if (!fields.location_value) {
+      setFields(prev => ({
+        ...prev,
+        location_value: '3',
+        location_of_meeting: 'Audio only Telehealth',
+        audio_only_reason: prev.audio_only_reason || AUTO_AUDIO_REASON,
+      }));
+    }
+    setShowNoteModal(true);
   }
 
   function updateField(key, val) { setFields(prev => ({ ...prev, [key]: val })); }
@@ -218,7 +267,11 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     if (!window.confirm(`Push note for ${fmtDate(appt.date)} to InSync?`)) return;
     setPushingNote(true); setPushNoteMsg('');
     try {
-      const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {});
+      const res = await api.post(`/oo/appointments/${appt.id}/push-note-to-insync`, {
+        location_value:   fields?.location_value   || '3',
+        location_label:   fields?.location_of_meeting || 'Audio only Telehealth',
+        audio_only_reason: fields?.audio_only_reason || AUTO_AUDIO_REASON,
+      });
       const updates = { insync_encounter_id: res.insync_encounter_id };
       setAppt(a => ({ ...a, ...updates }));
       onUpdate({ ...appt, ...updates });
@@ -296,15 +349,23 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase' }}>Status</label>
-          <div style={{
-            padding: '5px 10px', fontSize: '0.82rem', width: 110, borderRadius: 'var(--radius)',
-            border: `1.5px solid ${style.border}`, background: style.bg, color: style.color,
-            fontWeight: 600, textTransform: 'capitalize', boxSizing: 'border-box',
-          }}>{appt.status}</div>
+          <select
+            value={appt.status}
+            onChange={e => handleStatusChange(e.target.value)}
+            style={{
+              padding: '5px 10px', fontSize: '0.82rem', width: 120, borderRadius: 'var(--radius)',
+              border: `1.5px solid ${style.border}`, background: style.bg, color: style.color,
+              fontWeight: 600, textTransform: 'capitalize', boxSizing: 'border-box', cursor: 'pointer',
+            }}
+          >
+            {['scheduled', 'completed', 'cancelled'].map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
         </div>
 
         <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start', marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {[{ field: 'note_sent_at', label: 'Note Sent' }, { field: 'note_done_at', label: 'Done' }].map(({ field, label }) => (
+          {[{ field: 'note_done_at', label: 'Done' }].map(({ field, label }) => (
             <div key={field} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.8rem', color: 'var(--gray-800)', cursor: 'pointer' }}>
                 <input type="checkbox" checked={!!appt[field]} onChange={e => handleCheckbox(field, e.target.checked)}
@@ -340,27 +401,20 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
         <div style={{ marginTop: 8 }}>
 
+          {/* Row 1 — 4 equal squares */}
           <div style={{ display: 'flex', gap: 8 }}>
-            {/* 1. Push appointment to InSync — once pushed, the whole box becomes the InSync link */}
+            {/* 1. Push Appt — once pushed becomes a single green link */}
             {appt.insync_visit_id ? (
-              <>
-                <div style={{
-                  ...SQUARE_BTN, fontWeight: 700,
+              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
+                style={{
+                  ...SQUARE_BTN, fontWeight: 700, textDecoration: 'none', cursor: 'pointer',
                   background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
-                  cursor: 'default',
-                }}>
-                  <span>✓ Appt Pushed</span>
-                </div>
-                <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
-                  style={{
-                    ...SQUARE_BTN, fontWeight: 700, textDecoration: 'none', cursor: 'pointer',
-                    background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
-                  }}
-                  title={`Visit ${appt.insync_visit_id} in InSync`}
-                >
-                  <span style={{ textDecoration: 'underline' }}>Visit {appt.insync_visit_id} ↗</span>
-                </a>
-              </>
+                }}
+                title={`Visit ${appt.insync_visit_id} in InSync`}
+              >
+                <span>✓ Appt Pushed</span>
+                <span style={{ textDecoration: 'underline', fontWeight: 600 }}>Visit {appt.insync_visit_id} ↗</span>
+              </a>
             ) : (
               <button className="btn" type="button" onClick={handlePushToInsyncClick} disabled={pushing}
                 style={{
@@ -371,11 +425,11 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
                 }}
                 title={pushConfirm ? 'Click again to confirm' : 'Create appointment in InSync'}
               >
-                {pushing ? 'Pushing…' : pushConfirm ? 'Confirm Push?' : 'Push Appt to InSync'}
+                {pushing ? 'Pushing…' : pushConfirm ? 'Confirm Push?' : 'Push Appt'}
               </button>
             )}
 
-            {/* 2. Process note */}
+            {/* 2. Process Note */}
             <button className="btn" type="button" onClick={handleProcess} disabled={processing || !rawNotes.trim()}
               style={{ ...SQUARE_BTN, fontWeight: 700, background: 'white', color: 'var(--navy)', borderColor: 'var(--gray-200)' }}
               title={!rawNotes.trim() ? 'Write notes first' : fields ? 'Re-run AI processing' : 'Generate structured note with AI'}
@@ -383,8 +437,8 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
               {processing ? 'Processing…' : fields ? 'Re-process' : 'Process Note'}
             </button>
 
-            {/* 3. View note — always present, grey until a note exists */}
-            <button className="btn" type="button" onClick={() => fields && setShowNoteModal(true)}
+            {/* 3. View Note — grey until a processed note exists */}
+            <button className="btn" type="button" onClick={openNoteModal}
               style={{
                 ...SQUARE_BTN, fontWeight: 700,
                 background: fields ? 'var(--gold)' : 'var(--gray-100)',
@@ -397,38 +451,68 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
               {fields ? 'View Note' : 'No Note'}
             </button>
 
-            {/* 4. Push note to InSync — doesn't close the encounter; that's a separate manual step in InSync for now */}
-            <button className="btn" type="button" onClick={handlePushNoteToInsync}
-              disabled={pushingNote || !appt.insync_visit_id || !fields}
-              style={{
-                ...SQUARE_BTN, fontWeight: 700,
-                background: appt.insync_encounter_id ? '#dcfce7' : (!appt.insync_visit_id || !fields) ? 'var(--gray-100)' : '#1e40af',
-                color: appt.insync_encounter_id ? '#15803d' : (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
-                borderColor: appt.insync_encounter_id ? '#86efac' : (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af',
-                cursor: (!appt.insync_visit_id || !fields) ? 'default' : 'pointer',
-              }}
-              title={
-                !appt.insync_visit_id ? 'Push appointment to InSync first'
-                : !fields ? 'Process note with AI first'
-                : appt.insync_encounter_id ? `Encounter ${appt.insync_encounter_id} in InSync — push again to update`
-                : 'Push note to InSync'
-              }
-            >
-              {pushingNote ? 'Pushing…' : appt.insync_encounter_id ? '✓ Note Pushed' : 'Push Note'}
-            </button>
+            {/* 4. Push Note — once pushed becomes a green link with encounter ID */}
+            {appt.insync_encounter_id ? (
+              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
+                style={{
+                  ...SQUARE_BTN, fontWeight: 700, textDecoration: 'none', cursor: 'pointer',
+                  background: '#dcfce7', color: '#15803d', borderColor: '#86efac',
+                }}
+                title={`Encounter ${appt.insync_encounter_id} in InSync`}
+              >
+                <span>✓ Note Pushed</span>
+                <span style={{ textDecoration: 'underline', fontWeight: 600 }}>Enc {appt.insync_encounter_id} ↗</span>
+              </a>
+            ) : (
+              <button className="btn" type="button" onClick={handlePushNoteToInsync}
+                disabled={pushingNote || !appt.insync_visit_id || !fields}
+                style={{
+                  ...SQUARE_BTN, fontWeight: 700,
+                  background: (!appt.insync_visit_id || !fields) ? 'var(--gray-100)' : '#1e40af',
+                  color: (!appt.insync_visit_id || !fields) ? 'var(--gray-400)' : 'white',
+                  borderColor: (!appt.insync_visit_id || !fields) ? 'var(--gray-200)' : '#1e40af',
+                  cursor: (!appt.insync_visit_id || !fields) ? 'default' : 'pointer',
+                }}
+                title={
+                  !appt.insync_visit_id ? 'Push appointment to InSync first'
+                  : !fields ? 'Process note with AI first'
+                  : 'Push note to InSync'
+                }
+              >
+                {pushingNote ? 'Pushing…' : 'Push Note'}
+              </button>
+            )}
           </div>
 
-          <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginTop: 8, flexWrap: 'wrap', fontSize: '0.72rem' }}>
-            {appt.insync_encounter_id && (
-              <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
-                style={{ color: '#1e40af', textDecoration: 'underline', fontWeight: 600 }}>
-                Encounter {appt.insync_encounter_id} ↗
-              </a>
-            )}
-            {appt.note_sent_at && <span style={{ color: '#16a34a' }}>✓ sent {fmtDateTime(appt.note_sent_at)}</span>}
-            {pushMsg && <span style={{ color: pushMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushMsg}</span>}
-            {pushNoteMsg && <span style={{ color: pushNoteMsg.startsWith('Error') ? '#dc2626' : '#16a34a' }}>{pushNoteMsg}</span>}
-          </div>
+          {/* Row 2 — End Encounter pill */}
+          <button type="button" onClick={handleEndEncounter}
+            disabled={endingEncounter || !appt.insync_encounter_id || !!appt.note_done_at}
+            style={{
+              marginTop: 8, width: '100%', padding: '7px 16px', borderRadius: 999,
+              borderWidth: 1.5, borderStyle: 'solid', fontWeight: 700, fontSize: '0.78rem',
+              boxSizing: 'border-box',
+              cursor: (!appt.insync_encounter_id || appt.note_done_at) ? 'default' : 'pointer',
+              background:  appt.note_done_at ? '#dcfce7' : !appt.insync_encounter_id ? 'var(--gray-100)' : 'var(--navy)',
+              color:       appt.note_done_at ? '#15803d' : !appt.insync_encounter_id ? 'var(--gray-400)' : 'white',
+              borderColor: appt.note_done_at ? '#86efac' : !appt.insync_encounter_id ? 'var(--gray-200)' : 'var(--navy)',
+            }}
+          >
+            {endingEncounter ? 'Ending…' : appt.note_done_at ? '✓ Encounter Closed' : 'End Encounter'}
+          </button>
+          {appt.note_done_at && appt.insync_encounter_id && (
+            <a href="https://thedscenter.insynchcs.com/Scheduler/Index" target="_blank" rel="noopener noreferrer"
+              style={{ display: 'block', textAlign: 'center', marginTop: 4, fontSize: '0.72rem', color: '#1e40af', textDecoration: 'underline', fontWeight: 600 }}>
+              Encounter {appt.insync_encounter_id} ↗
+            </a>
+          )}
+
+          {/* Error messages */}
+          {(pushMsg || (pushNoteMsg && pushNoteMsg.startsWith('Error'))) && (
+            <div style={{ marginTop: 6, fontSize: '0.72rem' }}>
+              {pushMsg && <span style={{ color: '#dc2626' }}>{pushMsg}</span>}
+              {pushNoteMsg && pushNoteMsg.startsWith('Error') && <span style={{ color: '#dc2626', marginLeft: 6 }}>{pushNoteMsg}</span>}
+            </div>
+          )}
 
         </div>
       </div>
@@ -455,9 +539,24 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div>
                   <label style={fldLabel}>Location of Meeting</label>
-                  <input className="form-input" value={fields.location_of_meeting || 'Telehealth - Video'} readOnly
-                    style={{ background: 'var(--gray-50)', fontSize: '0.85rem' }} />
+                  <select className="form-input"
+                    value={fields.location_value || '3'}
+                    onChange={e => handleLocationChange(e.target.value)}
+                    style={{ fontSize: '0.85rem' }}
+                  >
+                    {LOCATION_OPTIONS.map(opt => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
                 </div>
+                {(fields.location_value || '3') === '3' && (
+                  <div>
+                    <label style={fldLabel}>If audio only, please provide reasoning</label>
+                    <input className="form-input" style={{ fontSize: '0.85rem' }}
+                      value={fields.audio_only_reason || ''}
+                      onChange={e => updateField('audio_only_reason', e.target.value)} />
+                  </div>
+                )}
                 <div>
                   <label style={fldLabel}>Additional Person(s) Present</label>
                   <input className="form-input" style={{ fontSize: '0.85rem' }} value={fields.additional_persons_present || ''}
@@ -520,9 +619,6 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
 
             <div className="modal-footer">
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowNoteModal(false)}>Close</button>
-              <button type="button" className="btn btn-gold btn-sm" onClick={handleSend} disabled={sending}>
-                {sending ? 'Sending…' : 'Send to Secretary'}
-              </button>
             </div>
           </div>
         </div>
