@@ -123,7 +123,29 @@ async function downloadTranscript(url) {
   const token = await getZoomAccessToken();
   const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
-  return await resp.text();
+  const raw = await resp.text();
+  return toPlainTranscript(raw);
+}
+
+// Zoom Phone returns the transcript as a JSON document with a speaker-tagged
+// timeline, not plain text — convert it to readable "Speaker: line" text so
+// raw_notes holds an actual conversation, not a JSON blob, for AI processing.
+function toPlainTranscript(raw) {
+  let json;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  if (!Array.isArray(json?.timeline)) return raw;
+
+  return json.timeline
+    .map(entry => {
+      const speaker = entry.users?.[0]?.username || entry.username || 'Unknown';
+      const text = entry.text || entry.raw_text || '';
+      return `${speaker}: ${text}`;
+    })
+    .join('\n');
 }
 
 // GET /api/zoom/transcripts — for the frontend visibility page.
