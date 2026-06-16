@@ -139,7 +139,7 @@ router.get('/', requireAuth, async (req, res) => {
   const { client_id, week_start, week_end } = req.query;
   let query = supabase
     .from('oo_appointments')
-    .select('*, oo_clients(id, first_name, last_name, mrn, phone, mobile, status, referral_source_id, referral:oo_referral_sources!referral_source_id(id, name, notes_email))')
+    .select('*, oo_clients(id, first_name, last_name, mrn, phone, mobile, status, referral_source_id, insync_patient_id, insync_data, referral:oo_referral_sources!referral_source_id(id, name, notes_email))')
     .order('date').order('time');
 
   if (client_id)  query = query.eq('client_id', client_id);
@@ -1228,7 +1228,10 @@ router.post('/:id/end-insync-encounter', requireAuth, async (req, res) => {
       body: JSON.stringify({ EncounterID: '0' }),
     });
 
-    res.json({ ok: true, endTime });
+    const doneAt = appt.note_done_at || new Date().toISOString();
+    await supabase.from('oo_appointments').update({ note_done_at: doneAt }).eq('id', appt.id);
+
+    res.json({ ok: true, endTime, note_done_at: doneAt });
   } catch (err) {
     console.error('[end-insync-encounter]', err);
     res.status(500).json({ error: err.message });
