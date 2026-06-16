@@ -37,9 +37,34 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Extract just the divdynamiccharting_101 form div from the full page HTML that
+// PreviewConfigTemplateById returns. The full response includes outer page chrome
+// (modals, credit-card dialogs, scripts, CSS) that must not appear in DynamicHTML.
+function extractFormHtml(pageHtml) {
+  const marker = 'id="divdynamiccharting_101"';
+  const markerIdx = pageHtml.indexOf(marker);
+  if (markerIdx === -1) return pageHtml;
+  const start = pageHtml.lastIndexOf('<div', markerIdx);
+  let depth = 0, i = start;
+  while (i < pageHtml.length) {
+    if (pageHtml.slice(i, i + 4) === '<div') { depth++; i += 4; }
+    else if (pageHtml.slice(i, i + 6) === '</div') {
+      depth--;
+      if (depth === 0) return pageHtml.slice(start, i + 6);
+      i += 6;
+    } else i++;
+  }
+  return pageHtml.slice(start);
+}
+
 function fillNoteTemplate(html, encounterId, fields, providerName, patientName) {
   // data-EncId uses mixed case in the blank template — replace case-insensitively
   html = html.replace(/data-[Ee]nc[Ii]d="[^"]*"/g, `data-encid="${encounterId}"`);
+
+  // Strip dvElementsRow_1 — it's the practice logo header row (data-Type=21).
+  // The browser excludes this row from DynamicHTML when saving; keeping it produces
+  // a broken image container in the PDF.
+  html = html.replace(/<div[^>]*id="dvElementsRow_1"[^>]*>[\s\S]*?(?=<div[^>]*id="dvElementsRow_\d)/, '');
 
   // Fill db-value divs for provider/patient — use \s before id= so we don't accidentally
   // match the outer wrapper div whose data-currentcontrolid attribute contains "id=ControlId_96"
@@ -68,9 +93,21 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName) 
     );
   }
 
+  // Remove the fixed-height style from textarea wrapper divs. The blank template wraps
+  // each textarea in <div style="height:84px"> but the browser strips this when saving,
+  // leaving just <div>. Without removing it the rendered PDF has a large blank space
+  // above each text field.
+  html = html.replace(/ style="height:\d+px"/g, '');
+
+  // ControlId_99 and ControlId_109 are single-line text inputs (not textareas).
+  // Replace them with read-only labels matching the format InSync uses in its saved HTML.
   html = html.replace(
     /<input[^>]*id="ControlId_99"[^>]*>/,
     `<label class="border-0 textAlign-left" id="ControlId_99">${escapeHtml(fields.additional_persons_present || '')}</label>`
+  );
+  html = html.replace(
+    /<input[^>]*id="ControlId_109"[^>]*>/,
+    `<label class="border-0 textAlign-left" id="ControlId_109">${escapeHtml(fields.audio_only_reason || '')}</label>`
   );
 
   // ControlId_112 — blank template has raw <select>, not a SumoSelect wrapper.
@@ -828,7 +865,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       InsertColumn: 'ControlId_100,ControlId_101,ControlId_102,ControlId_103,ControlId_104,ControlId_105,ControlId_106,ControlId_107,ControlId_108,ControlId_109,ControlId_110,ControlId_111,ControlId_112,ControlId_14,ControlId_20,ControlId_26,ControlId_36,ControlId_37,ControlId_60,ControlId_63,ControlId_67,ControlId_90,ControlId_93,ControlId_96,ControlId_99',
       isDisabled: 'false', providerId: '0',
     }, cookie);
-    const blankHtml = await tplRes.text();
+    const blankHtml = extractFormHtml(await tplRes.text());
 
     // 3. Save encounter metadata — EncounterId=0 lets InSync create/assign it; response contains the ID
     const aeRes  = await insync.post('/EncounterDetail/AddEditStartEncounter', {
