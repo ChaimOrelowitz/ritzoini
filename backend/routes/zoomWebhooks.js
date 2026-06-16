@@ -4,6 +4,7 @@ const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
 const crypto = require('crypto');
 const {
+  getZoomAccessToken,
   normalizePhone,
   findMatchingClients,
   attachToNearestBlankAppointment,
@@ -38,11 +39,9 @@ router.post('/webhook', async (req, res) => {
     return res.json({ ok: true, ignored: 'no recordings in payload' });
   }
 
-  const downloadToken = body.payload?.download_token || body.download_token;
-
   for (const recording of recordings) {
     try {
-      await processRecording(recording, body.payload, downloadToken);
+      await processRecording(recording, body.payload);
     } catch (err) {
       console.error('[zoom-webhook] Failed to process recording:', recording?.call_id, err.message);
     }
@@ -51,7 +50,7 @@ router.post('/webhook', async (req, res) => {
   res.json({ ok: true, processed: recordings.length });
 });
 
-async function processRecording(recording, payload, downloadToken) {
+async function processRecording(recording, payload) {
   const zoomCallId = recording.call_id || recording.id;
 
   const { data: insertedRows, error: insertError } = await supabase
@@ -80,7 +79,7 @@ async function processRecording(recording, payload, downloadToken) {
 
   let transcriptText = null;
   try {
-    transcriptText = await downloadTranscript(recording.transcript_download_url, downloadToken);
+    transcriptText = await downloadTranscript(recording.transcript_download_url);
   } catch (err) {
     await supabase.from('zoom_call_transcripts')
       .update({ status: 'download_failed', error_detail: err.message })
@@ -119,10 +118,10 @@ async function processRecording(recording, payload, downloadToken) {
   }
 }
 
-async function downloadTranscript(url, downloadToken) {
+async function downloadTranscript(url) {
   if (!url) throw new Error('No transcript_download_url in payload');
-  const fetchUrl = downloadToken ? `${url}?access_token=${downloadToken}` : url;
-  const resp = await fetch(fetchUrl);
+  const token = await getZoomAccessToken();
+  const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
   if (!resp.ok) throw new Error(`Download failed: HTTP ${resp.status}`);
   return await resp.text();
 }

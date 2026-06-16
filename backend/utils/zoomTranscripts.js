@@ -1,6 +1,33 @@
 const crypto = require('crypto');
 const supabase = require('../db/supabase');
 
+let cachedToken = null;
+let cachedExpiryMs = 0;
+
+// Zoom Phone recording transcripts require a real OAuth bearer token (the
+// webhook's download_token only applies to meeting recordings, not phone
+// calls) — fetched via Server-to-Server OAuth client-credentials grant and
+// cached until shortly before it expires.
+async function getZoomAccessToken() {
+  if (cachedToken && Date.now() < cachedExpiryMs) return cachedToken;
+
+  const accountId = process.env.ZOOM_S2S_ACCOUNT_ID;
+  const clientId = process.env.ZOOM_S2S_CLIENT_ID;
+  const clientSecret = process.env.ZOOM_S2S_CLIENT_SECRET;
+  const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+
+  const resp = await fetch(
+    `https://zoom.us/oauth/token?grant_type=account_credentials&account_id=${accountId}`,
+    { method: 'POST', headers: { Authorization: `Basic ${basic}` } }
+  );
+  if (!resp.ok) throw new Error(`Zoom OAuth token request failed: HTTP ${resp.status}`);
+  const json = await resp.json();
+
+  cachedToken = json.access_token;
+  cachedExpiryMs = Date.now() + (json.expires_in - 60) * 1000;
+  return cachedToken;
+}
+
 function normalizePhone(raw) {
   if (!raw) return null;
   let digits = String(raw).replace(/\D/g, '');
@@ -123,6 +150,7 @@ function verifyZoomSignature(req, secretToken) {
 }
 
 module.exports = {
+  getZoomAccessToken,
   normalizePhone,
   findMatchingClients,
   attachTranscriptToAppointment,
