@@ -5,6 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const Anthropic = require('@anthropic-ai/sdk');
 const { Resend } = require('resend');
 const insync = require('../utils/insync');
+const { attachPendingTranscriptsForClients } = require('../utils/zoomTranscripts');
 
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 const resend    = process.env.RESEND_API_KEY    ? new Resend(process.env.RESEND_API_KEY) : null;
@@ -222,6 +223,11 @@ router.post('/', requireAuth, async (req, res) => {
 
   const { data, error } = await supabase.from('oo_appointments').insert(rows).select();
   if (error) return res.status(500).json({ error: error.message });
+
+  const byClient = {};
+  for (const r of data) (byClient[r.client_id] ||= []).push(r);
+  await attachPendingTranscriptsForClients([client_id], byClient);
+
   res.json({ appointments: data, conflicts });
 });
 
@@ -308,6 +314,11 @@ router.post('/bulk-schedule', requireAuth, async (req, res) => {
 
   const { data: inserted, error } = await supabase.from('oo_appointments').insert(rows).select();
   if (error) return res.status(500).json({ error: error.message });
+
+  const byClient = {};
+  for (const r of inserted) (byClient[r.client_id] ||= []).push(r);
+  await attachPendingTranscriptsForClients(Object.keys(byClient), byClient);
+
   res.json({ created: inserted.length, total_dates: allDates.length });
 });
 

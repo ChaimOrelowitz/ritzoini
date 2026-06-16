@@ -140,3 +140,31 @@ BEGIN
   END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ─────────────────────────────────────────
+-- ZOOM PHONE CALL TRANSCRIPTS (One-on-One sessions)
+-- NOTE: oo_clients / oo_appointments themselves were created directly via the
+-- Supabase dashboard and are not reflected above — this section documents
+-- only what was added for the Zoom transcript-ingestion feature.
+-- ─────────────────────────────────────────
+CREATE TABLE zoom_call_transcripts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  zoom_call_id TEXT UNIQUE,
+  call_date_time TIMESTAMPTZ,
+  duration_seconds INT,
+  direction TEXT,
+  other_party_number TEXT,
+  other_party_number_normalized TEXT,
+  transcript_text TEXT,
+  matched_client_id UUID REFERENCES oo_clients(id),
+  candidate_client_ids JSONB,
+  matched_appointment_id UUID REFERENCES oo_appointments(id),
+  status TEXT NOT NULL DEFAULT 'pending_match'
+    CHECK (status IN ('pending_match','pending_appointment','attached','unmatched','download_failed')),
+  error_detail TEXT,
+  raw_payload JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  attached_at TIMESTAMPTZ
+);
+
+ALTER TABLE oo_appointments ADD COLUMN IF NOT EXISTS transcript_attached_at TIMESTAMPTZ;

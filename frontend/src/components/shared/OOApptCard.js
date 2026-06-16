@@ -313,6 +313,14 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
       <div style={{ marginTop: 14 }}>
         <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
           Session Notes
+          {appt.transcript_attached_at && (
+            <span style={{
+              fontSize: '0.65rem', fontWeight: 700, textTransform: 'none', letterSpacing: 0,
+              background: '#dcfce7', color: '#15803d', borderRadius: 4, padding: '2px 6px',
+            }} title={`Zoom transcript attached ${fmtDateTime(appt.transcript_attached_at)}`}>
+              📞 From Zoom transcript
+            </span>
+          )}
           {saveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.72rem' }}>Saving…</span>}
           {saveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.72rem' }}>✓ Saved</span>}
         </div>

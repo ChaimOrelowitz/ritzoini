@@ -17,6 +17,9 @@ app.use(cors({
   credentials: true,
 }));
 
+// Scoped ahead of the global parser so the raw bytes are available for Zoom's
+// webhook signature verification (body-parser no-ops on the second json() call).
+app.use('/api/zoom/webhook', express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.json());
 
 // Routes
@@ -33,6 +36,7 @@ app.use('/api/email',        require('./routes/email'));
 app.use('/api/oo/clients',       require('./routes/ooClients'));
 app.use('/api/oo/appointments',  require('./routes/ooAppointments'));
 app.use('/api/settings',         require('./routes/settings'));
+app.use('/api/zoom',             require('./routes/zoomWebhooks'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

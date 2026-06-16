@@ -77,6 +77,9 @@ export default function Layout() {
         <NavLink to="/oo/calls" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">☑</span> Sessions
         </NavLink>
+        <NavLink to="/oo/transcripts" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <span className="nav-icon">📝</span> Transcripts
+        </NavLink>
         <NavLink to="/oo/referral-sources" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">🔗</span> Sources / EHR
         </NavLink>
