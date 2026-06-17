@@ -144,7 +144,7 @@ router.get('/calendar', requireAuth, async (req, res) => {
         id, group_id, session_number, session_date, scheduled_date,
         start_time, scheduled_time, ecw_time, ecw_end_time, duration, status,
         groups!inner (
-          id, internal_name, group_name, supervisor_id, status,
+          id, internal_name, group_name, supervisor_id, status, ecw_end_time,
           supervisor:supervisor_id ( id, first_name, last_name )
         )
       `)

@@ -63,8 +63,8 @@ export default function CalendarPage() {
     const g = s.groups;
     const title = [g?.internal_name, g?.group_name].filter(Boolean).join(' · ');
 
-    // Compute end from start + duration so stale ecw_end_time never overrides actual length
-    const computedEnd = (() => {
+    // Session ecw_end_time first, then group's, then compute from start + duration
+    const endTime = s.ecw_end_time || g?.ecw_end_time || (() => {
       if (!time || !s.duration) return null;
       const [h, m] = time.slice(0, 5).split(':').map(Number);
       const total = h * 60 + m + parseInt(s.duration, 10);
@@ -75,7 +75,7 @@ export default function CalendarPage() {
       id: s.id,
       title,
       start: time ? `${date}T${time}` : date,
-      end: time && computedEnd ? `${date}T${computedEnd}` : undefined,
+      end: time && endTime ? `${date}T${endTime}` : undefined,
       allDay: !time,
       backgroundColor: colors.bg,
       borderColor: colors.border,
