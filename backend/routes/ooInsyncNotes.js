@@ -20,21 +20,23 @@ function parseEncounterList(html) {
   for (const row of rows) {
     if (!row.includes('trfslist')) continue;
 
-    // Encounter ID from any encounterid attribute or onclick
     const encIdMatch = row.match(/encounterid[="'\s:]+(\d{5,})/i);
     if (!encIdMatch) continue;
     const encId = encIdMatch[1];
 
-    // Date from first td title: "MM/DD/YYYY ..."
+    // Date from first td title with MM/DD/YYYY format
     const dateMatch = row.match(/title="(\d{2})\/(\d{2})\/(\d{4})/);
     const dateIso = dateMatch ? `${dateMatch[3]}-${dateMatch[1]}-${dateMatch[2]}` : null;
 
-    // All simple tds where title equals text content
-    const simpleTds = [...row.matchAll(/<td[^>]+title="([^"]{2,80})">\s*\1\s*<\/td>/g)]
-      .map(m => m[1].trim());
-    // simpleTds[0] = date string, [1] = type, [2] = provider, [3] = location
-    const type = simpleTds[1] || null;
-    const provider = simpleTds[2] || null;
+    // Collect all td title values (no length limit)
+    const allTitles = [...row.matchAll(/<td[^>]+title="([^"]+)"/g)].map(m => m[1]);
+
+    // Type = first title that is NOT a date string
+    const type = allTitles.find(t => !/^\d{2}\/\d{2}\/\d{4}/.test(t)) || null;
+
+    // Provider = first title that contains a comma and doesn't start with a digit
+    // (Last, First format — distinguishes from dates and facility names that start with "The")
+    const provider = allTitles.find(t => t.includes(',') && !/^\d/.test(t) && !/^The\b/i.test(t)) || null;
 
     results.push({ encId, dateIso, type, provider });
   }
