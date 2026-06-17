@@ -92,6 +92,9 @@ export default function OOClientDetailPage() {
   const [deleting,          setDeleting]          = useState(false);
   const [archiving,         setArchiving]         = useState(false);
 
+  const [digest,            setDigest]            = useState(null);
+  const [generatingDigest,  setGeneratingDigest]  = useState(false);
+
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
   const [debugFields,     setDebugFields]     = useState(null);
@@ -135,6 +138,7 @@ export default function OOClientDetailPage() {
       loadClientData(),
       loadAppts(),
       api.get('/oo/clients/referral-sources').then(all => setSources(Array.isArray(all) ? all : [])).catch(() => {}),
+      api.getPeerDigest(id).then(d => setDigest(d)).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
@@ -309,6 +313,18 @@ export default function OOClientDetailPage() {
   }
   function handleApptDelete(apptId) {
     setAppts(prev => prev.filter(a => a.id !== apptId));
+  }
+
+  async function handleGenerateDigest() {
+    setGeneratingDigest(true);
+    try {
+      const result = await api.generatePeerDigest(id);
+      setDigest(result.digest);
+    } catch (ex) {
+      alert(ex.message);
+    } finally {
+      setGeneratingDigest(false);
+    }
   }
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
@@ -782,6 +798,73 @@ export default function OOClientDetailPage() {
               No past appointments yet.
             </div>
           )}
+
+          {/* ── Weekly Peer Digest ── */}
+          <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid var(--gray-100)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 10 }}>
+              <div>
+                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                  Weekly Peer Digest
+                </div>
+                {digest && (
+                  <div style={{ fontSize: '0.7rem', color: 'var(--gray-400)', marginTop: 2 }}>
+                    {fmtDate(digest.digest_window_start)} – {fmtDate(digest.digest_window_end)}
+                    {' · '}{digest.notes_included_count} note{digest.notes_included_count !== 1 ? 's' : ''}
+                    {' · '}{digest.generation_mode === 'AppointmentTriggered' ? 'auto' : 'manual'}
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={handleGenerateDigest}
+                disabled={generatingDigest}
+                style={{
+                  flexShrink: 0,
+                  background: generatingDigest ? 'var(--gray-300)' : 'var(--navy)',
+                  color: '#fff', border: 'none', borderRadius: 6,
+                  padding: '5px 11px', fontSize: '0.72rem', fontWeight: 600,
+                  cursor: generatingDigest ? 'not-allowed' : 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {generatingDigest ? 'Generating…' : 'Generate Digest'}
+              </button>
+            </div>
+
+            {!digest ? (
+              <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)', padding: '10px 0' }}>
+                No digest yet — click Generate Digest to create one.
+              </div>
+            ) : digest.digest_status === 'No Peer Notes Found' ? (
+              <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', padding: '8px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
+                No peer notes found for {fmtDate(digest.digest_window_start)} – {fmtDate(digest.digest_window_end)}.
+              </div>
+            ) : digest.digest_status === 'Error' ? (
+              <div style={{ fontSize: '0.78rem', color: '#dc2626', padding: '8px 12px', background: '#fee2e2', borderRadius: 6 }}>
+                {digest.error_message || 'Digest generation failed.'}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  { key: 'main_themes',               label: 'Main Themes' },
+                  { key: 'notable_concerns',           label: 'Notable Concerns' },
+                  { key: 'progress_strengths',         label: 'Progress / Strengths' },
+                  { key: 'peer_support_interventions', label: 'Peer Interventions' },
+                  { key: 'suggested_oo_followup',      label: 'Suggested OO Follow-Up' },
+                ].map(({ key, label }) => !digest[key] ? null : (
+                  <div key={key} style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-100)', borderRadius: 6, padding: '8px 12px' }}>
+                    <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{label}</div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{digest[key]}</div>
+                  </div>
+                ))}
+                <div style={{ fontSize: '0.65rem', color: 'var(--gray-300)', marginTop: 2 }}>
+                  {digest.digest_status === 'Refreshed' ? 'Updated' : 'Generated'}{' '}
+                  {digest.generated_at
+                    ? new Date(digest.generated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : ''}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

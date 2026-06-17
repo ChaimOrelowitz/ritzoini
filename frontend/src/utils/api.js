@@ -109,6 +109,10 @@ export const api = {
     return json;
   },
 
+  // Peer Digest
+  generatePeerDigest: (clientId) => authFetch('/api/oo/peer-digest/generate', { method: 'POST', body: JSON.stringify({ client_id: clientId }) }),
+  getPeerDigest:      (clientId) => authFetch(`/api/oo/peer-digest/client/${clientId}`),
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),
