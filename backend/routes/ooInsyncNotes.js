@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
-const { requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { BASE, UA, login } = require('../utils/insync');
 
 const HEADERS = (cookie, referer) => ({
@@ -56,7 +56,7 @@ function stripHtml(html) {
 }
 
 // GET /api/oo/insync-notes?days=N (optional filter)
-router.get('/', requireAdmin, async (req, res) => {
+router.get('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     let q = supabase
       .from('insync_raw_notes')
@@ -82,7 +82,7 @@ router.get('/', requireAdmin, async (req, res) => {
 // POST /api/oo/insync-notes/import?days=7
 // Pulls peer support encounter notes from InSync for all OO clients in the date window.
 // Upserts into insync_raw_notes by insync_source_id — safe to run repeatedly.
-router.post('/import', requireAdmin, async (req, res) => {
+router.post('/import', requireAuth, requireAdmin, async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days || req.body?.days || '7', 10), 90);
     const cutoff = new Date();
