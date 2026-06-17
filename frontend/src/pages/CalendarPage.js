@@ -59,16 +59,23 @@ export default function CalendarPage() {
   const sessionEvents = sessions.map(s => {
     const date = s.session_date || s.scheduled_date;
     const time = s.ecw_time || s.start_time || s.scheduled_time;
-    const endTime = s.ecw_end_time || s.end_time;
     const colors = STATUS_COLORS[s.status] || STATUS_COLORS.scheduled;
     const g = s.groups;
     const title = [g?.internal_name, g?.group_name].filter(Boolean).join(' · ');
+
+    // Compute end from start + duration so stale ecw_end_time never overrides actual length
+    const computedEnd = (() => {
+      if (!time || !s.duration) return null;
+      const [h, m] = time.slice(0, 5).split(':').map(Number);
+      const total = h * 60 + m + parseInt(s.duration, 10);
+      return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}:00`;
+    })();
 
     return {
       id: s.id,
       title,
       start: time ? `${date}T${time}` : date,
-      end: time && endTime ? `${date}T${endTime}` : undefined,
+      end: time && computedEnd ? `${date}T${computedEnd}` : undefined,
       allDay: !time,
       backgroundColor: colors.bg,
       borderColor: colors.border,
