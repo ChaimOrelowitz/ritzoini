@@ -103,7 +103,7 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
 
     const { data: clients, error: clientsErr } = await supabase
       .from('oo_clients')
-      .select('id, first_name, last_name, insync_patient_id, insync_pri_phy_id')
+      .select('id, first_name, last_name, insync_patient_id')
       .not('insync_patient_id', 'is', null)
       .neq('status', 'archived');
     if (clientsErr) throw clientsErr;
