@@ -1067,7 +1067,8 @@ router.post('/:id/update-summary', requireAuth, async (req, res) => {
       .select('id, first_name, last_name, client_summary')
       .eq('id', req.params.id)
       .single();
-    if (ce || !client) return res.status(404).json({ error: 'Client not found' });
+    if (ce) return res.status(500).json({ error: ce.message });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
 
     const { data: appts } = await supabase
       .from('oo_appointments')
