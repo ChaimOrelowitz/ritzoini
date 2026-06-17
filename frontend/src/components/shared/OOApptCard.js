@@ -115,8 +115,9 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [sessionSummary,   setSessionSummary]   = useState(initialAppt.session_summary || '');
   const [summarySaveState, setSummarySaveState] = useState('idle');
   const summaryTimer = useRef(null);
-  const [magicNoting,      setMagicNoting]      = useState(false);
-  const [processing,       setProcessing]       = useState(false);
+  const [magicNoting,          setMagicNoting]          = useState(false);
+  const [summarizingSession,   setSummarizingSession]   = useState(false);
+  const [processing,           setProcessing]           = useState(false);
   const [fields,          setFields]          = useState(initialAppt.ai_fields || null);
   const [deleting,        setDeleting]        = useState(false);
   const [err,             setErr]             = useState('');
@@ -178,6 +179,16 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     finally { setMagicNoting(false); }
   }
 
+  async function handleSummarizeSession() {
+    if (!rawNotes.trim()) return;
+    setSummarizingSession(true);
+    try {
+      const r = await api.summarizeSession(appt.id, rawNotes);
+      setSessionSummary(r.session_summary || '');
+    } catch (ex) { setErr(ex.message); }
+    finally { setSummarizingSession(false); }
+  }
+
   async function handleCheckbox(field, checked) {
     const val = checked ? new Date().toISOString() : null;
     setAppt(prev => ({ ...prev, [field]: val }));
@@ -212,6 +223,10 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
       await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: rawNotes });
       const r = await api.post(`/oo/appointments/${appt.id}/process-note`, { raw_notes: rawNotes, treatment_plan: tp });
       setFields(r.fields);
+      // Auto-generate session summary in background
+      api.summarizeSession(appt.id, rawNotes)
+        .then(s => setSessionSummary(s.session_summary || ''))
+        .catch(() => {});
     } catch (ex) { setErr(ex.message); }
     finally { setProcessing(false); }
   }
@@ -567,8 +582,22 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         <div style={{ flex: 1, minWidth: 160, paddingLeft: 16, borderLeft: '1px solid var(--gray-100)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
             <span style={fldLabel}>Session Summary</span>
-            {summarySaveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.68rem' }}>Saving…</span>}
-            {summarySaveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.68rem' }}>✓</span>}
+            <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+              {summarizingSession && <span style={{ fontSize: '0.65rem', color: 'var(--gray-400)' }}>Generating…</span>}
+              {summarySaveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.68rem' }}>Saving…</span>}
+              {summarySaveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.68rem' }}>✓</span>}
+              <button
+                type="button"
+                onClick={handleSummarizeSession}
+                disabled={summarizingSession || !rawNotes.trim()}
+                title={rawNotes.trim() ? 'Generate summary from notes' : 'Write notes first'}
+                style={{
+                  background: 'none', border: 'none', padding: 2, lineHeight: 1,
+                  fontSize: '0.9rem', cursor: (!rawNotes.trim() || summarizingSession) ? 'not-allowed' : 'pointer',
+                  opacity: (!rawNotes.trim() || summarizingSession) ? 0.3 : 0.7,
+                }}
+              >✨</button>
+            </div>
           </div>
           <textarea
             value={sessionSummary}

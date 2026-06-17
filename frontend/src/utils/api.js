@@ -114,8 +114,9 @@ export const api = {
   getPeerDigest:      (clientId) => authFetch(`/api/oo/peer-digest/client/${clientId}`),
 
   // OO AI helpers
-  magicNote:           (apptId)   => authFetch(`/api/oo/appointments/${apptId}/magic-note`,   { method: 'POST' }),
-  updateClientSummary: (clientId) => authFetch(`/api/oo/clients/${clientId}/update-summary`,  { method: 'POST' }),
+  magicNote:           (apptId)        => authFetch(`/api/oo/appointments/${apptId}/magic-note`,      { method: 'POST' }),
+  summarizeSession:    (apptId, notes) => authFetch(`/api/oo/appointments/${apptId}/summarize-session`, { method: 'POST', body: JSON.stringify({ raw_notes: notes }) }),
+  updateClientSummary: (clientId)      => authFetch(`/api/oo/clients/${clientId}/update-summary`,     { method: 'POST' }),
 
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),

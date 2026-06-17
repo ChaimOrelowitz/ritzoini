@@ -1071,43 +1071,38 @@ router.post('/:id/update-summary', requireAuth, async (req, res) => {
 
     const { data: appts } = await supabase
       .from('oo_appointments')
-      .select('date, ai_fields')
+      .select('date, session_summary')
       .eq('client_id', req.params.id)
-      .not('ai_fields', 'is', null)
+      .not('session_summary', 'is', null)
+      .neq('session_summary', '')
       .order('date', { ascending: false })
       .limit(10);
 
-    const sessions = (appts || []).filter(a => a.ai_fields?.content_discussed);
-    if (!sessions.length) return res.status(400).json({ error: 'No processed session notes found for this client.' });
+    const sessions = (appts || []).filter(a => a.session_summary?.trim());
+    if (!sessions.length) return res.status(400).json({ error: 'No session summaries found for this client. Generate session summaries on individual appointments first.' });
 
-    const sessionBlocks = sessions.map((a, i) => {
-      const f = a.ai_fields;
-      return `Session ${i + 1} (${a.date}):
-Content: ${f.content_discussed || '—'}
-Interventions: ${f.interventions_used || '—'}
-Patient Response: ${f.patient_response || '—'}
-Progress: ${f.progress_toward_goals || '—'}`;
-    }).join('\n\n');
+    const sessionBlocks = sessions.map((a, i) =>
+      `Session ${i + 1} (${a.date}):\n${a.session_summary}`
+    ).join('\n\n');
 
     const existingSummary = client.client_summary || null;
 
-    const prompt = `You are a clinical documentation assistant. Based on the following therapy session notes for a client named ${client.first_name} ${client.last_name}, write a concise rolling clinical summary.
+    const prompt = `You are helping a therapist build a running picture of a client named ${client.first_name} ${client.last_name}. Below are session summaries written to capture how this client showed up — their energy, what they brought, their vibe.
 
-${existingSummary ? `EXISTING SUMMARY (update based on new session data):\n${existingSummary}\n\n` : ''}SESSION NOTES (most recent first):
+${existingSummary ? `EXISTING CLIENT PICTURE (update based on newer sessions):\n${existingSummary}\n\n` : ''}SESSION SUMMARIES (most recent first):
 ${sessionBlocks}
 
-Write a clinical summary (4–8 sentences) capturing:
-- The client's primary presenting concerns and clinical picture
-- Patterns in how the client engages in therapy
-- Notable progress or areas of struggle
-- Recurring themes or intervention approaches that have been effective
+Write a paragraph (4–8 sentences) giving the therapist a clear, accurate feel for who this client is:
+- Their personality, patterns, and typical way of showing up
+- What they tend to carry into sessions
+- How they engage — are they open, guarded, scattered, intense, avoidant?
+- Any notable shifts or themes that have emerged over time
 
 Rules:
-- Write in present tense ("The client presents with...", "The client has shown...")
-- Be concise and clinically accurate
-- Do not mention specific session dates
-- Do not mention audits, billing, compliance, or administrative language
-- Return only the summary paragraph — no headers, no bullets, no explanation`;
+- Write in present tense ("They tend to...", "This client often...")
+- Plain, direct language — not clinical documentation, not formal
+- No audit, billing, compliance, or administrative language
+- Return only the paragraph — no headers, no bullets`;
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',

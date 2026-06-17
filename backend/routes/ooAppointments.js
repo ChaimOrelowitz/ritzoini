@@ -514,6 +514,60 @@ Return exactly this JSON structure:
   }
 });
 
+// POST /:id/summarize-session — AI summary of raw notes for therapist feel (not a clinical note)
+router.post('/:id/summarize-session', requireAuth, async (req, res) => {
+  try {
+    if (!anthropic) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('id, raw_notes')
+      .eq('id', req.params.id)
+      .single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const notes = (req.body.raw_notes || appt.raw_notes || '').trim();
+    if (!notes) return res.status(400).json({ error: 'No notes to summarize.' });
+
+    const prompt = `You are helping a therapist build an accurate feel for their client. Below are raw notes or a call transcript from a session. Write a brief, plain-language summary (3–5 sentences) that captures how the client showed up.
+
+Raw notes / transcript:
+${notes}
+
+Focus on:
+- The client's emotional state and energy in this session
+- What they were preoccupied with or kept coming back to
+- How they engaged — open or guarded, scattered or focused, heavy or light
+- Any notable shifts, moments, or things that stood out
+- The overall vibe and feel of who this person is right now
+
+Rules:
+- Write in plain, direct language — NOT clinical documentation language
+- No "client presented with", no diagnostic framing, no billing language
+- This is for the therapist's internal feel for the client — not a formal record
+- Ignore greetings, scheduling, and logistics entirely
+- 3–5 sentences maximum
+- Return only the summary — no headers, no labels`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 512,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const summaryText = response.content[0].text.trim();
+
+    await supabase.from('oo_appointments')
+      .update({ session_summary: summaryText, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+
+    res.json({ session_summary: summaryText });
+  } catch (err) {
+    console.error('[summarize-session]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /:id/send-note — build email from processed fields, send to secretary
 router.post('/:id/send-note', requireAuth, async (req, res) => {
   try {
