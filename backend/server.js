@@ -35,6 +35,7 @@ app.use('/api/cron',         require('./routes/cron'));
 app.use('/api/email',        require('./routes/email'));
 app.use('/api/oo/clients',       require('./routes/ooClients'));
 app.use('/api/oo/appointments',  require('./routes/ooAppointments'));
+app.use('/api/oo/insync-notes',  require('./routes/ooInsyncNotes'));
 app.use('/api/settings',         require('./routes/settings'));
 app.use('/api/zoom',             require('./routes/zoomWebhooks'));
 
