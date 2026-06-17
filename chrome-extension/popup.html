@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: -apple-system, sans-serif; width: 280px; padding: 16px; margin: 0; color: #1e293b; }
+    h2 { margin: 0 0 12px; font-size: 1rem; color: #1e3a8a; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    label { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
+    input { flex: 1; padding: 7px 10px; border: 1.5px solid #cbd5e1; border-radius: 6px; font-size: 0.9rem; }
+    button { padding: 8px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 0.82rem; font-weight: 700; }
+    .btn-primary  { background: #1e3a8a; color: white; width: 100%; padding: 9px; margin-bottom: 8px; }
+    .btn-primary:disabled { opacity: 0.4; cursor: default; }
+    .btn-sign { background: #16a34a; color: white; width: 100%; padding: 9px; }
+    .btn-sign:disabled { opacity: 0.4; cursor: default; }
+    .stats { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; font-size: 0.82rem; display: none; }
+    .stat-row { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .stat-row:last-child { margin-bottom: 0; }
+    .flagged { color: #dc2626; font-weight: 700; }
+    .clean   { color: #16a34a; font-weight: 700; }
+    .status  { font-size: 0.78rem; color: #64748b; margin-bottom: 8px; min-height: 18px; }
+    .error   { color: #dc2626; }
+    .warn    { background: #fef3c7; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 10px; font-size: 0.78rem; color: #92400e; margin-bottom: 10px; display: none; }
+    hr { border: none; border-top: 1px solid #e2e8f0; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h2>Peer Note Signer</h2>
+
+  <div class="warn" id="wrongPage">
+    ⚠ Navigate to the InSync Co-Sign list page first.
+  </div>
+
+  <div id="mainUI">
+    <label>PIN</label>
+    <div class="row" style="margin-bottom:12px">
+      <input id="epin" type="password" placeholder="Your EPIN" maxlength="10" />
+    </div>
+
+    <button class="btn-primary" id="btnAnalyze">Analyze Notes</button>
+
+    <div class="status" id="status"></div>
+
+    <div class="stats" id="stats">
+      <div class="stat-row"><span>Total notes</span><span id="statTotal">—</span></div>
+      <div class="stat-row"><span>Flagged (skip)</span><span class="flagged" id="statFlagged">—</span></div>
+      <div class="stat-row"><span>Clean (sign)</span><span class="clean" id="statClean">—</span></div>
+    </div>
+
+    <button class="btn-sign" id="btnSign" disabled>Sign All Clean</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

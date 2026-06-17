@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "InSync Peer Note Signer",
+  "version": "1.0",
+  "description": "Flags Saturday notes, 3hr notes, under-18 before 3pm — bulk-signs the rest",
+  "permissions": ["activeTab", "storage"],
+  "host_permissions": ["*://thedscenter.insynchcs.com/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Peer Note Signer"
+  },
+  "content_scripts": [{
+    "matches": ["*://thedscenter.insynchcs.com/CoSignEncounterList/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }]
+}
