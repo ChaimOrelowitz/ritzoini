@@ -148,18 +148,21 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
         summary.total_encounters += encounters.length;
 
         const types = [...new Set(encounters.map(e => e.type).filter(Boolean))];
-        summary.client_detail.push({ client: clientName, pid, encounters: encounters.length, types });
+        const peerAll  = encounters.filter(e => e.type?.toLowerCase().includes('peer'));
+        const peerEncs = peerAll.filter(e => e.dateIso && e.dateIso >= cutoffIso);
+        summary.client_detail.push({
+          client: clientName, pid,
+          encounters: encounters.length, types,
+          peer_total: peerAll.length,
+          peer_in_window: peerEncs.length,
+          peer_dates: peerAll.map(e => e.dateIso).slice(0, 10),
+        });
 
         if (debug) {
           for (const e of encounters) {
             summary.debug_encounters.push({ client: clientName, pid, ...e });
           }
         }
-
-        const peerEncs = encounters.filter(e =>
-          e.dateIso && e.dateIso >= cutoffIso &&
-          e.type && e.type.toLowerCase().includes('peer')
-        );
 
         console.log(`[insync-notes] ${clientName}: ${encounters.length} encounters (${types.join(', ')}), ${peerEncs.length} peer in window`);
 
