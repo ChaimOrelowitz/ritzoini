@@ -55,6 +55,30 @@ function stripHtml(html) {
     .trim();
 }
 
+// GET /api/oo/insync-notes?days=N (optional filter)
+router.get('/', requireAdmin, async (req, res) => {
+  try {
+    let q = supabase
+      .from('insync_raw_notes')
+      .select('id, insync_source_id, insync_patient_id, oo_client_id, client_name, service_date, encounter_type, provider_name, raw_note_text, import_batch, imported_at')
+      .order('service_date', { ascending: false })
+      .order('imported_at', { ascending: false })
+      .limit(500);
+
+    if (req.query.days) {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - parseInt(req.query.days, 10));
+      q = q.gte('service_date', cutoff.toISOString().slice(0, 10));
+    }
+
+    const { data, error } = await q;
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/oo/insync-notes/import?days=7
 // Pulls peer support encounter notes from InSync for all OO clients in the date window.
 // Upserts into insync_raw_notes by insync_source_id — safe to run repeatedly.
