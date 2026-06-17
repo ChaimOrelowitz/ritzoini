@@ -149,15 +149,12 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
         const encounters = parseEncounterList(encHtml);
         summary.total_encounters += encounters.length;
 
-        const types = [...new Set(encounters.map(e => e.type).filter(Boolean))];
-        const peerAll  = encounters.filter(e => e.type?.toLowerCase().includes('peer'));
-        const peerEncs = peerAll.filter(e => e.dateIso && e.dateIso >= cutoffIso);
+        // Filter by date window first — cheap, no extra API calls
+        const inWindow = encounters.filter(e => e.dateIso && e.dateIso >= cutoffIso);
         summary.client_detail.push({
           client: clientName, pid,
-          encounters: encounters.length, types,
-          peer_total: peerAll.length,
-          peer_in_window: peerEncs.length,
-          peer_dates: peerAll.map(e => e.dateIso).slice(0, 10),
+          encounters: encounters.length,
+          in_window: inWindow.length,
         });
 
         if (debug) {
@@ -166,13 +163,12 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
           }
         }
 
-        console.log(`[insync-notes] ${clientName}: ${encounters.length} encounters (${types.join(', ')}), ${peerEncs.length} peer in window`);
+        console.log(`[insync-notes] ${clientName}: ${encounters.length} total, ${inWindow.length} in date window`);
 
-        for (const enc of peerEncs) {
-          summary.peer_notes_found++;
+        // For each encounter in the date window: call GetDefaultNote and check for Peer Support note type
+        for (const enc of inWindow) {
           const noteRef = `${BASE}/EncounterNote/EncounterNote?pid=${pid}&eid=${enc.encId}`;
 
-          // GetDefaultNote → notesId
           const gdnBody = new URLSearchParams({
             'EncounterNoteBaseData[IsNeedToGeneretePDF]': 'true',
             'EncounterNoteBaseData[EncounterID]': enc.encId,
@@ -193,12 +189,18 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
             });
             if (gdnRes.ok) {
               const gdnJson = await gdnRes.json();
-              notesId = gdnJson.EncounterNoteStyle?.EncNotelist?.[0]?.NotesId || 0;
+              // Find Peer Support note in the available note list by name, not hard-coded ID
+              const peerNote = gdnJson.EncounterNoteStyle?.EncNotelist?.find(
+                n => n.NotesName?.toLowerCase().includes('peer support')
+              );
+              notesId = peerNote?.NotesId || 0;
             }
           } catch (e) {
             summary.errors.push(`GetDefaultNote enc ${enc.encId}: ${e.message}`);
           }
           if (!notesId) continue;
+
+          summary.peer_notes_found++;
 
           // GenerateEncounterNote → HTML note text
           const genBody = new URLSearchParams({
