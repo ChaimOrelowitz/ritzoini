@@ -14,6 +14,13 @@ function fmt12(t) {
   return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
 
+function fmtEndTime(dateObj) {
+  if (!dateObj) return null;
+  const h = dateObj.getHours(), m = dateObj.getMinutes();
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ampm}`;
+}
+
 const STATUS_COLORS = {
   scheduled:  { bg: '#1e40af', border: '#1e40af' },
   completed:  { bg: '#166534', border: '#166534' },
@@ -122,10 +129,19 @@ export default function CalendarPage() {
 
   function renderEventContent(info) {
     const { type, ecwTime, groupName, internalName } = info.event.extendedProps;
+    const isTimeGrid = info.view.type !== 'dayGridMonth';
+    const endLabel = isTimeGrid ? fmtEndTime(info.event.end) : null;
+    const endLine = endLabel ? (
+      <div style={{ fontSize: '0.65rem', opacity: 0.8, marginTop: 1, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+        Ends {endLabel}
+      </div>
+    ) : null;
+
     if (type === 'oo') {
       return (
         <div style={{ padding: '1px 3px', overflow: 'hidden', fontSize: '0.75rem', lineHeight: 1.3, cursor: 'pointer' }}>
           <span>{info.event.title}</span>
+          {endLine}
         </div>
       );
     }
@@ -136,6 +152,7 @@ export default function CalendarPage() {
         {groupName && internalName !== groupName && (
           <span style={{ opacity: 0.85 }}> · {groupName}</span>
         )}
+        {endLine}
       </div>
     );
   }
