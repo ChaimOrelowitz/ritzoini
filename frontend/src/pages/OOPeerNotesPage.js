@@ -182,16 +182,29 @@ export default function OOPeerNotesPage() {
           {lastImport.error ? (
             <span>Import failed: {lastImport.error}</span>
           ) : (
-            <span>
-              Import complete · {lastImport.clients_checked} clients checked ·{' '}
-              {lastImport.peer_notes_found} peer notes found ·{' '}
-              {lastImport.upserted} upserted
-              {lastImport.errors?.length > 0 && (
-                <span style={{ marginLeft: 8, color: '#b45309' }}>
-                  · {lastImport.errors.length} error{lastImport.errors.length !== 1 ? 's' : ''}: {lastImport.errors.join('; ')}
-                </span>
+            <div>
+              <div>
+                Import complete · {lastImport.clients_checked} clients ·{' '}
+                {lastImport.total_encounters ?? '?'} total encounters found ·{' '}
+                {lastImport.peer_notes_found} peer notes ·{' '}
+                {lastImport.upserted} upserted
+                {lastImport.errors?.length > 0 && (
+                  <span style={{ marginLeft: 8, color: '#b45309' }}>
+                    · {lastImport.errors.length} error{lastImport.errors.length !== 1 ? 's' : ''}: {lastImport.errors.join('; ')}
+                  </span>
+                )}
+              </div>
+              {lastImport.client_detail?.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'inherit', opacity: 0.85 }}>
+                  {lastImport.client_detail.map((c, i) => (
+                    <div key={i}>
+                      {c.client}: {c.encounters} encounters
+                      {c.types?.length > 0 ? ` — ${c.types.join(', ')}` : ' — (none parsed)'}
+                    </div>
+                  ))}
+                </div>
               )}
-            </span>
+            </div>
           )}
         </div>
       )}

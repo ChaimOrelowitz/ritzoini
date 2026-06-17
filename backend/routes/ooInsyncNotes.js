@@ -110,7 +110,8 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
 
     const batchId = new Date().toISOString().slice(0, 10);
     const debug = req.query.debug === 'true';
-    const summary = { clients_checked: 0, peer_notes_found: 0, upserted: 0, errors: [],
+    const summary = { clients_checked: 0, total_encounters: 0, peer_notes_found: 0, upserted: 0, errors: [],
+      client_detail: [],
       ...(debug ? { debug_encounters: [] } : {}) };
 
     for (const client of clients || []) {
@@ -144,6 +145,10 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
         const encHtml = await encListRes.text();
 
         const encounters = parseEncounterList(encHtml);
+        summary.total_encounters += encounters.length;
+
+        const types = [...new Set(encounters.map(e => e.type).filter(Boolean))];
+        summary.client_detail.push({ client: clientName, pid, encounters: encounters.length, types });
 
         if (debug) {
           for (const e of encounters) {
@@ -156,7 +161,7 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
           e.type && e.type.toLowerCase().includes('peer')
         );
 
-        console.log(`[insync-notes] ${clientName}: ${encounters.length} encounters, ${peerEncs.length} peer in window`);
+        console.log(`[insync-notes] ${clientName}: ${encounters.length} encounters (${types.join(', ')}), ${peerEncs.length} peer in window`);
 
         for (const enc of peerEncs) {
           summary.peer_notes_found++;
