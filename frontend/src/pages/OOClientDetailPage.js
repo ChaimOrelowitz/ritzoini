@@ -1,12 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import ApptCard, {
-  fmt12, fmtDate, fmtDateTime, goalText, goalTarget, buildTpText,
-  APPT_STATUS_STYLE, fldLabel, modalLabelSt,
+  fmt12, fmtDate, goalText, goalTarget,
+  fldLabel, modalLabelSt,
 } from '../components/shared/OOApptCard';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function calcAge(dob) {
   if (!dob) return null;
@@ -20,7 +20,7 @@ function fmtDob(d) {
   return `${m}/${day}/${y}`;
 }
 
-// ── Right column components ───────────────────────────────────────────────────
+// ── Shared sub-components (used inside collapsible) ───────────────────────────
 
 function RField({ label, value }) {
   if (!value) return null;
@@ -32,12 +32,11 @@ function RField({ label, value }) {
   );
 }
 
-function RSection({ title, action, children }) {
+function RSection({ title, children }) {
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
-        <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em', flex: 1 }}>{title}</span>
-        {action}
+      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 8, paddingBottom: 5, borderBottom: '1px solid var(--gray-100)' }}>
+        {title}
       </div>
       {children}
     </div>
@@ -66,6 +65,8 @@ export default function OOClientDetailPage() {
   const [loading,  setLoading]  = useState(true);
   const [showRaw,  setShowRaw]  = useState(false);
 
+  const [showClientDetails, setShowClientDetails] = useState(false);
+
   const [showEditModal, setShowEditModal] = useState(false);
   const [editForm,      setEditForm]      = useState(EMPTY_EDIT_FORM);
   const [savingClient,  setSavingClient]  = useState(false);
@@ -76,9 +77,16 @@ export default function OOClientDetailPage() {
   const [addingAppt,   setAddingAppt]   = useState(false);
   const [addConflicts, setAddConflicts] = useState([]);
 
-  const [clientNotes,     setClientNotes]     = useState('');
-  const [notesSaveState,  setNotesSaveState]  = useState('idle');
+  const [clientNotes,    setClientNotes]    = useState('');
+  const [notesSaveState, setNotesSaveState] = useState('idle');
   const notesSaveTimer = useRef(null);
+
+  const [summaryText,      setSummaryText]      = useState('');
+  const [topicsText,       setTopicsText]       = useState('');
+  const [summarySaveState, setSummarySaveState] = useState('idle');
+  const [topicsSaveState,  setTopicsSaveState]  = useState('idle');
+  const summaryTimer = useRef(null);
+  const topicsTimer  = useRef(null);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting,          setDeleting]          = useState(false);
@@ -93,12 +101,42 @@ export default function OOClientDetailPage() {
   const [debugTpRaw,      setDebugTpRaw]      = useState(null);
   const [debuggingTp,     setDebuggingTp]     = useState(false);
 
+  // Most recent appointment dated ≤ today — the one whose summary fills the right panel
+  const today = new Date().toISOString().split('T')[0];
+  const prevAppt = useMemo(() =>
+    [...appts]
+      .filter(a => a.date <= today)
+      .sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''))
+      [0] || null
+  , [appts]); // eslint-disable-line
+
+  useEffect(() => {
+    setSummaryText(prevAppt?.session_summary || '');
+    setTopicsText(prevAppt?.topics_for_upcoming || '');
+  }, [prevAppt?.id]);
+
   function loadClientData() {
     return api.get(`/oo/clients/${id}`).then(c => {
       setClient(c);
       setClientNotes(c.notes || '');
     }).catch(() => navigate('/oo/clients'));
   }
+
+  const loadAppts = useCallback(() =>
+    api.get(`/oo/appointments?client_id=${id}`)
+      .then(d => setAppts(Array.isArray(d) ? [...d].sort((a, b) =>
+        a.date !== b.date ? a.date.localeCompare(b.date) : a.time.localeCompare(b.time)
+      ) : []))
+      .catch(() => {})
+  , [id]);
+
+  useEffect(() => {
+    Promise.all([
+      loadClientData(),
+      loadAppts(),
+      api.get('/oo/clients/referral-sources').then(all => setSources(Array.isArray(all) ? all : [])).catch(() => {}),
+    ]).finally(() => setLoading(false));
+  }, [id]); // eslint-disable-line
 
   function handleClientNotesChange(val) {
     setClientNotes(val);
@@ -113,22 +151,33 @@ export default function OOClientDetailPage() {
     }, 1000);
   }
 
-  const loadAppts = useCallback(() => {
-    return api.get(`/oo/appointments?client_id=${id}`)
-      .then(d => setAppts(Array.isArray(d) ? [...d].sort((a, b) => {
-        if (a.date !== b.date) return a.date.localeCompare(b.date);
-        return a.time.localeCompare(b.time);
-      }) : []))
-      .catch(() => {});
-  }, [id]);
+  function handleSummaryChange(val) {
+    setSummaryText(val);
+    setSummarySaveState('saving');
+    clearTimeout(summaryTimer.current);
+    summaryTimer.current = setTimeout(async () => {
+      if (!prevAppt) return;
+      try {
+        await api.patch(`/oo/appointments/${prevAppt.id}`, { session_summary: val });
+        setSummarySaveState('saved');
+        setTimeout(() => setSummarySaveState('idle'), 2000);
+      } catch { setSummarySaveState('idle'); }
+    }, 1000);
+  }
 
-  useEffect(() => {
-    Promise.all([
-      loadClientData(),
-      loadAppts(),
-      api.get('/oo/clients/referral-sources').then(all => setSources(Array.isArray(all) ? all : [])).catch(() => {}),
-    ]).finally(() => setLoading(false));
-  }, [id]); // eslint-disable-line
+  function handleTopicsChange(val) {
+    setTopicsText(val);
+    setTopicsSaveState('saving');
+    clearTimeout(topicsTimer.current);
+    topicsTimer.current = setTimeout(async () => {
+      if (!prevAppt) return;
+      try {
+        await api.patch(`/oo/appointments/${prevAppt.id}`, { topics_for_upcoming: val });
+        setTopicsSaveState('saved');
+        setTimeout(() => setTopicsSaveState('idle'), 2000);
+      } catch { setTopicsSaveState('idle'); }
+    }, 1000);
+  }
 
   function openEditClient() {
     setClientSaveErr('');
@@ -180,10 +229,9 @@ export default function OOClientDetailPage() {
         repeat_weeks: parseInt(addForm.repeat_weeks) || 1,
       });
       const newAppts = result.appointments || [];
-      setAppts(prev => [...prev, ...newAppts].sort((a, b) => {
-        if (a.date !== b.date) return a.date.localeCompare(b.date);
-        return a.time.localeCompare(b.time);
-      }));
+      setAppts(prev => [...prev, ...newAppts].sort((a, b) =>
+        a.date !== b.date ? a.date.localeCompare(b.date) : a.time.localeCompare(b.time)
+      ));
       if (result.conflicts?.length) {
         setAddConflicts(result.conflicts);
       } else {
@@ -283,7 +331,13 @@ export default function OOClientDetailPage() {
     done:      appts.filter(a => a.note_done_at).length,
   };
 
-  const lastNote = [...appts].reverse().find(a => a.raw_notes?.trim());
+  const summaryFieldSt = {
+    width: '100%', boxSizing: 'border-box', minHeight: 110,
+    fontSize: '0.82rem', lineHeight: 1.55,
+    border: '1px solid var(--gray-200)', borderRadius: 6,
+    padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
+    background: 'white', color: 'var(--gray-800)',
+  };
 
   return (
     <div style={{ padding: '24px 32px 48px', maxWidth: 1400 }}>
@@ -296,9 +350,9 @@ export default function OOClientDetailPage() {
       )}
 
       {/* ── Header ── */}
-      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 28, alignItems: 'flex-start', marginBottom: 16 }}>
 
-        {/* Left — personal notes */}
+        {/* Left — My Notes */}
         <div style={{ width: 320, flexShrink: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
             <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>My Notes</span>
@@ -310,8 +364,8 @@ export default function OOClientDetailPage() {
             onChange={e => handleClientNotesChange(e.target.value)}
             placeholder="Notes just for you…"
             style={{
-              width: '100%', boxSizing: 'border-box',
-              minHeight: 110, fontSize: '0.82rem', lineHeight: 1.55,
+              width: '100%', boxSizing: 'border-box', minHeight: 110,
+              fontSize: '0.82rem', lineHeight: 1.55,
               border: '1px solid var(--gray-200)', borderRadius: 6,
               padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
               background: 'white', color: 'var(--gray-800)',
@@ -319,9 +373,9 @@ export default function OOClientDetailPage() {
           />
         </div>
 
-        {/* Right — client info */}
+        {/* Right — client identity */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          {/* Name + sex + status + referral + Edit button */}
+          {/* Name + badges + action buttons */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0 }}>{client.last_name}, {client.first_name}</h2>
             {sexBadge && (
@@ -350,7 +404,7 @@ export default function OOClientDetailPage() {
             </button>
           </div>
 
-          {/* DOB (age) · last session duration */}
+          {/* DOB · session minutes */}
           {client.dob && (
             <div style={{ fontSize: '0.85rem', color: 'var(--gray-700)', marginBottom: 4 }}>
               {fmtDob(client.dob)}{age !== null ? ` (${age})` : ''}
@@ -367,7 +421,23 @@ export default function OOClientDetailPage() {
             </div>
           )}
 
-          {/* Mother / Father — always show */}
+          {/* Address · InSync link */}
+          {(client.address || client.insync_patient_id) && (
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--gray-600)', marginBottom: 4 }}>
+              {client.address && <span>{client.address}</span>}
+              {client.insync_patient_id && (
+                <a
+                  href={`https://thedscenter.insynchcs.com/facesheet?pid=${client.insync_patient_id}`}
+                  target="_blank" rel="noopener noreferrer"
+                  style={{ color: '#1e40af', textDecoration: 'underline', fontWeight: 500 }}
+                >
+                  Open in InSync ↗
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Mother / Father */}
           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--gray-600)', marginBottom: 4 }}>
             <span>
               <strong style={{ color: 'var(--gray-400)', fontWeight: 600 }}>Mother:</strong>{' '}
@@ -385,7 +455,7 @@ export default function OOClientDetailPage() {
             </span>
           </div>
 
-          {/* DX badges + Sync */}
+          {/* DX badges + Sync DX */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center', marginTop: 6 }}>
             {raw.diagnoses?.map((d, i) => (
               <span key={i} style={{
@@ -408,16 +478,166 @@ export default function OOClientDetailPage() {
             )}
           </div>
         </div>
-
       </div>
 
-      {/* ── 3-column body ── */}
+      {/* ── Collapsible Client Details ── */}
+      <div style={{ marginBottom: 20, border: '1px solid var(--gray-200)', borderRadius: 8, overflow: 'hidden' }}>
+        <button
+          onClick={() => setShowClientDetails(s => !s)}
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+            padding: '9px 16px', background: 'var(--gray-50)', border: 'none',
+            borderBottom: showClientDetails ? '1px solid var(--gray-200)' : 'none',
+            cursor: 'pointer', textAlign: 'left',
+          }}
+        >
+          <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>{showClientDetails ? '▾' : '▸'}</span>
+          <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--gray-600)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Client Details
+          </span>
+          {!showClientDetails && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginLeft: 4 }}>
+              {[client.mrn && `MRN ${client.mrn}`, rs?.name, client.payer_plan_name].filter(Boolean).join(' · ')}
+            </span>
+          )}
+        </button>
+
+        {showClientDetails && (
+          <div style={{ padding: '20px 24px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 40px' }}>
+
+              {/* Col 1: client info + referral */}
+              <div>
+                <RSection title="Client Info">
+                  <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
+                    {client.mrn && (
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>MRN</div>
+                        <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.mrn}</div>
+                      </div>
+                    )}
+                    {client.insync_patient_id && (
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>InSync ID</div>
+                        <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.insync_patient_id}</div>
+                      </div>
+                    )}
+                  </div>
+                  <RField label="Primary Provider"  value={raw.PrimaryProviderName || null} />
+                  <RField label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
+                  <RField label="Counselor"         value={client.counselor} />
+                </RSection>
+                {rs && (
+                  <RSection title="Referral Source">
+                    <RField label="Name"        value={rs.name} />
+                    <RField label="Notes Email" value={rs.notes_email} />
+                  </RSection>
+                )}
+              </div>
+
+              {/* Col 2: insurance */}
+              <div>
+                <RSection title="Insurance">
+                  <RField label="Current Payer" value={client.payer_plan_name} />
+                  {primaryPayers.length > 0 && (
+                    <div style={{ marginBottom: 8 }}>
+                      <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Payer History</div>
+                      {primaryPayers.slice(0, 4).map((p, i) => (
+                        <div key={i} style={{ fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: 2 }}>{p}</div>
+                      ))}
+                    </div>
+                  )}
+                </RSection>
+              </div>
+
+              {/* Col 3: treatment plan */}
+              <div>
+                <RSection title="Treatment Plan">
+                  {raw.treatment_plan?.length > 0 ? raw.treatment_plan.map((p, i) => (
+                    <div key={i} style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
+                      <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--navy)', marginBottom: 6 }}>{p.problem}</div>
+                      {p.long_term_goals?.map((g, j) => (
+                        <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                          <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>LTG {j + 1}</span>
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
+                            {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
+                          </div>
+                        </div>
+                      ))}
+                      {p.short_term_goals?.map((g, j) => (
+                        <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                          <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>STG {j + 1}</span>
+                          <div style={{ flex: 1 }}>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
+                            {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
+                          </div>
+                        </div>
+                      ))}
+                      {p.interventions?.length > 0 && (
+                        <div style={{ marginTop: 4, display: 'flex', gap: 6 }}>
+                          <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>Interventions</span>
+                          <span style={{ fontSize: '0.78rem', color: 'var(--gray-600)', lineHeight: 1.4 }}>{p.interventions.join(' · ')}</span>
+                        </div>
+                      )}
+                    </div>
+                  )) : (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)' }}>
+                      {client.insync_patient_id ? 'Sync from InSync to load' : 'No InSync ID linked'}
+                    </div>
+                  )}
+                </RSection>
+              </div>
+            </div>
+
+            {/* Debug + raw — full width, below the 3-col grid */}
+            {client.insync_patient_id && (
+              <div style={{ borderTop: '1px solid var(--gray-100)', paddingTop: 12, marginTop: 4, display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                <button onClick={debugNoteFields} disabled={debuggingFields}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0 }}>
+                  {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
+                </button>
+                <button onClick={debugEncounter} disabled={debugging}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0 }}>
+                  {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
+                </button>
+                <button onClick={debugTpRawFn} disabled={debuggingTp}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0 }}>
+                  {debuggingTp ? 'Fetching…' : '⚙ Debug: TP raw text + brackets'}
+                </button>
+              </div>
+            )}
+            {(debugFields || debugHtml || debugTpRaw) && (
+              <div style={{ marginTop: 8 }}>
+                {debugFields && <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{JSON.stringify(debugFields, null, 2)}</pre>}
+                {debugHtml   && <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{debugHtml}</pre>}
+                {debugTpRaw  && <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>{JSON.stringify(debugTpRaw, null, 2)}</pre>}
+              </div>
+            )}
+
+            {client.insync_data && (
+              <div style={{ marginTop: 8 }}>
+                <button onClick={() => setShowRaw(s => !s)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: 'var(--gray-400)', padding: 0 }}>
+                  {showRaw ? '▾' : '▸'} Raw InSync data
+                </button>
+                {showRaw && (
+                  <pre style={{ marginTop: 6, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 10, fontSize: '0.65rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
+                    {JSON.stringify(client.insync_data, null, 2)}
+                  </pre>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── 2-column body ── */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
 
         {/* Left — stats + sessions */}
-        <div style={{ flex: 6, paddingRight: 28, minWidth: 0 }}>
+        <div style={{ flex: 2, paddingRight: 28, minWidth: 0 }}>
 
-          {/* Stats */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
             {[
               { label: 'Total',     value: stats.total,     color: 'var(--navy)' },
@@ -435,13 +655,15 @@ export default function OOClientDetailPage() {
             ))}
           </div>
 
-          {/* Sessions card */}
           <div className="card" style={{ marginBottom: 24 }}>
             <div className="card-header">
               <h3 style={{ fontSize: '1rem', color: 'var(--navy)' }}>Sessions</h3>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <span style={{ fontSize: '0.72rem', color: 'var(--gray-400)' }}>Click date/time to edit</span>
-                <button className="btn btn-gold btn-xs" onClick={() => { setShowAddAppt(s => !s); setAddConflicts([]); if (!showAddAppt && raw.typical_session_minutes) setAddForm(f => ({ ...f, duration: String(raw.typical_session_minutes) })); }}>
+                <button className="btn btn-gold btn-xs" onClick={() => {
+                  setShowAddAppt(s => !s); setAddConflicts([]);
+                  if (!showAddAppt && raw.typical_session_minutes) setAddForm(f => ({ ...f, duration: String(raw.typical_session_minutes) }));
+                }}>
                   + Add Session
                 </button>
               </div>
@@ -508,177 +730,56 @@ export default function OOClientDetailPage() {
         {/* Divider */}
         <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
 
-        {/* Middle — last note + treatment plan */}
-        <div style={{ flex: 4, padding: '0 24px', minWidth: 0 }}>
+        {/* Right — Previous Appointment summary */}
+        <div style={{ flex: 1, paddingLeft: 24, minWidth: 0 }}>
+          <div style={{ marginBottom: 12, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
+            <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+              Previous Appointment
+            </div>
+            {prevAppt && (
+              <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginTop: 2 }}>
+                {fmtDate(prevAppt.date)} · {fmt12(prevAppt.time)}
+              </div>
+            )}
+          </div>
 
-          {/* Last written note */}
-          {lastNote ? (
-            <RSection title="Last Note">
-              <div style={{ fontSize: '0.7rem', color: 'var(--gray-400)', marginBottom: 6 }}>
-                {fmtDate(lastNote.date)} · {fmt12(lastNote.time)}
+          {prevAppt ? (
+            <>
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                  <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    Summary of Last Session
+                  </span>
+                  {summarySaveState === 'saving' && <span style={{ fontSize: '0.63rem', color: 'var(--gold)' }}>Saving…</span>}
+                  {summarySaveState === 'saved'  && <span style={{ fontSize: '0.63rem', color: '#16a34a' }}>✓</span>}
+                </div>
+                <textarea
+                  value={summaryText}
+                  onChange={e => handleSummaryChange(e.target.value)}
+                  placeholder="What was covered this session…"
+                  style={summaryFieldSt}
+                />
               </div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', whiteSpace: 'pre-wrap', lineHeight: 1.6, background: 'var(--gray-50)', borderRadius: 6, padding: '8px 10px', border: '1px solid var(--gray-100)' }}>
-                {lastNote.raw_notes}
+
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+                  <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                    Topics for Upcoming Session
+                  </span>
+                  {topicsSaveState === 'saving' && <span style={{ fontSize: '0.63rem', color: 'var(--gold)' }}>Saving…</span>}
+                  {topicsSaveState === 'saved'  && <span style={{ fontSize: '0.63rem', color: '#16a34a' }}>✓</span>}
+                </div>
+                <textarea
+                  value={topicsText}
+                  onChange={e => handleTopicsChange(e.target.value)}
+                  placeholder="What to address next time…"
+                  style={summaryFieldSt}
+                />
               </div>
-            </RSection>
+            </>
           ) : (
-            <RSection title="Last Note">
-              <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)' }}>No notes written yet</div>
-            </RSection>
-          )}
-
-          {/* Treatment Plan */}
-          <RSection title="Treatment Plan">
-            {raw.treatment_plan?.length > 0 ? raw.treatment_plan.map((p, i) => (
-              <div key={i} style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
-                <div style={{ fontWeight: 700, fontSize: '0.82rem', color: 'var(--navy)', marginBottom: 6 }}>{p.problem}</div>
-                {p.long_term_goals?.map((g, j) => (
-                  <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>LTG {j + 1}</span>
-                    <div style={{ flex: 1 }}>
-                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
-                      {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
-                    </div>
-                  </div>
-                ))}
-                {p.short_term_goals?.map((g, j) => (
-                  <div key={j} style={{ marginBottom: 5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2, minWidth: 38 }}>STG {j + 1}</span>
-                    <div style={{ flex: 1 }}>
-                      <span style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.4 }}>{goalText(g)}</span>
-                      {goalTarget(g) && <span style={{ display: 'inline-block', marginLeft: 8, fontSize: '0.65rem', color: '#b45309', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 3, padding: '0 5px' }}>↳ {goalTarget(g)}</span>}
-                    </div>
-                  </div>
-                ))}
-                {p.interventions?.length > 0 && (
-                  <div style={{ marginTop: 4, display: 'flex', gap: 6 }}>
-                    <span style={{ fontSize: '0.62rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', whiteSpace: 'nowrap', marginTop: 2 }}>Interventions</span>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--gray-600)', lineHeight: 1.4 }}>{p.interventions.join(' · ')}</span>
-                  </div>
-                )}
-              </div>
-            )) : (
-              <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)' }}>
-                {client.insync_patient_id ? 'Sync from InSync to load' : 'No InSync ID linked'}
-              </div>
-            )}
-          </RSection>
-        </div>
-
-        {/* Divider */}
-        <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
-
-        {/* Right — client info, referral, insurance, debug */}
-        <div style={{ flex: 3, paddingLeft: 24, minWidth: 0 }}>
-
-          {/* Client Info */}
-          <RSection title="Client Info">
-            <div style={{ display: 'flex', gap: 16, marginBottom: 10 }}>
-              {client.mrn && (
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>MRN</div>
-                  <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.mrn}</div>
-                </div>
-              )}
-              {client.insync_patient_id && (
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>InSync ID</div>
-                  <div style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>{client.insync_patient_id}</div>
-                </div>
-              )}
-            </div>
-            <RField label="Primary Provider"  value={raw.PrimaryProviderName || null} />
-            <RField label="Referring Provider" value={client.referring_provider || raw.ReferringProviderName || null} />
-            <RField label="Counselor"         value={client.counselor} />
-            <RField label="Address"           value={client.address} />
-          </RSection>
-
-          {/* Referral Source */}
-          {rs && (
-            <RSection title="Referral Source">
-              <RField label="Name"        value={rs.name} />
-              <RField label="Notes Email" value={rs.notes_email} />
-            </RSection>
-          )}
-
-          {/* EHR */}
-          {ehr && (
-            <RSection title="EHR">
-              <RField label="Name" value={ehr.name} />
-              {client.insync_patient_id && (
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 2 }}>Facesheet</div>
-                  <a
-                    href={`https://thedscenter.insynchcs.com/facesheet?pid=${client.insync_patient_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ fontSize: '0.82rem', color: '#1e40af', textDecoration: 'underline', fontWeight: 500 }}
-                  >
-                    Open in InSync ↗
-                  </a>
-                </div>
-              )}
-            </RSection>
-          )}
-
-          {/* Insurance */}
-          <RSection title="Insurance">
-            <RField label="Current Payer" value={client.payer_plan_name} />
-            {primaryPayers.length > 0 && (
-              <div style={{ marginBottom: 8 }}>
-                <div style={{ fontSize: '0.63rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>Payer History</div>
-                {primaryPayers.slice(0, 4).map((p, i) => (
-                  <div key={i} style={{ fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: 2 }}>{p}</div>
-                ))}
-              </div>
-            )}
-          </RSection>
-
-          {/* Debug */}
-          {client.insync_patient_id && (
-            <div style={{ marginBottom: 16 }}>
-              <button onClick={debugNoteFields} disabled={debuggingFields}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
-                {debuggingFields ? 'Fetching…' : '⚙ Debug: note fields'}
-              </button>
-              {debugFields && (
-                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-                  {JSON.stringify(debugFields, null, 2)}
-                </pre>
-              )}
-              <button onClick={debugEncounter} disabled={debugging}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
-                {debugging ? 'Fetching…' : '⚙ Debug: encounter HTML'}
-              </button>
-              {debugHtml && (
-                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-                  {debugHtml}
-                </pre>
-              )}
-              <button onClick={debugTpRawFn} disabled={debuggingTp}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: '#f59e0b', padding: 0, display: 'block', marginBottom: 5 }}>
-                {debuggingTp ? 'Fetching…' : '⚙ Debug: TP raw text + brackets'}
-              </button>
-              {debugTpRaw && (
-                <pre style={{ background: '#1e1e1e', color: '#d4d4d4', borderRadius: 6, padding: 10, fontSize: '0.62rem', overflowX: 'auto', maxHeight: 300, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-                  {JSON.stringify(debugTpRaw, null, 2)}
-                </pre>
-              )}
-            </div>
-          )}
-
-          {/* Raw InSync */}
-          {client.insync_data && (
-            <div style={{ marginTop: 4 }}>
-              <button onClick={() => setShowRaw(s => !s)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.7rem', color: 'var(--gray-400)', padding: 0 }}>
-                {showRaw ? '▾' : '▸'} Raw InSync data
-              </button>
-              {showRaw && (
-                <pre style={{ marginTop: 6, background: 'var(--gray-50)', border: '1px solid var(--gray-200)', borderRadius: 6, padding: 10, fontSize: '0.65rem', color: 'var(--gray-600)', overflowX: 'auto', maxHeight: 280, overflowY: 'auto' }}>
-                  {JSON.stringify(client.insync_data, null, 2)}
-                </pre>
-              )}
+            <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)', padding: '20px 0' }}>
+              No past appointments yet.
             </div>
           )}
         </div>
@@ -834,5 +935,3 @@ export default function OOClientDetailPage() {
     </div>
   );
 }
-
-const tpLabelSt = { display: 'inline-block', fontSize: '0.68rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', minWidth: 80, marginRight: 8 };

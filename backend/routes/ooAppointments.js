@@ -457,7 +457,7 @@ ${fields.additional_comments ? `<p><strong>Additional Comments:</strong><br>${fi
 
 // PATCH update appointment (notes, status)
 router.patch('/:id', requireAuth, async (req, res) => {
-  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at', 'called_at', 'ai_fields'];
+  const allowed = ['raw_notes', 'status', 'duration', 'date', 'time', 'note_sent_at', 'note_sent_email_id', 'note_done_at', 'called_at', 'ai_fields', 'session_summary', 'topics_for_upcoming'];
   const updates = {};
   for (const k of allowed) {
     if (req.body[k] !== undefined) updates[k] = req.body[k];
@@ -1012,7 +1012,6 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[ControlId_109]':               audioOnlyReason,
       'data[ControlId_105]':               '',
       'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
-      'data[ControlId_37]':                appt.ai_fields.additional_comments        || '',
       'data[ControlId_104]':               modalityValues,
       'data[ControlId_112]':               locationValue,
       'data[ControlId_96]':                providerDisplayName,
