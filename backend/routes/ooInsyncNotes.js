@@ -139,7 +139,7 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
         const encListRes = await fetch(`${BASE}/Facesheet/FSEncounterReload`, {
           method: 'POST',
           headers: HEADERS(cookie),
-          body: `PatientID=${pid}&PageSize=50&SortBy=VisitDateNTime+DESC`,
+          body: `PatientID=${pid}&PageSize=200&SortBy=VisitDateNTime+DESC`,
         });
         if (!encListRes.ok) continue;
         const encHtml = await encListRes.text();
