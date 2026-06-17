@@ -13,7 +13,7 @@ const HEADERS = (cookie, referer) => ({
   'Referer': referer || `${BASE}/facesheet`,
 });
 
-// Parse FSEncounterReload HTML → [{ encId, dateIso, type, provider }]
+// Parse FSEncounterReload HTML → [{ encId, dateIso, type, provider, rawRow }]
 function parseEncounterList(html) {
   const rows = html.split(/(?=<tr class="trfslist)/i);
   const results = [];
@@ -38,7 +38,7 @@ function parseEncounterList(html) {
     // (Last, First format — distinguishes from dates and facility names that start with "The")
     const provider = allTitles.find(t => t.includes(',') && !/^\d/.test(t) && !/^The\b/i.test(t)) || null;
 
-    results.push({ encId, dateIso, type, provider });
+    results.push({ encId, dateIso, type, provider, rawRow: row });
   }
   return results;
 }
@@ -138,10 +138,11 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
           headers: { ...HEADERS(cookie), 'Accept': 'text/html,*/*', 'X-Requested-With': undefined },
         });
 
+        const pageSize = Math.min(days * 10, 200);
         const encListRes = await fetch(`${BASE}/Facesheet/FSEncounterReload`, {
           method: 'POST',
           headers: HEADERS(cookie),
-          body: `PatientID=${pid}&PageSize=200&SortBy=VisitDateNTime+DESC`,
+          body: `PatientID=${pid}&PageSize=${pageSize}&SortBy=VisitDateNTime+DESC`,
         });
         if (!encListRes.ok) continue;
         const encHtml = await encListRes.text();
@@ -151,22 +152,28 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
 
         // Filter by date window first — cheap, no extra API calls
         const inWindow = encounters.filter(e => e.dateIso && e.dateIso >= cutoffIso);
-        summary.client_detail.push({
-          client: clientName, pid,
-          encounters: encounters.length,
-          in_window: inWindow.length,
-        });
 
         if (debug) {
-          for (const e of encounters) {
+          for (const { rawRow: _r, ...e } of encounters) {
             summary.debug_encounters.push({ client: clientName, pid, ...e });
           }
         }
 
-        console.log(`[insync-notes] ${clientName}: ${encounters.length} total, ${inWindow.length} in date window`);
+        // Pre-filter: only call GetDefaultNote for rows whose raw HTML mentions "peer" —
+        // skips non-peer encounters (insurance auth, physicals, etc.) with no extra API calls
+        const peerCandidates = inWindow.filter(e => e.rawRow?.toLowerCase().includes('peer'));
 
-        // For each encounter in the date window: call GetDefaultNote and check for Peer Support note type
-        for (const enc of inWindow) {
+        summary.client_detail.push({
+          client: clientName, pid,
+          encounters: encounters.length,
+          in_window: inWindow.length,
+          peer_candidates: peerCandidates.length,
+        });
+
+        console.log(`[insync-notes] ${clientName}: ${encounters.length} total, ${inWindow.length} in window, ${peerCandidates.length} peer candidates`);
+
+        // For each peer candidate: call GetDefaultNote and confirm via EncNotelist
+        for (const enc of peerCandidates) {
           const noteRef = `${BASE}/EncounterNote/EncounterNote?pid=${pid}&eid=${enc.encId}`;
 
           const gdnBody = new URLSearchParams({

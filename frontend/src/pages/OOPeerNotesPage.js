@@ -198,7 +198,7 @@ export default function OOPeerNotesPage() {
                 <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'inherit', opacity: 0.85 }}>
                   {lastImport.client_detail.map((c, i) => (
                     <div key={i}>
-                      {c.client}: {c.encounters} enc · {c.in_window ?? 0} in window
+                      {c.client}: {c.encounters} enc · {c.in_window ?? 0} in window · {c.peer_candidates ?? 0} peer candidates
                     </div>
                   ))}
                 </div>
