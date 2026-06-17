@@ -103,7 +103,7 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
 
     const { data: clients, error: clientsErr } = await supabase
       .from('oo_clients')
-      .select('id, first_name, last_name, insync_patient_id')
+      .select('id, first_name, last_name, insync_patient_id, insync_data')
       .not('insync_patient_id', 'is', null)
       .neq('status', 'archived');
     if (clientsErr) throw clientsErr;
@@ -116,9 +116,25 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
     for (const client of clients || []) {
       summary.clients_checked++;
       const pid = client.insync_patient_id;
+      const priPhyId = client.insync_data?.PrimaryPhysician || client.insync_data?.PriPhyId || 0;
       const clientName = `${client.first_name || ''} ${client.last_name || ''}`.trim();
 
       try {
+        // Establish patient context in InSync session (mirrors fetchFacesheetAndTP)
+        await fetch(`${BASE}/EncPatientRestrictAccess/CheckPatientRestriction`, {
+          method: 'POST',
+          headers: { ...HEADERS(cookie), 'Content-Type': 'application/json; charset=UTF-8' },
+          body: JSON.stringify({ intpatientid: pid, PageTitle: 'facesheet', PriPhyId: priPhyId }),
+        });
+        await fetch(`${BASE}/PatientSearch/SaveVisitedPatientLog`, {
+          method: 'POST',
+          headers: HEADERS(cookie),
+          body: `patientID=${pid}`,
+        });
+        await fetch(`${BASE}/facesheet`, {
+          headers: { ...HEADERS(cookie), 'Accept': 'text/html,*/*', 'X-Requested-With': undefined },
+        });
+
         const encListRes = await fetch(`${BASE}/Facesheet/FSEncounterReload`, {
           method: 'POST',
           headers: HEADERS(cookie),
