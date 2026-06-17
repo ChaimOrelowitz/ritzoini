@@ -558,7 +558,7 @@ Rules:
     const summaryText = response.content[0].text.trim();
 
     await supabase.from('oo_appointments')
-      .update({ session_summary: summaryText, updated_at: new Date().toISOString() })
+      .update({ session_summary: summaryText, session_summary_incorporated: false, updated_at: new Date().toISOString() })
       .eq('id', req.params.id);
 
     res.json({ session_summary: summaryText });

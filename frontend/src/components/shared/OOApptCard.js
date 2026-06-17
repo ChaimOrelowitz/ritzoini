@@ -185,6 +185,8 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     try {
       const r = await api.summarizeSession(appt.id, rawNotes);
       setSessionSummary(r.session_summary || '');
+      // Chain: update client summary with the newly incorporated session
+      api.updateClientSummary(client.id).catch(() => {});
     } catch (ex) { setErr(ex.message); }
     finally { setSummarizingSession(false); }
   }
@@ -223,9 +225,12 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
       await api.patch(`/oo/appointments/${appt.id}`, { raw_notes: rawNotes });
       const r = await api.post(`/oo/appointments/${appt.id}/process-note`, { raw_notes: rawNotes, treatment_plan: tp });
       setFields(r.fields);
-      // Auto-generate session summary in background
+      // Auto-generate session summary, then update client summary (both in background)
       api.summarizeSession(appt.id, rawNotes)
-        .then(s => setSessionSummary(s.session_summary || ''))
+        .then(s => {
+          setSessionSummary(s.session_summary || '');
+          return api.updateClientSummary(client.id);
+        })
         .catch(() => {});
     } catch (ex) { setErr(ex.message); }
     finally { setProcessing(false); }

@@ -1057,7 +1057,7 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
   }
 });
 
-// POST /:id/update-summary — AI-generate rolling client summary from processed session notes
+// POST /:id/update-summary — incremental: only reads session summaries not yet incorporated
 router.post('/:id/update-summary', requireAuth, async (req, res) => {
   try {
     if (!anthropic) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
@@ -1070,40 +1070,46 @@ router.post('/:id/update-summary', requireAuth, async (req, res) => {
     if (ce) return res.status(500).json({ error: ce.message });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const { data: appts } = await supabase
+    // Only fetch session summaries not yet folded into client_summary
+    const { data: appts, error: apptErr } = await supabase
       .from('oo_appointments')
-      .select('date, session_summary')
+      .select('id, date, session_summary')
       .eq('client_id', req.params.id)
+      .eq('session_summary_incorporated', false)
       .not('session_summary', 'is', null)
       .neq('session_summary', '')
-      .order('date', { ascending: false })
-      .limit(10);
+      .order('date', { ascending: true });
 
-    const sessions = (appts || []).filter(a => a.session_summary?.trim());
-    if (!sessions.length) return res.status(400).json({ error: 'No session summaries found for this client. Generate session summaries on individual appointments first.' });
+    const newSessions = (appts || []).filter(a => a.session_summary?.trim());
 
-    const sessionBlocks = sessions.map((a, i) =>
-      `Session ${i + 1} (${a.date}):\n${a.session_summary}`
-    ).join('\n\n');
+    if (!newSessions.length) {
+      return res.json({ client_summary: client.client_summary, updated: false });
+    }
 
     const existingSummary = client.client_summary || null;
 
-    const prompt = `You are helping a therapist build a running picture of a client named ${client.first_name} ${client.last_name}. Below are session summaries written to capture how this client showed up — their energy, what they brought, their vibe.
+    const sessionBlocks = newSessions.map(a =>
+      `Session (${a.date}):\n${a.session_summary}`
+    ).join('\n\n');
 
-${existingSummary ? `EXISTING CLIENT PICTURE (update based on newer sessions):\n${existingSummary}\n\n` : ''}SESSION SUMMARIES (most recent first):
+    const prompt = `You are helping a therapist maintain a running picture of a client named ${client.first_name} ${client.last_name}.
+
+${existingSummary ? `CURRENT CLIENT PICTURE:\n${existingSummary}\n\n` : ''}NEW SESSION SUMMARIES TO INCORPORATE (not yet in the picture above):
 ${sessionBlocks}
 
-Write a paragraph (4–8 sentences) giving the therapist a clear, accurate feel for who this client is:
-- Their personality, patterns, and typical way of showing up
+${existingSummary ? 'Update the current client picture to fold in what is captured in the new sessions.' : 'Write an initial client picture based on these sessions.'}
+
+Write a paragraph (4–8 sentences) capturing:
+- Who this client is — their personality, patterns, typical presentation
 - What they tend to carry into sessions
-- How they engage — are they open, guarded, scattered, intense, avoidant?
-- Any notable shifts or themes that have emerged over time
+- How they engage — open, guarded, scattered, focused, avoidant?
+- Any notable shifts or themes over time
 
 Rules:
 - Write in present tense ("They tend to...", "This client often...")
-- Plain, direct language — not clinical documentation, not formal
+- Plain, direct language — not formal clinical documentation
 - No audit, billing, compliance, or administrative language
-- Return only the paragraph — no headers, no bullets`;
+- Return only the updated paragraph — no headers, no bullets, no explanation`;
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
@@ -1117,7 +1123,12 @@ Rules:
       .update({ client_summary: summaryText, updated_at: new Date().toISOString() })
       .eq('id', req.params.id);
 
-    res.json({ client_summary: summaryText });
+    // Mark those session summaries as incorporated so they won't be re-read next time
+    await supabase.from('oo_appointments')
+      .update({ session_summary_incorporated: true })
+      .in('id', newSessions.map(a => a.id));
+
+    res.json({ client_summary: summaryText, updated: true, sessions_incorporated: newSessions.length });
   } catch (err) {
     console.error('[update-summary]', err);
     res.status(500).json({ error: err.message });
