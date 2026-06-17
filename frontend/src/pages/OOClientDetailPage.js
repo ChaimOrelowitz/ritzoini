@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { api } from '../utils/api';
 import ApptCard, {
-  fmt12, fmtDate, goalText, goalTarget,
+  goalText, goalTarget,
   fldLabel, modalLabelSt,
 } from '../components/shared/OOApptCard';
 
@@ -81,19 +81,14 @@ export default function OOClientDetailPage() {
   const [notesSaveState, setNotesSaveState] = useState('idle');
   const notesSaveTimer = useRef(null);
 
-  const [summaryText,      setSummaryText]      = useState('');
-  const [topicsText,       setTopicsText]       = useState('');
-  const [summarySaveState, setSummarySaveState] = useState('idle');
-  const [topicsSaveState,  setTopicsSaveState]  = useState('idle');
-  const summaryTimer = useRef(null);
-  const topicsTimer  = useRef(null);
+  const [clientSummary,        setClientSummary]        = useState('');
+  const [clientSummarySaveState, setClientSummarySaveState] = useState('idle');
+  const [updatingClientSummary,  setUpdatingClientSummary]  = useState(false);
+  const clientSummaryTimer = useRef(null);
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting,          setDeleting]          = useState(false);
   const [archiving,         setArchiving]         = useState(false);
-
-  const [digest,            setDigest]            = useState(null);
-  const [generatingDigest,  setGeneratingDigest]  = useState(false);
 
   const [syncingFs,       setSyncingFs]       = useState(false);
   const [fsMsg,           setFsMsg]           = useState('');
@@ -104,24 +99,11 @@ export default function OOClientDetailPage() {
   const [debugTpRaw,      setDebugTpRaw]      = useState(null);
   const [debuggingTp,     setDebuggingTp]     = useState(false);
 
-  // Most recent appointment dated ≤ today — the one whose summary fills the right panel
-  const today = new Date().toISOString().split('T')[0];
-  const prevAppt = useMemo(() =>
-    [...appts]
-      .filter(a => a.date <= today)
-      .sort((a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || ''))
-      [0] || null
-  , [appts]); // eslint-disable-line
-
-  useEffect(() => {
-    setSummaryText(prevAppt?.session_summary || '');
-    setTopicsText(prevAppt?.topics_for_upcoming || '');
-  }, [prevAppt?.id]);
-
   function loadClientData() {
     return api.get(`/oo/clients/${id}`).then(c => {
       setClient(c);
       setClientNotes(c.notes || '');
+      setClientSummary(c.client_summary || '');
     }).catch(() => navigate('/oo/clients'));
   }
 
@@ -138,7 +120,6 @@ export default function OOClientDetailPage() {
       loadClientData(),
       loadAppts(),
       api.get('/oo/clients/referral-sources').then(all => setSources(Array.isArray(all) ? all : [])).catch(() => {}),
-      api.getPeerDigest(id).then(d => setDigest(d)).catch(() => {}),
     ]).finally(() => setLoading(false));
   }, [id]); // eslint-disable-line
 
@@ -155,32 +136,27 @@ export default function OOClientDetailPage() {
     }, 1000);
   }
 
-  function handleSummaryChange(val) {
-    setSummaryText(val);
-    setSummarySaveState('saving');
-    clearTimeout(summaryTimer.current);
-    summaryTimer.current = setTimeout(async () => {
-      if (!prevAppt) return;
+  function handleClientSummaryChange(val) {
+    setClientSummary(val);
+    setClientSummarySaveState('saving');
+    clearTimeout(clientSummaryTimer.current);
+    clientSummaryTimer.current = setTimeout(async () => {
       try {
-        await api.patch(`/oo/appointments/${prevAppt.id}`, { session_summary: val });
-        setSummarySaveState('saved');
-        setTimeout(() => setSummarySaveState('idle'), 2000);
-      } catch { setSummarySaveState('idle'); }
+        await api.put(`/oo/clients/${id}`, { client_summary: val });
+        setClientSummarySaveState('saved');
+        setTimeout(() => setClientSummarySaveState('idle'), 2000);
+      } catch { setClientSummarySaveState('idle'); }
     }, 1000);
   }
 
-  function handleTopicsChange(val) {
-    setTopicsText(val);
-    setTopicsSaveState('saving');
-    clearTimeout(topicsTimer.current);
-    topicsTimer.current = setTimeout(async () => {
-      if (!prevAppt) return;
-      try {
-        await api.patch(`/oo/appointments/${prevAppt.id}`, { topics_for_upcoming: val });
-        setTopicsSaveState('saved');
-        setTimeout(() => setTopicsSaveState('idle'), 2000);
-      } catch { setTopicsSaveState('idle'); }
-    }, 1000);
+  async function handleUpdateClientSummary() {
+    setUpdatingClientSummary(true);
+    try {
+      const result = await api.updateClientSummary(id);
+      setClientSummary(result.client_summary || '');
+      setClient(prev => ({ ...prev, client_summary: result.client_summary }));
+    } catch (ex) { alert(ex.message); }
+    finally { setUpdatingClientSummary(false); }
   }
 
   function openEditClient() {
@@ -315,18 +291,6 @@ export default function OOClientDetailPage() {
     setAppts(prev => prev.filter(a => a.id !== apptId));
   }
 
-  async function handleGenerateDigest() {
-    setGeneratingDigest(true);
-    try {
-      const result = await api.generatePeerDigest(id);
-      setDigest(result.digest);
-    } catch (ex) {
-      alert(ex.message);
-    } finally {
-      setGeneratingDigest(false);
-    }
-  }
-
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!client) return null;
 
@@ -347,8 +311,8 @@ export default function OOClientDetailPage() {
     done:      appts.filter(a => a.note_done_at).length,
   };
 
-  const summaryFieldSt = {
-    width: '100%', boxSizing: 'border-box', minHeight: 110,
+  const textareaFieldSt = {
+    width: '100%', boxSizing: 'border-box', minHeight: 90,
     fontSize: '0.82rem', lineHeight: 1.55,
     border: '1px solid var(--gray-200)', borderRadius: 6,
     padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
@@ -379,13 +343,7 @@ export default function OOClientDetailPage() {
             value={clientNotes}
             onChange={e => handleClientNotesChange(e.target.value)}
             placeholder="Notes just for you…"
-            style={{
-              width: '100%', boxSizing: 'border-box', minHeight: 110,
-              fontSize: '0.82rem', lineHeight: 1.55,
-              border: '1px solid var(--gray-200)', borderRadius: 6,
-              padding: '8px 10px', resize: 'vertical', fontFamily: 'inherit',
-              background: 'white', color: 'var(--gray-800)',
-            }}
+            style={textareaFieldSt}
           />
         </div>
 
@@ -606,6 +564,37 @@ export default function OOClientDetailPage() {
               </div>
             </div>
 
+            {/* Client Summary — full width, below the 3-col grid */}
+            <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--gray-100)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                  <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
+                    Client Summary
+                  </div>
+                  {clientSummarySaveState === 'saving' && <span style={{ fontSize: '0.68rem', color: 'var(--gold)' }}>Saving…</span>}
+                  {clientSummarySaveState === 'saved'  && <span style={{ fontSize: '0.68rem', color: '#16a34a' }}>✓ Saved</span>}
+                </div>
+                <button
+                  onClick={handleUpdateClientSummary}
+                  disabled={updatingClientSummary}
+                  style={{
+                    background: updatingClientSummary ? 'var(--gray-300)' : 'var(--navy)',
+                    color: '#fff', border: 'none', borderRadius: 6,
+                    padding: '4px 10px', fontSize: '0.7rem', fontWeight: 600,
+                    cursor: updatingClientSummary ? 'not-allowed' : 'pointer',
+                  }}
+                >
+                  {updatingClientSummary ? 'Updating…' : '✨ Update Summary'}
+                </button>
+              </div>
+              <textarea
+                value={clientSummary}
+                onChange={e => handleClientSummaryChange(e.target.value)}
+                placeholder="AI-maintained client summary — click ✨ Update Summary to generate from processed session notes…"
+                style={{ ...textareaFieldSt, minHeight: 80 }}
+              />
+            </div>
+
             {/* Debug + raw — full width, below the 3-col grid */}
             {client.insync_patient_id && (
               <div style={{ borderTop: '1px solid var(--gray-100)', paddingTop: 12, marginTop: 4, display: 'flex', gap: 20, flexWrap: 'wrap', alignItems: 'flex-start' }}>
@@ -648,11 +637,8 @@ export default function OOClientDetailPage() {
         )}
       </div>
 
-      {/* ── 2-column body ── */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 0 }}>
-
-        {/* Left — stats + sessions */}
-        <div style={{ flex: 2, paddingRight: 28, minWidth: 0 }}>
+      {/* ── Sessions ── */}
+      <div>
 
           <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
             {[
@@ -741,131 +727,6 @@ export default function OOClientDetailPage() {
               ))}
             </div>
           </div>
-        </div>
-
-        {/* Divider */}
-        <div style={{ width: 1, background: 'var(--gray-200)', alignSelf: 'stretch', flexShrink: 0 }} />
-
-        {/* Right — Previous Appointment summary */}
-        <div style={{ flex: 1, paddingLeft: 24, minWidth: 0 }}>
-          <div style={{ marginBottom: 12, paddingBottom: 6, borderBottom: '1px solid var(--gray-100)' }}>
-            <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-              Previous Appointment
-            </div>
-            {prevAppt && (
-              <div style={{ fontSize: '0.72rem', color: 'var(--gray-400)', marginTop: 2 }}>
-                {fmtDate(prevAppt.date)} · {fmt12(prevAppt.time)}
-              </div>
-            )}
-          </div>
-
-          {prevAppt ? (
-            <>
-              <div style={{ marginBottom: 18 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                  <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                    Summary of Last Session
-                  </span>
-                  {summarySaveState === 'saving' && <span style={{ fontSize: '0.63rem', color: 'var(--gold)' }}>Saving…</span>}
-                  {summarySaveState === 'saved'  && <span style={{ fontSize: '0.63rem', color: '#16a34a' }}>✓</span>}
-                </div>
-                <textarea
-                  value={summaryText}
-                  onChange={e => handleSummaryChange(e.target.value)}
-                  placeholder="What was covered this session…"
-                  style={summaryFieldSt}
-                />
-              </div>
-
-              <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                  <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                    Topics for Upcoming Session
-                  </span>
-                  {topicsSaveState === 'saving' && <span style={{ fontSize: '0.63rem', color: 'var(--gold)' }}>Saving…</span>}
-                  {topicsSaveState === 'saved'  && <span style={{ fontSize: '0.63rem', color: '#16a34a' }}>✓</span>}
-                </div>
-                <textarea
-                  value={topicsText}
-                  onChange={e => handleTopicsChange(e.target.value)}
-                  placeholder="What to address next time…"
-                  style={summaryFieldSt}
-                />
-              </div>
-            </>
-          ) : (
-            <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)', padding: '20px 0' }}>
-              No past appointments yet.
-            </div>
-          )}
-
-          {/* ── Weekly Peer Digest ── */}
-          <div style={{ marginTop: 28, paddingTop: 20, borderTop: '1px solid var(--gray-100)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10, gap: 10 }}>
-              <div>
-                <div style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.07em' }}>
-                  Weekly Peer Digest
-                </div>
-                {digest && (
-                  <div style={{ fontSize: '0.7rem', color: 'var(--gray-400)', marginTop: 2 }}>
-                    {fmtDate(digest.digest_window_start)} – {fmtDate(digest.digest_window_end)}
-                    {' · '}{digest.notes_included_count} note{digest.notes_included_count !== 1 ? 's' : ''}
-                    {' · '}{digest.generation_mode === 'AppointmentTriggered' ? 'auto' : 'manual'}
-                  </div>
-                )}
-              </div>
-              <button
-                onClick={handleGenerateDigest}
-                disabled={generatingDigest}
-                style={{
-                  flexShrink: 0,
-                  background: generatingDigest ? 'var(--gray-300)' : 'var(--navy)',
-                  color: '#fff', border: 'none', borderRadius: 6,
-                  padding: '5px 11px', fontSize: '0.72rem', fontWeight: 600,
-                  cursor: generatingDigest ? 'not-allowed' : 'pointer',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {generatingDigest ? 'Generating…' : 'Generate Digest'}
-              </button>
-            </div>
-
-            {!digest ? (
-              <div style={{ fontSize: '0.78rem', color: 'var(--gray-300)', padding: '10px 0' }}>
-                No digest yet — click Generate Digest to create one.
-              </div>
-            ) : digest.digest_status === 'No Peer Notes Found' ? (
-              <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', padding: '8px 12px', background: 'var(--gray-50)', borderRadius: 6, border: '1px solid var(--gray-100)' }}>
-                No peer notes found for {fmtDate(digest.digest_window_start)} – {fmtDate(digest.digest_window_end)}.
-              </div>
-            ) : digest.digest_status === 'Error' ? (
-              <div style={{ fontSize: '0.78rem', color: '#dc2626', padding: '8px 12px', background: '#fee2e2', borderRadius: 6 }}>
-                {digest.error_message || 'Digest generation failed.'}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {[
-                  { key: 'main_themes',               label: 'Main Themes' },
-                  { key: 'notable_concerns',           label: 'Notable Concerns' },
-                  { key: 'progress_strengths',         label: 'Progress / Strengths' },
-                  { key: 'peer_support_interventions', label: 'Peer Interventions' },
-                  { key: 'suggested_oo_followup',      label: 'Suggested OO Follow-Up' },
-                ].map(({ key, label }) => !digest[key] ? null : (
-                  <div key={key} style={{ background: 'var(--gray-50)', border: '1px solid var(--gray-100)', borderRadius: 6, padding: '8px 12px' }}>
-                    <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{label}</div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--gray-700)', lineHeight: 1.6, whiteSpace: 'pre-line' }}>{digest[key]}</div>
-                  </div>
-                ))}
-                <div style={{ fontSize: '0.65rem', color: 'var(--gray-300)', marginTop: 2 }}>
-                  {digest.digest_status === 'Refreshed' ? 'Updated' : 'Generated'}{' '}
-                  {digest.generated_at
-                    ? new Date(digest.generated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                    : ''}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
       </div>
 
       {/* ── Delete Confirmation Modal ── */}

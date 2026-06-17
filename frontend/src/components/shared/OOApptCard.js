@@ -109,10 +109,14 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [localDate, setLocalDate] = useState(initialAppt.date || '');
   const [localTime, setLocalTime] = useState((initialAppt.time || '').slice(0, 5));
   const [localDur,  setLocalDur]  = useState(String(initialAppt.duration || 45));
-  const [rawNotes,  setRawNotes]  = useState(initialAppt.raw_notes || '');
-  const [saveState, setSaveState] = useState('idle');
+  const [rawNotes,         setRawNotes]         = useState(initialAppt.raw_notes || '');
+  const [saveState,        setSaveState]        = useState('idle');
   const saveTimer = useRef(null);
-  const [processing,      setProcessing]      = useState(false);
+  const [sessionSummary,   setSessionSummary]   = useState(initialAppt.session_summary || '');
+  const [summarySaveState, setSummarySaveState] = useState('idle');
+  const summaryTimer = useRef(null);
+  const [magicNoting,      setMagicNoting]      = useState(false);
+  const [processing,       setProcessing]       = useState(false);
   const [fields,          setFields]          = useState(initialAppt.ai_fields || null);
   const [deleting,        setDeleting]        = useState(false);
   const [err,             setErr]             = useState('');
@@ -132,6 +136,7 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     setLocalTime((initialAppt.time || '').slice(0, 5));
     setLocalDur(String(initialAppt.duration || 45));
     setFields(initialAppt.ai_fields || null);
+    setSessionSummary(initialAppt.session_summary || '');
   }, [initialAppt]);
 
   const style = APPT_STATUS_STYLE[appt.status] || APPT_STATUS_STYLE.scheduled;
@@ -149,6 +154,28 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         setTimeout(() => setSaveState('idle'), 2000);
       } catch { setSaveState('idle'); }
     }, 1000);
+  }
+
+  function handleSummaryChange(val) {
+    setSessionSummary(val);
+    setSummarySaveState('saving');
+    clearTimeout(summaryTimer.current);
+    summaryTimer.current = setTimeout(async () => {
+      try {
+        await api.patch(`/oo/appointments/${appt.id}`, { session_summary: val });
+        setSummarySaveState('saved');
+        setTimeout(() => setSummarySaveState('idle'), 2000);
+      } catch { setSummarySaveState('idle'); }
+    }, 1000);
+  }
+
+  async function handleMagicNote() {
+    setMagicNoting(true); setErr('');
+    try {
+      const r = await api.post(`/oo/appointments/${appt.id}/magic-note`, {});
+      setFields(r.fields);
+    } catch (ex) { setErr(ex.message); }
+    finally { setMagicNoting(false); }
   }
 
   async function handleCheckbox(field, checked) {
@@ -382,24 +409,43 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
         </button>
       </div>
 
-      <div style={{ marginTop: 14 }}>
-        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
-          Session Notes
-          {appt.transcript_attached_at && (
-            <span style={{
-              fontSize: '0.65rem', fontWeight: 700, textTransform: 'none', letterSpacing: 0,
-              background: '#dcfce7', color: '#15803d', borderRadius: 4, padding: '2px 6px',
-            }} title={`Zoom transcript attached ${fmtDateTime(appt.transcript_attached_at)}`}>
-              📞 From Zoom transcript
-            </span>
-          )}
-          {saveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.72rem' }}>Saving…</span>}
-          {saveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.72rem' }}>✓ Saved</span>}
-        </div>
-        <textarea className="form-textarea" value={rawNotes} onChange={e => handleNoteChange(e.target.value)}
-          placeholder="Session notes…" style={{ minHeight: 72, fontSize: '0.875rem' }} />
-        {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
-        <div style={{ marginTop: 8 }}>
+      <div style={{ marginTop: 14, display: 'flex', gap: 0, alignItems: 'flex-start' }}>
+
+        {/* Left 2/3 — Session Notes + buttons */}
+        <div style={{ flex: 2, minWidth: 0, paddingRight: 16 }}>
+          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
+            Session Notes
+            {appt.transcript_attached_at && (
+              <span style={{
+                fontSize: '0.65rem', fontWeight: 700, textTransform: 'none', letterSpacing: 0,
+                background: '#dcfce7', color: '#15803d', borderRadius: 4, padding: '2px 6px',
+              }} title={`Zoom transcript attached ${fmtDateTime(appt.transcript_attached_at)}`}>
+                📞 From Zoom transcript
+              </span>
+            )}
+            {saveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.72rem' }}>Saving…</span>}
+            {saveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.72rem' }}>✓ Saved</span>}
+          </div>
+          <div style={{ position: 'relative' }}>
+            <textarea className="form-textarea" value={rawNotes} onChange={e => handleNoteChange(e.target.value)}
+              placeholder="Session notes…" style={{ minHeight: 72, fontSize: '0.875rem', paddingRight: 34 }} />
+            <button
+              type="button"
+              onClick={handleMagicNote}
+              disabled={magicNoting}
+              title="Generate Magic Note from peer notes"
+              style={{
+                position: 'absolute', bottom: 7, right: 7,
+                background: 'none', border: 'none', cursor: magicNoting ? 'not-allowed' : 'pointer',
+                fontSize: '1.05rem', lineHeight: 1, padding: 2,
+                opacity: magicNoting ? 0.4 : 0.7,
+              }}
+            >
+              {magicNoting ? '⏳' : '✨'}
+            </button>
+          </div>
+          {err && <p style={{ color: '#dc2626', margin: '4px 0 0', fontSize: '0.78rem' }}>{err}</p>}
+          <div style={{ marginTop: 8 }}>
 
           {/* Row 1 — 4 equal squares */}
           <div style={{ display: 'flex', gap: 8 }}>
@@ -514,8 +560,31 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
             </div>
           )}
 
+          </div>
+        </div>{/* end left 2/3 */}
+
+        {/* Right 1/3 — Session Summary */}
+        <div style={{ flex: 1, minWidth: 160, paddingLeft: 16, borderLeft: '1px solid var(--gray-100)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
+            <span style={fldLabel}>Session Summary</span>
+            {summarySaveState === 'saving' && <span style={{ color: 'var(--gold)', fontWeight: 500, fontSize: '0.68rem' }}>Saving…</span>}
+            {summarySaveState === 'saved'  && <span style={{ color: '#10b981', fontWeight: 500, fontSize: '0.68rem' }}>✓</span>}
+          </div>
+          <textarea
+            value={sessionSummary}
+            onChange={e => handleSummaryChange(e.target.value)}
+            placeholder="Summary of this session…"
+            style={{
+              width: '100%', boxSizing: 'border-box', minHeight: 120,
+              fontSize: '0.78rem', lineHeight: 1.5,
+              border: '1px solid var(--gray-200)', borderRadius: 6,
+              padding: '7px 9px', resize: 'vertical', fontFamily: 'inherit',
+              background: 'white', color: 'var(--gray-800)',
+            }}
+          />
         </div>
-      </div>
+
+      </div>{/* end 2/3+1/3 flex */}
 
       {/* ── Note modal ── */}
       {showNoteModal && fields && (

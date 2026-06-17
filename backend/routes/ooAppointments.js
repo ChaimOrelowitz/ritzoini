@@ -401,6 +401,119 @@ Return exactly this JSON structure:
   }
 });
 
+// POST /:id/magic-note — generate draft ai_fields from last 7 days of peer notes + client summary
+router.post('/:id/magic-note', requireAuth, async (req, res) => {
+  try {
+    if (!anthropic) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+
+    const { data: appt, error: ae } = await supabase
+      .from('oo_appointments')
+      .select('*, oo_clients(id, first_name, last_name, client_summary, insync_data)')
+      .eq('id', req.params.id)
+      .single();
+    if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
+
+    const client = appt.oo_clients;
+    const tp = buildTpText(client.insync_data?.treatment_plan);
+
+    const windowEnd = new Date().toISOString().slice(0, 10);
+    const d = new Date(); d.setDate(d.getDate() - 6);
+    const windowStart = d.toISOString().slice(0, 10);
+
+    const { data: peerNotes } = await supabase
+      .from('insync_raw_notes')
+      .select('service_date, raw_note_text, encounter_type')
+      .eq('oo_client_id', client.id)
+      .gte('service_date', windowStart)
+      .lte('service_date', windowEnd)
+      .not('raw_note_text', 'is', null)
+      .neq('raw_note_text', '')
+      .order('service_date', { ascending: false })
+      .limit(15);
+
+    const noteBlocks = (peerNotes || []).map((n, i) =>
+      `--- Note ${i + 1} (${n.service_date || 'unknown date'}, ${n.encounter_type || 'Peer Support'}) ---\n${n.raw_note_text.trim()}`
+    ).join('\n\n');
+
+    const clientSummary = client.client_summary || null;
+
+    if (!noteBlocks && !clientSummary) {
+      return res.status(400).json({ error: 'No peer notes found in the last 7 days and no client summary on file.' });
+    }
+
+    const prompt = `You are a licensed clinical social worker's documentation assistant. Based on the context below, write a realistic individual therapy session note — as if the session has already occurred.
+
+${clientSummary ? `CLIENT SUMMARY (background context about this client):\n${clientSummary}\n\n` : ''}${noteBlocks ? `PEER SUPPORT NOTES (last 7 days — for context only):\n${noteBlocks}\n\n` : ''}Treatment plan (for context only, do not include in output):
+${tp || '(none provided)'}
+
+Based on this context, generate what a realistic therapy session note would look like. Write as if the session took place — describe what the client likely presented with, what was addressed, how the client responded. Base this on the patterns and themes visible in the peer notes and client history.
+
+Rules:
+- Write in past tense as a completed session
+- Do NOT quote directly from the peer notes — translate patterns and themes into clean clinical observations
+- Base the note on what is realistic given the context — do not invent dramatic new content
+- Use neutral, professional clinical language. Concise 2–4 sentences per field.
+- Do not mention peer support workers, peer groups, or peer services
+- Do not imply a school setting unless the notes explicitly state it
+- Do not mention audits, billing, compliance, or administrative language
+- Do not include scheduling or logistical details
+- Ignore greetings, scheduling talk, logistics, and small talk from the peer notes entirely
+
+Return ONLY valid JSON — no markdown, no explanation, no code fences.
+
+Fields to populate:
+1. additional_persons_present — string, who else was on the call if anyone (empty string if none)
+2. content_discussed — paragraph, what was addressed in the therapy session
+3. interventions_used — paragraph, what therapeutic interventions were used
+4. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
+5. patient_response — paragraph, how the client responded to the therapist
+6. progress_toward_goals — paragraph, progress toward treatment goals
+7. treatment_plan_changes — string, any treatment plan changes (or "No changes at this time")
+8. additional_comments — string, any other observations (empty string if none)
+
+Return exactly this JSON structure:
+{
+  "additional_persons_present": "",
+  "content_discussed": "",
+  "interventions_used": "",
+  "modalities": [],
+  "patient_response": "",
+  "progress_toward_goals": "",
+  "treatment_plan_changes": "",
+  "additional_comments": ""
+}`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    if (response.stop_reason === 'max_tokens')
+      return res.status(500).json({ error: 'AI response was cut off' });
+
+    const text = response.content[0].text.trim();
+    const jsonStart = text.indexOf('{');
+    const jsonEnd   = text.lastIndexOf('}');
+    if (jsonStart === -1) return res.status(500).json({ error: 'AI returned no JSON', raw: text });
+    let fields;
+    try {
+      fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    } catch (parseErr) {
+      return res.status(500).json({ error: `AI response was not valid JSON: ${parseErr.message}` });
+    }
+
+    await supabase.from('oo_appointments')
+      .update({ ai_fields: fields, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+
+    res.json({ fields });
+  } catch (err) {
+    console.error('[magic-note]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /:id/send-note — build email from processed fields, send to secretary
 router.post('/:id/send-note', requireAuth, async (req, res) => {
   try {

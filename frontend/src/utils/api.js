@@ -113,6 +113,10 @@ export const api = {
   generatePeerDigest: (clientId) => authFetch('/api/oo/peer-digest/generate', { method: 'POST', body: JSON.stringify({ client_id: clientId }) }),
   getPeerDigest:      (clientId) => authFetch(`/api/oo/peer-digest/client/${clientId}`),
 
+  // OO AI helpers
+  magicNote:           (apptId)   => authFetch(`/api/oo/appointments/${apptId}/magic-note`,   { method: 'POST' }),
+  updateClientSummary: (clientId) => authFetch(`/api/oo/clients/${clientId}/update-summary`,  { method: 'POST' }),
+
   // Instructors
   getInstructors:   () => authFetch('/api/instructors'),
   createInstructor: (body) => authFetch('/api/instructors', { method: 'POST', body: JSON.stringify(body) }),

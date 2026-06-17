@@ -4,6 +4,9 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
+const Anthropic = require('@anthropic-ai/sdk');
+
+const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -106,7 +109,7 @@ router.put('/:id', requireAuth, async (req, res) => {
   const { first_name, last_name, dob, sex, phone, mobile, email, mrn,
           referral_source_id, ehr_id, program, status,
           mother_name, mother_phone, mother_can_text,
-          father_name, father_phone, father_can_text, notes } = req.body;
+          father_name, father_phone, father_can_text, notes, client_summary } = req.body;
   const updates = {};
   if (first_name   !== undefined) updates.first_name   = first_name?.trim()   || null;
   if (last_name    !== undefined) updates.last_name    = last_name?.trim()    || null;
@@ -126,7 +129,8 @@ router.put('/:id', requireAuth, async (req, res) => {
   if (father_name     !== undefined) updates.father_name     = father_name?.trim()  || null;
   if (father_phone    !== undefined) updates.father_phone    = father_phone?.trim() || null;
   if (father_can_text !== undefined) updates.father_can_text = !!father_can_text;
-  if (notes        !== undefined) updates.notes        = notes || null;
+  if (notes           !== undefined) updates.notes           = notes || null;
+  if (client_summary  !== undefined) updates.client_summary  = client_summary || null;
   updates.updated_at = new Date().toISOString();
 
   const { data, error } = await supabase
@@ -1050,6 +1054,77 @@ router.post('/:id/sync-facesheet', requireAuth, async (req, res) => {
     res.json({ ok: true, diagnoses_count: diagnoses.length, tp_count: treatment_plan.length });
   } catch (err) {
     res.status(502).json({ error: `Facesheet sync failed: ${err.message}` });
+  }
+});
+
+// POST /:id/update-summary — AI-generate rolling client summary from processed session notes
+router.post('/:id/update-summary', requireAuth, async (req, res) => {
+  try {
+    if (!anthropic) return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
+
+    const { data: client, error: ce } = await supabase
+      .from('oo_clients')
+      .select('id, first_name, last_name, client_summary')
+      .eq('id', req.params.id)
+      .single();
+    if (ce || !client) return res.status(404).json({ error: 'Client not found' });
+
+    const { data: appts } = await supabase
+      .from('oo_appointments')
+      .select('date, ai_fields')
+      .eq('client_id', req.params.id)
+      .not('ai_fields', 'is', null)
+      .order('date', { ascending: false })
+      .limit(10);
+
+    const sessions = (appts || []).filter(a => a.ai_fields?.content_discussed);
+    if (!sessions.length) return res.status(400).json({ error: 'No processed session notes found for this client.' });
+
+    const sessionBlocks = sessions.map((a, i) => {
+      const f = a.ai_fields;
+      return `Session ${i + 1} (${a.date}):
+Content: ${f.content_discussed || '—'}
+Interventions: ${f.interventions_used || '—'}
+Patient Response: ${f.patient_response || '—'}
+Progress: ${f.progress_toward_goals || '—'}`;
+    }).join('\n\n');
+
+    const existingSummary = client.client_summary || null;
+
+    const prompt = `You are a clinical documentation assistant. Based on the following therapy session notes for a client named ${client.first_name} ${client.last_name}, write a concise rolling clinical summary.
+
+${existingSummary ? `EXISTING SUMMARY (update based on new session data):\n${existingSummary}\n\n` : ''}SESSION NOTES (most recent first):
+${sessionBlocks}
+
+Write a clinical summary (4–8 sentences) capturing:
+- The client's primary presenting concerns and clinical picture
+- Patterns in how the client engages in therapy
+- Notable progress or areas of struggle
+- Recurring themes or intervention approaches that have been effective
+
+Rules:
+- Write in present tense ("The client presents with...", "The client has shown...")
+- Be concise and clinically accurate
+- Do not mention specific session dates
+- Do not mention audits, billing, compliance, or administrative language
+- Return only the summary paragraph — no headers, no bullets, no explanation`;
+
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const summaryText = response.content[0].text.trim();
+
+    await supabase.from('oo_clients')
+      .update({ client_summary: summaryText, updated_at: new Date().toISOString() })
+      .eq('id', req.params.id);
+
+    res.json({ client_summary: summaryText });
+  } catch (err) {
+    console.error('[update-summary]', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
