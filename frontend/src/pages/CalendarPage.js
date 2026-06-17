@@ -35,6 +35,7 @@ export default function CalendarPage() {
 
   const [sessions,         setSessions]         = useState([]);
   const [ooAppts,          setOoAppts]          = useState([]);
+  const [psAppts,          setPsAppts]          = useState([]);
   const [supervisors,      setSupervisors]      = useState([]);
   const [filterSup,        setFilterSup]        = useState('');
   const [includeArchived,  setIncludeArchived]  = useState(false);
@@ -50,9 +51,11 @@ export default function CalendarPage() {
     Promise.all([
       api.getCalendarSessions(filterSup || null, includeArchived),
       api.get('/oo/appointments').catch(() => []),
-    ]).then(([s, oo]) => {
+      api.get('/ps/sessions').catch(() => []),
+    ]).then(([s, oo, ps]) => {
       setSessions(s);
       setOoAppts(Array.isArray(oo) ? oo : []);
+      setPsAppts(Array.isArray(ps) ? ps : []);
     }).catch(console.error).finally(() => setLoading(false));
   }, [filterSup, includeArchived]);
 
@@ -108,7 +111,26 @@ export default function CalendarPage() {
     };
   });
 
-  const events = [...sessionEvents, ...ooEvents];
+  const psEvents = psAppts.map(s => {
+    const t = s.cohort?.time;
+    const end = (() => {
+      if (!t) return undefined;
+      const [h, m] = t.slice(0, 5).split(':').map(Number);
+      const total = h * 60 + m + 30;
+      return `${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}:00`;
+    })();
+    return {
+      id: `ps-${s.id}`,
+      title: `PS · ${s.cohort?.name || ''}`,
+      start: t ? `${s.date}T${t}` : s.date,
+      end: t && end ? `${s.date}T${end}` : undefined,
+      backgroundColor: '#7c3aed',
+      borderColor: '#7c3aed',
+      extendedProps: { type: 'ps' },
+    };
+  });
+
+  const events = [...sessionEvents, ...ooEvents, ...psEvents];
 
   function handleEventClick({ event }) {
     const { type, groupId, sessionId, clientId } = event.extendedProps;

@@ -39,6 +39,7 @@ app.use('/api/oo/insync-notes',  require('./routes/ooInsyncNotes'));
 app.use('/api/oo/peer-digest',   require('./routes/ooPeerDigest'));
 app.use('/api/settings',         require('./routes/settings'));
 app.use('/api/zoom',             require('./routes/zoomWebhooks'));
+app.use('/api/ps',               require('./routes/peerSupervision'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

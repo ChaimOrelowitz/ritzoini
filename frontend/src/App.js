@@ -18,6 +18,7 @@ import OOCallsPage from './pages/OOCallsPage';
 import OOCallListPage from './pages/OOCallListPage';
 import OOTranscriptsPage from './pages/OOTranscriptsPage';
 import OOPeerNotesPage from './pages/OOPeerNotesPage';
+import PeerSupervisionPage from './pages/PeerSupervisionPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -65,8 +66,8 @@ export default function App() {
           <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />
 
           {/* Peer Supervision section */}
-          <Route path="ps" element={<ComingSoonPage title="Peer Supervision" />} />
-          <Route path="ps/sessions" element={<ComingSoonPage title="Peer Supervision Sessions" />} />
+          <Route path="ps" element={<PeerSupervisionPage />} />
+          <Route path="ps/sessions" element={<PeerSupervisionPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
