@@ -331,23 +331,34 @@ router.post('/:id/process-note', requireAuth, async (req, res) => {
     const { raw_notes, treatment_plan } = req.body;
     if (!raw_notes?.trim()) return res.status(400).json({ error: 'raw_notes required' });
 
-    const prompt = `You are a licensed clinical social worker's documentation assistant. The clinician has given you raw session notes and their client's treatment plan. Expand the raw notes into a complete clinical session note with the following 10 fields. Return ONLY valid JSON — no markdown, no explanation.
+    const prompt = `You are a licensed clinical social worker's documentation assistant. The input below is a raw call transcript or session notes from an individual therapy session. Your job is to extract the clinically relevant content and write a concise, professional session note.
 
-Raw notes:
+Raw notes / transcript:
 ${raw_notes}
 
 Treatment plan (for context only, do not include in output):
 ${treatment_plan || '(none provided)'}
 
+Return ONLY valid JSON — no markdown, no explanation, no code fences.
+
+Instructions:
+- Focus only on clinically meaningful content: what the client presented with, what was addressed, how the client responded, and what progress was observed.
+- Ignore greetings, scheduling talk, logistics, and small talk entirely. Do not document phrases like "we spoke yesterday to arrange today's meeting" or any mention of how the session was set up.
+- Be concise. Each paragraph field should be 2–4 sentences. Do not pad with filler.
+- Do not state or imply that services took place in a school setting unless the notes explicitly and clearly support that.
+- Do not mention audits, billing concerns, compliance requirements, agency rules, documentation standards, or any internal administrative pressure. These have no place in a clinical note.
+- Do not include information that is not supported by the notes provided.
+- Use neutral, professional clinical language appropriate for a licensed clinician's documentation.
+
 Fields to populate:
 1. additional_persons_present — string, who else was on the call if anyone (leave empty string if none)
-2. content_discussed — paragraph, what was discussed in the session
-3. interventions_used — paragraph, what therapeutic interventions were used
+2. content_discussed — paragraph, the clinically relevant topics and issues addressed in the session
+3. interventions_used — paragraph, what therapeutic interventions and techniques were used
 4. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
-5. patient_response — paragraph, how the patient responded to the interventions
-6. progress_toward_goals — paragraph, progress made toward treatment goals
+5. patient_response — paragraph, how the client responded to interventions and engaged in the session
+6. progress_toward_goals — paragraph, progress made toward treatment plan goals based on this session
 7. treatment_plan_changes — string, any changes needed to the treatment plan (or "No changes at this time")
-8. additional_comments — string, any other relevant clinical observations
+8. additional_comments — string, any other clinically relevant observations not captured above (leave empty string if none)
 
 Return exactly this JSON structure:
 {
