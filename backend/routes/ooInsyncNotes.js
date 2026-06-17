@@ -109,7 +109,9 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
     if (clientsErr) throw clientsErr;
 
     const batchId = new Date().toISOString().slice(0, 10);
-    const summary = { clients_checked: 0, peer_notes_found: 0, upserted: 0, errors: [] };
+    const debug = req.query.debug === 'true';
+    const summary = { clients_checked: 0, peer_notes_found: 0, upserted: 0, errors: [],
+      ...(debug ? { debug_encounters: [] } : {}) };
 
     for (const client of clients || []) {
       summary.clients_checked++;
@@ -126,6 +128,13 @@ router.post('/import', requireAuth, requireAdmin, async (req, res) => {
         const encHtml = await encListRes.text();
 
         const encounters = parseEncounterList(encHtml);
+
+        if (debug) {
+          for (const e of encounters) {
+            summary.debug_encounters.push({ client: clientName, pid, ...e });
+          }
+        }
+
         const peerEncs = encounters.filter(e =>
           e.dateIso && e.dateIso >= cutoffIso &&
           e.type && e.type.toLowerCase().includes('peer')
