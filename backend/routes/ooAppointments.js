@@ -419,7 +419,23 @@ router.post('/:id/magic-note', requireAuth, async (req, res) => {
     if (ae || !appt) return res.status(404).json({ error: 'Appointment not found' });
 
     const client = appt.oo_clients;
-    const tp = buildTpText(client.insync_data?.treatment_plan);
+    const tp = (() => {
+      const plan = client.insync_data?.treatment_plan;
+      if (!plan?.length) return '';
+      return plan.map(p => {
+        const lines = [`Problem: ${p.problem}`];
+        (p.long_term_goals  || []).forEach((g, i) => {
+          const t = typeof g === 'string' ? null : g.target_date;
+          lines.push(`  LTG ${i+1}: ${typeof g === 'string' ? g : g.text}${t ? ` [Target: ${t}]` : ''}`);
+        });
+        (p.short_term_goals || []).forEach((g, i) => {
+          const t = typeof g === 'string' ? null : g.target_date;
+          lines.push(`  STG ${i+1}: ${typeof g === 'string' ? g : g.text}${t ? ` [Target: ${t}]` : ''}`);
+        });
+        if (p.interventions?.length) lines.push(`  Interventions: ${p.interventions.join(', ')}`);
+        return lines.join('\n');
+      }).join('\n\n');
+    })();
 
     const windowEnd = new Date().toISOString().slice(0, 10);
     const d = new Date(); d.setDate(d.getDate() - 6);
