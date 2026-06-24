@@ -133,6 +133,11 @@ function fillNoteTemplate(html, encounterId, fields, providerName, patientName, 
     `<div id="divchkDynamicId_104" class="elem-control has-no-label textAlign-left">${modalityDisplay}</div>`
   );
 
+  // Strip ControlId_105 (the "Other specify" modality text box) — it should not
+  // appear in the saved note unless "Other" is explicitly selected, which it never is.
+  html = html.replace(/<[^>]*id="ControlId_105"[^>]*>[\s\S]*?<\/[^>]+>/g, '');
+  html = html.replace(/<[^>]*id="ControlId_105"[^>]*(\/?>)/g, '');
+
   return html;
 }
 // ──────────────────────────────────────────────────────────────────────────────
@@ -351,14 +356,14 @@ Instructions:
 - Use neutral, professional clinical language appropriate for a licensed clinician's documentation.
 
 Fields to populate:
-1. additional_persons_present — string, who else was on the call if anyone (leave empty string if none)
+1. additional_persons_present — string, relationship only if someone else was present (e.g. "mother", "father", "guardian") — no names, no other detail. Empty string if no one else.
 2. content_discussed — paragraph, the clinically relevant topics and issues addressed in the session
 3. interventions_used — paragraph, what therapeutic interventions and techniques were used
 4. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
 5. patient_response — paragraph, how the client responded to interventions and engaged in the session
 6. progress_toward_goals — paragraph, progress made toward treatment plan goals based on this session
 7. treatment_plan_changes — string, any changes needed to the treatment plan (or "No changes at this time")
-8. additional_comments — string, any other clinically relevant observations not captured above (leave empty string if none)
+8. additional_comments — ALWAYS return empty string "". This field is for manual entry only.
 
 Return exactly this JSON structure:
 {
@@ -462,14 +467,14 @@ Rules:
 Return ONLY valid JSON — no markdown, no explanation, no code fences.
 
 Fields to populate:
-1. additional_persons_present — string, who else was on the call if anyone (empty string if none)
+1. additional_persons_present — string, relationship only if someone else was present (e.g. "mother", "father", "guardian") — no names, no other detail. Empty string if no one else.
 2. content_discussed — paragraph, what was addressed in the therapy session
 3. interventions_used — paragraph, what therapeutic interventions were used
 4. modalities — array of strings, choose ONLY from: ${MODALITIES.map(m => `"${m}"`).join(', ')}
 5. patient_response — paragraph, how the client responded to the therapist
 6. progress_toward_goals — paragraph, progress toward treatment goals
 7. treatment_plan_changes — string, any treatment plan changes (or "No changes at this time")
-8. additional_comments — string, any other observations (empty string if none)
+8. additional_comments — ALWAYS return empty string "". This field is for manual entry only.
 
 Return exactly this JSON structure:
 {
@@ -1063,7 +1068,7 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
     const tplRes = await insync.post('/ConfigurePracticeTemplate/PreviewConfigTemplateById', {
       tempId: '101', isPrev: 'false', sectionConfigId: '0', templateDetailsId: '7',
       FormTableName: 'tbldf200_101_200',
-      InsertColumn: 'ControlId_100,ControlId_101,ControlId_102,ControlId_103,ControlId_104,ControlId_105,ControlId_106,ControlId_107,ControlId_108,ControlId_109,ControlId_110,ControlId_111,ControlId_112,ControlId_14,ControlId_20,ControlId_26,ControlId_36,ControlId_37,ControlId_60,ControlId_63,ControlId_67,ControlId_90,ControlId_93,ControlId_96,ControlId_99',
+      InsertColumn: 'ControlId_100,ControlId_101,ControlId_102,ControlId_103,ControlId_104,ControlId_106,ControlId_107,ControlId_108,ControlId_109,ControlId_110,ControlId_111,ControlId_112,ControlId_14,ControlId_20,ControlId_26,ControlId_36,ControlId_37,ControlId_60,ControlId_63,ControlId_67,ControlId_90,ControlId_93,ControlId_96,ControlId_99',
       isDisabled: 'false', providerId: '0',
     }, cookie);
     const blankHtml = extractFormHtml(await tplRes.text());
@@ -1188,7 +1193,6 @@ router.post('/:id/push-note-to-insync', requireAuth, async (req, res) => {
       'data[DynamicHTML]':                 htmlEncodeForDynamic(filledHtml),
       'data[ControlId_99]':                appt.ai_fields.additional_persons_present || '',
       'data[ControlId_109]':               audioOnlyReason,
-      'data[ControlId_105]':               '',
       'data[ControlId_107]':               appt.ai_fields.treatment_plan_changes     || '',
       'data[ControlId_104]':               modalityValues,
       'data[ControlId_112]':               locationValue,

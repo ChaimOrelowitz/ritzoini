@@ -118,6 +118,7 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
   const [magicNoting,          setMagicNoting]          = useState(false);
   const [summarizingSession,   setSummarizingSession]   = useState(false);
   const [processing,           setProcessing]           = useState(false);
+  const [noteSaving,           setNoteSaving]           = useState('idle'); // idle | saving | saved
   const [fields,          setFields]          = useState(initialAppt.ai_fields || null);
   const [deleting,        setDeleting]        = useState(false);
   const [err,             setErr]             = useState('');
@@ -274,6 +275,15 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
     } finally {
       setEndingEncounter(false);
     }
+  }
+
+  async function handleSaveNote() {
+    setNoteSaving('saving');
+    try {
+      await api.patch(`/oo/appointments/${appt.id}`, { ai_fields: fields });
+      setNoteSaving('saved');
+      setTimeout(() => setNoteSaving('idle'), 1500);
+    } catch (ex) { setErr(ex.message); setNoteSaving('idle'); }
   }
 
   function openNoteModal() {
@@ -722,6 +732,9 @@ export default function ApptCard({ appt: initialAppt, client, onUpdate, onDelete
 
             <div className="modal-footer">
               <button type="button" className="btn btn-outline btn-sm" onClick={() => setShowNoteModal(false)}>Close</button>
+              <button type="button" className="btn btn-gold btn-sm" onClick={handleSaveNote} disabled={noteSaving === 'saving'}>
+                {noteSaving === 'saving' ? 'Saving…' : noteSaving === 'saved' ? '✓ Saved' : 'Save Note'}
+              </button>
             </div>
           </div>
         </div>

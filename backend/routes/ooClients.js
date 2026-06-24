@@ -1075,7 +1075,7 @@ router.post('/:id/update-summary', requireAuth, async (req, res) => {
       .from('oo_appointments')
       .select('id, date, session_summary')
       .eq('client_id', req.params.id)
-      .eq('session_summary_incorporated', false)
+      .or('session_summary_incorporated.is.null,session_summary_incorporated.eq.false')
       .not('session_summary', 'is', null)
       .neq('session_summary', '')
       .order('date', { ascending: true });
