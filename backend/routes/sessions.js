@@ -28,7 +28,7 @@ async function autoCompleteSessions(groupId) {
 
   const { data: group } = await supabase
     .from('groups')
-    .select('id, ai_notes, description, total_sessions, status')
+    .select('id, ai_notes, description, total_sessions, status, group_name')
     .eq('id', groupId)
     .single();
 
@@ -87,7 +87,8 @@ async function autoCompleteSessions(groupId) {
             group.description || '',
             s.session_number,
             group.total_sessions || 0,
-            previousNotes
+            previousNotes,
+            group.group_name || ''
           );
 
           await supabase.from('sessions')
@@ -287,7 +288,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     if (updates.status === 'completed' && session.status !== 'completed') {
       const { data: group } = await supabase
         .from('groups')
-        .select('ai_notes, description, total_sessions')
+        .select('ai_notes, description, total_sessions, group_name')
         .eq('id', session.group_id)
         .single();
 
@@ -309,7 +310,8 @@ router.patch('/:id', requireAuth, async (req, res) => {
             group.description || '',
             session.session_number,
             group.total_sessions || 0,
-            previousNotes
+            previousNotes,
+            group.group_name || ''
           );
 
           await supabase.from('sessions')
@@ -726,7 +728,7 @@ router.post('/:id/generate-note', requireAuth, async (req, res) => {
   try {
     const { data: session } = await supabase
       .from('sessions')
-      .select('*, group:groups(supervisor_id, description, total_sessions, ai_notes)')
+      .select('*, group:groups(supervisor_id, description, total_sessions, ai_notes, group_name)')
       .eq('id', req.params.id).single();
     if (!session) return res.status(404).json({ error: 'Session not found' });
     if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
@@ -746,7 +748,8 @@ router.post('/:id/generate-note', requireAuth, async (req, res) => {
       session.group.description || '',
       session.session_number,
       session.group.total_sessions || 0,
-      previousNotes
+      previousNotes,
+      session.group.group_name || ''
     );
 
     const { data, error } = await supabase

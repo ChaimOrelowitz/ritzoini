@@ -2,7 +2,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-async function generateSessionNote(groupDescription, sessionNumber, totalSessions, previousNotes = []) {
+async function generateSessionNote(groupDescription, sessionNumber, totalSessions, previousNotes = [], groupName = '') {
   const recentNotes = previousNotes.slice(-2);
   const prevContext = recentNotes.length > 0
     ? `\n\nPrevious session notes for context and continuity:\n${recentNotes.map((note, i) => `--- Week ${sessionNumber - recentNotes.length + i} ---\n${note}`).join('\n\n')}`
@@ -15,15 +15,18 @@ async function generateSessionNote(groupDescription, sessionNumber, totalSession
     sessionNumber <= 3 ? 'The group is in its early stage — focus on trust-building, getting comfortable, and establishing norms.' :
     'The group is in its working phase — focus on the therapeutic themes appropriate to this group.';
 
+  const skillLine = groupName ? `Group name (skill focus): ${groupName}\n` : '';
+
   const prompt = `You are writing clinical SOAP notes for a therapeutic group in an Orthodox Jewish community. Groups are always gender-separated.
 
-Group description: ${groupDescription}
+${skillLine}Group description: ${groupDescription}
 Session: ${sessionNumber} of ${totalSessions}
 ${stageHint}${prevContext}
 
 Write the complete SOAP note for Session ${sessionNumber}. Requirements:
 - 600–900 words total
 - SOAP format: Subjective, Objective, Assessment, Plan sections
+- The group's skill (reflected in its name) must be prominently present throughout the note — the activity is the vehicle, the skill is the point. Every section should connect what happened in the session to the skill being developed.
 - Developmentally and therapeutically appropriate for this group
 - Natural progression and continuity from prior sessions
 - Appropriate for an Orthodox Jewish community context
