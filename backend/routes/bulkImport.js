@@ -10,6 +10,7 @@ const DAY_ABBREV = { sunday:'SUN', monday:'MON', tuesday:'TUE', wednesday:'WED',
 const DAY_INT    = { sunday:0, monday:1, tuesday:2, wednesday:3, thursday:4, friday:5, saturday:6 };
 
 const HISTORICAL_NAMES = [
+  // retired names
   'Aqua Renewal','BrainBounce','Calming Comotion','Color Blasters','Creative Crew',
   'Cupcake Club','Feel & Flow Collective','Feel & Flow Collective (II)','Flip Force',
   'Grow & Glow','HydraBloom','Ink & Intent','Kinetic Kids','Liquid Calm',
@@ -18,6 +19,19 @@ const HISTORICAL_NAMES = [
   'Power Lab','Power Pop','Regulation Station','Scribble & Sparkle','Spark Motion',
   'Sparkle Squad','Sprinkle Squad','Happy Hoppers','Balance & Bounce','Mighty Movers',
   'Revive & Thrive','Renew & Move',
+  // active names
+  'Anger Management Skills Group','Anxiety Reduction Group','Body& Mind empowerment group',
+  'Building Self-Confidence Group','Cognitive Behavioral Skills Group',
+  'Communication & Connection Group','Community Integration Skills Group',
+  'Daily Living Skills Group','Decision-Making & Judgment Group','Eco-Therapy Skills Group',
+  'Emotional Boundaries Skills Group','Emotional Connection Skills Group',
+  'Goal Setting & Motivation Group','Healing & Hope Skills Group',
+  'Motivational Enhancement Group','Outdoor Coping Skills Group',
+  'Outdoor Reflection and Wellness Group','Peer Mentorship & Leadership Group',
+  'Physical Wellness & Movement Group','Positive Thinking Skills Group',
+  'Problem-Solving Skills Group','Seasonal Wellness & Nature Group',
+  'Sensory Integration Group','Social Skills Development Group','Stress Management Group',
+  'Therapeutic Recreation Skills Group','Wellness & Recovery Planning Group',
 ];
 
 function parseDate(str) {
@@ -111,9 +125,15 @@ async function generateNames(groups) {
     `${i+1}. ${g.gender || ''} ${g.groupLabel} on ${g.dayName}s at ${fmt12(g.time)}${g.setting ? `, setting: ${g.setting}` : ''}`
   ).join('\n');
 
-  const prompt = `You are naming therapy groups for a clinical practice that bills insurance. Generate one short, professionally appropriate name (2-4 words) for each group below.
+  const prompt = `You are naming therapy groups for a skills-based program. Each group name must reflect the specific skill being developed — the activity is secondary, the skill is the point.
 
-Style: Names must communicate a specific therapeutic skill or modality — suitable for a billing record or clinical document. Use terms like regulation, coping, social skills, mindfulness, DBT, CBT, executive function, body awareness, motor skills, distress tolerance, emotional regulation, etc. Names should be titlecase, no cute punctuation, no alliteration for its own sake. Use the group's setting and population to inform the skill focus.
+Style rules:
+- Name format: [Skill or Theme] + "Group" (e.g. "Sensory Integration Group", "Anger Management Skills Group", "Problem-Solving Skills Group", "Outdoor Coping Skills Group")
+- 3-6 words, titlecase
+- Plain English — no clinical jargon, no acronyms (DBT, CBT, etc.), no alliteration
+- The skill should be immediately clear from the name alone
+- Do NOT use cute, poetic, or metaphorical names
+- Every name must end in "Group"
 
 Do NOT reuse any of these existing names: ${HISTORICAL_NAMES.join(', ')}.
 
@@ -121,8 +141,9 @@ Groups:
 ${descriptions}
 
 Reply with ONLY the names, one per line, numbered. Example:
-1. Emotion Regulation Skills
-2. Social Thinking Group`;
+1. Sensory Integration Group
+2. Anger Management Skills Group
+3. Communication & Connection Group`;
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
@@ -151,9 +172,10 @@ router.post('/parse', requireAuth, requireAdmin, async (req, res) => {
       const col0 = String(row[0] || '').trim();
       const col1 = String(row[1] || '').trim();
 
-      // Day header row: col0 is a day name, col1 is "Group Time"
-      const dayKey = col0.toLowerCase();
-      if (DAY_INT[dayKey] !== undefined && col1.toLowerCase() === 'group time') {
+      // Day header row: col0 starts with a day name, col2 is "Group Time"
+      const col2 = String(row[2] || '').trim();
+      const dayKey = col0.toLowerCase().split(/\s+/)[0];
+      if (DAY_INT[dayKey] !== undefined && col2.toLowerCase() === 'group time') {
         currentDay      = col0;
         currentDayAbbrev = DAY_ABBREV[dayKey];
         currentDayInt   = DAY_INT[dayKey];
@@ -162,20 +184,20 @@ router.post('/parse', requireAuth, requireAdmin, async (req, res) => {
       if (!currentDay) continue;
 
       // CO Added = TRUE → skip
-      const coAdded = String(row[9] || '').trim().toUpperCase();
+      const coAdded = String(row[10] || '').trim().toUpperCase();
       if (coAdded === 'TRUE') continue;
 
       const groupLabel  = col0;
       if (!groupLabel) continue;
 
-      const timeVal       = String(row[1] || '').trim();
-      const instructorVal = String(row[2] || '').trim();
-      const startDateVal  = String(row[3] || '').trim();
-      const endDateVal    = String(row[4] || '').trim();
-      const cancellations = String(row[5] || '').trim();
-      const grade         = String(row[6] || '').trim();
-      const gender        = String(row[7] || '').trim();
-      const setting       = String(row[8] || '').trim();
+      const timeVal       = String(row[2] || '').trim();
+      const instructorVal = String(row[3] || '').trim();
+      const startDateVal  = String(row[4] || '').trim();
+      const endDateVal    = String(row[5] || '').trim();
+      const cancellations = String(row[6] || '').trim();
+      const grade         = String(row[7] || '').trim();
+      const gender        = String(row[8] || '').trim();
+      const setting       = String(row[9] || '').trim();
 
       if (!timeVal) continue;
 
