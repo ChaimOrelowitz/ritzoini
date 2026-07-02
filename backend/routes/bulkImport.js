@@ -176,7 +176,7 @@ router.post('/parse', requireAuth, requireAdmin, async (req, res) => {
       const col2 = String(row[2] || '').trim();
       const dayKey = col0.toLowerCase().split(/\s+/)[0];
       if (DAY_INT[dayKey] !== undefined && col2.toLowerCase() === 'group time') {
-        currentDay      = col0;
+        currentDay      = dayKey.charAt(0).toUpperCase() + dayKey.slice(1);
         currentDayAbbrev = DAY_ABBREV[dayKey];
         currentDayInt   = DAY_INT[dayKey];
         continue;
