@@ -98,9 +98,14 @@ export default function Layout() {
     ),
     'peer-sup': (
       <>
-        <NavLink to="/ps/sessions" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">☑</span> Sessions
+        <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <span className="nav-icon">☑</span> Schedule
         </NavLink>
+        {isAdmin && (
+          <NavLink to="/ps/cosign" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            <span className="nav-icon">✍</span> Co-Sign Review
+          </NavLink>
+        )}
         <NavLink to="/calendar" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">📅</span> Calendar
         </NavLink>
