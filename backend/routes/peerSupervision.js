@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { InsyncCoSignEngine } = require('../utils/peerSupervisorEngine');
 
 // ── Cohorts ───────────────────────────────────────────────────────
 
@@ -99,6 +100,144 @@ router.delete('/sessions/:id', requireAuth, async (req, res) => {
   const { error } = await supabase.from('ps_sessions').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true });
+});
+
+// ── Co-Sign ───────────────────────────────────────────────────────────────────
+
+async function buildEngine() {
+  const [uRow, pRow, provRow, nsStartRow, nsEndRow] = await Promise.all([
+    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'insync_provider_id').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'ps_no_school_start').maybeSingle(),
+    supabase.from('app_settings').select('value').eq('key', 'ps_no_school_end').maybeSingle(),
+  ]);
+  return new InsyncCoSignEngine({
+    username:      uRow.data?.value    || process.env.INSYNC_USERNAME || '',
+    password:      pRow.data?.value    || process.env.INSYNC_PASSWORD || '',
+    anthropicKey:  process.env.ANTHROPIC_API_KEY,
+    providerId:    provRow.data?.value || process.env.INSYNC_PROVIDER_ID || '2317',
+    noSchoolStart: nsStartRow.data?.value || '',
+    noSchoolEnd:   nsEndRow.data?.value   || '',
+  });
+}
+
+// GET /api/ps/cosign/scan — SSE: streams progress + delivers final result
+// Auth via ?token= query param because EventSource can't set headers
+router.get('/cosign/scan', async (req, res) => {
+  // Verify JWT from query param (EventSource can't set Authorization header)
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'Missing token' });
+  const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+  if (authErr || !user) return res.status(401).json({ error: 'Invalid token' });
+  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+  if (profile?.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+
+  try {
+    const engine = await buildEngine();
+    const { flagged, clean } = await engine.fullScan((msg, pct) => send('progress', { msg, pct }));
+
+    const { data: run } = await supabase.from('ps_scan_runs').insert({
+      total:         flagged.length + clean.length,
+      clean_count:   clean.length,
+      flagged_count: flagged.length,
+      signed_count:  0,
+      flagged_notes: flagged,
+      clean_eids:    clean.map(n => n.eid),
+    }).select('id').single();
+
+    send('done', { flagged, clean, runId: run?.id });
+  } catch (err) {
+    send('error', { message: err.message });
+  } finally {
+    res.end();
+  }
+});
+
+// POST /api/ps/cosign/sign — sign a list of notes; body: { notes, runId, delta }
+router.post('/cosign/sign', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { notes, runId, delta = 0 } = req.body;
+    if (!notes?.length) return res.status(400).json({ error: 'notes required' });
+
+    const engine = await buildEngine();
+    await engine.login();
+    const { signed, failed } = await engine.bulkSign(notes);
+
+    if (runId && signed > 0) {
+      const { data: run } = await supabase.from('ps_scan_runs').select('signed_count').eq('id', runId).maybeSingle();
+      await supabase.from('ps_scan_runs').update({ signed_count: (run?.signed_count || 0) + signed + delta }).eq('id', runId);
+    }
+
+    res.json({ signed, failed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/ps/cosign/history — last 50 scan runs
+router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from('ps_scan_runs')
+    .select('id, created_at, total, clean_count, flagged_count, signed_count, flagged_notes, clean_eids')
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+// POST /api/ps/cosign/settings — save no-school dates + provider id
+router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { no_school_start, no_school_end, provider_id } = req.body;
+    const upserts = [];
+    if (no_school_start !== undefined) upserts.push({ key: 'ps_no_school_start', value: no_school_start });
+    if (no_school_end   !== undefined) upserts.push({ key: 'ps_no_school_end',   value: no_school_end   });
+    if (provider_id     !== undefined) upserts.push({ key: 'insync_provider_id', value: provider_id     });
+    for (const row of upserts)
+      await supabase.from('app_settings').upsert(row, { onConflict: 'key' });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/ps/cosign/settings
+router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
+  const { data } = await supabase.from('app_settings').select('key, value')
+    .in('key', ['ps_no_school_start', 'ps_no_school_end', 'insync_provider_id']);
+  const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
+  res.json({
+    no_school_start: S.ps_no_school_start || '07/01',
+    no_school_end:   S.ps_no_school_end   || '08/31',
+    provider_id:     S.insync_provider_id  || '2317',
+  });
+});
+
+// POST /api/ps/cosign/cron — runs a scan, saves to DB (cron-secret protected)
+router.post('/cosign/cron', async (req, res) => {
+  const secret   = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'] || req.query.secret;
+  if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const engine = await buildEngine();
+    const { flagged, clean } = await engine.fullScan();
+    await supabase.from('ps_scan_runs').insert({
+      total: flagged.length + clean.length,
+      clean_count: clean.length, flagged_count: flagged.length, signed_count: 0,
+      flagged_notes: flagged, clean_eids: clean.map(n => n.eid),
+    });
+    res.json({ ok: true, total: flagged.length + clean.length, flagged: flagged.length, clean: clean.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;
