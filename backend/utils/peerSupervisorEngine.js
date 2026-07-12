@@ -154,8 +154,8 @@ class InsyncCoSignEngine {
 
   async fetchAllPages(onProgress) {
     const now  = new Date();
-    const from = new Date(now); from.setDate(from.getDate() - 30);
-    const fmt  = d => `${d.getMonth()+1}/${d.getDate()}/${d.getFullYear()}`;
+    const from = new Date(now); from.setDate(from.getDate() - 90);
+    const fmt  = d => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
 
     const baseParams = {
       'searchParamter[PatientId]':                   '0',
