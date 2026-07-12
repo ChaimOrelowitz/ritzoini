@@ -19,6 +19,7 @@ import OOCallListPage from './pages/OOCallListPage';
 import OOTranscriptsPage from './pages/OOTranscriptsPage';
 import OOPeerNotesPage from './pages/OOPeerNotesPage';
 import PeerSupervisionPage from './pages/PeerSupervisionPage';
+import PSCoSignPage from './pages/PSCoSignPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -68,6 +69,9 @@ export default function App() {
           {/* Peer Supervision section */}
           <Route path="ps" element={<PeerSupervisionPage />} />
           <Route path="ps/sessions" element={<PeerSupervisionPage />} />
+          <Route path="ps/cosign" element={
+            <PrivateRoute adminOnly><PSCoSignPage /></PrivateRoute>
+          } />
         </Route>
       </Routes>
     </BrowserRouter>
