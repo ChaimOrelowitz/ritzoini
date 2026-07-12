@@ -1,0 +1,523 @@
+import { useState, useEffect, useRef } from 'react';
+import { api } from '../utils/api';
+import supabase from '../supabaseClient';
+
+const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+function fmtDt(dt) {
+  if (!dt) return '—';
+  const d = new Date(dt);
+  return isNaN(d) ? dt : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso + 'T12:00:00');
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function Chip({ color, children }) {
+  const colors = {
+    red:    { bg: '#fef2f2', text: '#dc2626', border: '#fecaca' },
+    orange: { bg: '#fff7ed', text: '#ea580c', border: '#fed7aa' },
+    blue:   { bg: '#eff6ff', text: '#1d4ed8', border: '#bfdbfe' },
+    gray:   { bg: '#f1f5f9', text: '#64748b', border: '#e2e8f0' },
+  };
+  const c = colors[color] || colors.gray;
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 999,
+      fontSize: '0.72rem', fontWeight: 600, letterSpacing: '0.01em',
+      background: c.bg, color: c.text, border: `1px solid ${c.border}`,
+    }}>{children}</span>
+  );
+}
+
+function flagChipColor(flag) {
+  if (!flag) return 'gray';
+  const f = flag.toLowerCase();
+  if (f.includes('clone') || f.includes('duplicate')) return 'orange';
+  if (f.includes('session') || f.includes('long') || f.includes('hour')) return 'blue';
+  if (f.includes('school') || f.includes('minor')) return 'red';
+  if (f.includes('ai')) return 'red';
+  return 'gray';
+}
+
+function ProgressBar({ pct }) {
+  return (
+    <div style={{ background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden', width: '100%' }}>
+      <div style={{ background: 'var(--navy)', height: '100%', width: `${pct || 0}%`, transition: 'width 0.3s ease', borderRadius: 999 }} />
+    </div>
+  );
+}
+
+const lbl = { display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
+
+// ── NoteModal ─────────────────────────────────────────────────────────────────
+
+function NoteModal({ note, onClose }) {
+  if (!note) return null;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '40px 16px', overflowY: 'auto',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 760,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+      }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{note.patientName}</h3>
+            <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+              {note.peerName} · {fmtDt(note.visitDatetime)}
+            </p>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+        </div>
+        {note.flags?.length > 0 && (
+          <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+            {note.aiFlag && note.aiReason && <Chip color="red">AI: {note.aiReason}</Chip>}
+          </div>
+        )}
+        <div style={{ padding: '20px 24px', maxHeight: '60vh', overflowY: 'auto' }}>
+          {note.fullNoteText
+            ? <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: '0.82rem', lineHeight: 1.65, whiteSpace: 'pre-wrap', color: 'var(--gray-700)' }}>{note.fullNoteText}</pre>
+            : <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', fontStyle: 'italic' }}>Note text not available.</p>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── HistoryAccordion ──────────────────────────────────────────────────────────
+
+function HistoryAccordion({ history }) {
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState(null);
+
+  if (!history.length) return null;
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: 10,
+        fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
+        color: 'var(--gray-400)', display: 'flex', alignItems: 'center', gap: 6,
+      }}>
+        {open ? '▾' : '▸'} Run History ({history.length})
+      </button>
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {history.map(run => (
+            <div key={run.id} style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', background: 'white', overflow: 'hidden' }}>
+              <button onClick={() => setExpanded(expanded === run.id ? null : run.id)} style={{
+                width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+                padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 16, textAlign: 'left',
+              }}>
+                <span style={{ fontSize: '0.82rem', color: 'var(--gray-500)', minWidth: 160 }}>
+                  {fmtDt(run.created_at)}
+                </span>
+                <span style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>
+                  {run.total} scanned · <span style={{ color: '#dc2626' }}>{run.flagged_count} flagged</span> · {run.clean_count} clean · {run.signed_count} signed
+                </span>
+                <span style={{ marginLeft: 'auto', color: 'var(--gray-400)', fontSize: '0.8rem' }}>{expanded === run.id ? '▲' : '▼'}</span>
+              </button>
+              {expanded === run.id && run.flagged_notes?.length > 0 && (
+                <div style={{ padding: '0 16px 14px', borderTop: '1px solid var(--gray-100)' }}>
+                  <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '10px 0 6px' }}>
+                    Flagged Notes
+                  </p>
+                  {run.flagged_notes.map((n, i) => (
+                    <div key={i} style={{ fontSize: '0.8rem', color: 'var(--gray-700)', padding: '4px 0', borderBottom: '1px solid var(--gray-100)', display: 'flex', gap: 12, alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600, minWidth: 160 }}>{n.patientName}</span>
+                      <span style={{ color: 'var(--gray-500)' }}>{n.peerName}</span>
+                      <span style={{ color: 'var(--gray-400)' }}>{fmtDt(n.visitDatetime)}</span>
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                        {n.flags?.map((f, j) => <Chip key={j} color={flagChipColor(f)}>{f}</Chip>)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── SettingsTab ───────────────────────────────────────────────────────────────
+
+function SettingsTab() {
+  const [form, setForm] = useState({
+    insync_username: '', insync_password: '', anthropic_api_key: '',
+    no_school_start: '', no_school_end: '', provider_id: '',
+  });
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(false);
+  const [showPass, setShowPass] = useState(false);
+
+  useEffect(() => {
+    api.get('/ps/cosign/settings').then(s => {
+      setForm({
+        insync_username:   s.insync_username   || '',
+        insync_password:   s.insync_password   || '',
+        anthropic_api_key: s.anthropic_api_key || '',
+        no_school_start:   s.no_school_start   || '',
+        no_school_end:     s.no_school_end     || '',
+        provider_id:       s.provider_id       || '',
+      });
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.post('/ps/cosign/settings', form);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (ex) { alert(ex.message); }
+    finally { setSaving(false); }
+  }
+
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
+
+  return (
+    <div style={{ maxWidth: 540 }}>
+      <h3 style={{ margin: '0 0 20px', fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Co-Sign Settings</h3>
+
+      <section style={sectionStyle}>
+        <p style={sectionLabel}>InSync Credentials</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={lbl}>Username</label>
+            <input className="form-input" value={form.insync_username} onChange={set('insync_username')} placeholder="InSync login email" style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={lbl}>Password</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showPass ? 'text' : 'password'}
+                className="form-input" value={form.insync_password} onChange={set('insync_password')}
+                placeholder="InSync password" style={{ width: '100%', paddingRight: 68 }}
+              />
+              <button type="button" onClick={() => setShowPass(p => !p)} style={{
+                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--gray-500)',
+              }}>{showPass ? 'Hide' : 'Show'}</button>
+            </div>
+          </div>
+          <div>
+            <label style={lbl}>Provider ID</label>
+            <input className="form-input" value={form.provider_id} onChange={set('provider_id')} placeholder="e.g. 2317" style={{ width: 140 }} />
+          </div>
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
+        <p style={sectionLabel}>Anthropic (Claude) API Key</p>
+        <input
+          type="password" className="form-input" value={form.anthropic_api_key} onChange={set('anthropic_api_key')}
+          placeholder="sk-ant-…" style={{ width: '100%' }}
+        />
+      </section>
+
+      <section style={sectionStyle}>
+        <p style={sectionLabel}>No-School Date Range</p>
+        <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+          Sessions during this window won't trigger the "minor during school hours" flag. Format: MM/DD
+        </p>
+        <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
+          <div>
+            <label style={lbl}>Start (MM/DD)</label>
+            <input className="form-input" value={form.no_school_start} onChange={set('no_school_start')} placeholder="07/01" style={{ width: 100 }} />
+          </div>
+          <div style={{ color: 'var(--gray-400)', paddingTop: 22 }}>→</div>
+          <div>
+            <label style={lbl}>End (MM/DD)</label>
+            <input className="form-input" value={form.no_school_end} onChange={set('no_school_end')} placeholder="08/31" style={{ width: 100 }} />
+          </div>
+        </div>
+      </section>
+
+      <button className="btn btn-gold" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
+        {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Settings'}
+      </button>
+    </div>
+  );
+}
+
+const sectionStyle = { marginBottom: 24, padding: 18, background: '#f8fafc', borderRadius: 'var(--radius)', border: '1px solid var(--gray-100)' };
+const sectionLabel = { margin: '0 0 12px', fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--gray-500)' };
+
+// ── RunReviewTab ──────────────────────────────────────────────────────────────
+
+function RunReviewTab() {
+  const [scanning,    setScanning]    = useState(false);
+  const [progress,    setProgress]    = useState(null);   // { msg, pct }
+  const [scanResult,  setScanResult]  = useState(null);   // { flagged, clean, runId }
+  const [selected,    setSelected]    = useState(new Set());
+  const [signingIds,  setSigningIds]  = useState(new Set());
+  const [signedIds,   setSignedIds]   = useState(new Set());
+  const [noteModal,   setNoteModal]   = useState(null);
+  const [history,     setHistory]     = useState([]);
+  const [histLoading, setHistLoading] = useState(true);
+  const esRef = useRef(null);
+
+  useEffect(() => {
+    api.get('/ps/cosign/history').then(h => setHistory(Array.isArray(h) ? h : [])).catch(() => {}).finally(() => setHistLoading(false));
+    return () => { if (esRef.current) esRef.current.close(); };
+  }, []);
+
+  async function startScan() {
+    if (scanning) return;
+    setScanning(true);
+    setProgress({ msg: 'Connecting…', pct: 0 });
+    setScanResult(null);
+    setSelected(new Set());
+    setSignedIds(new Set());
+
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) { alert('Not logged in'); setScanning(false); return; }
+
+    const es = new EventSource(`${API}/api/ps/cosign/scan?token=${encodeURIComponent(token)}`);
+    esRef.current = es;
+
+    es.onmessage = e => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'progress') {
+          setProgress({ msg: msg.msg, pct: msg.pct });
+        } else if (msg.type === 'done') {
+          setScanResult({ flagged: msg.flagged || [], clean: msg.clean || [], runId: msg.runId });
+          setScanning(false);
+          setProgress(null);
+          setHistory(h => [{ id: msg.runId, created_at: new Date().toISOString(), total: (msg.flagged?.length || 0) + (msg.clean?.length || 0), flagged_count: msg.flagged?.length || 0, clean_count: msg.clean?.length || 0, signed_count: 0, flagged_notes: msg.flagged || [] }, ...h]);
+          es.close();
+        } else if (msg.type === 'error') {
+          alert('Scan error: ' + msg.message);
+          setScanning(false);
+          setProgress(null);
+          es.close();
+        }
+      } catch {}
+    };
+
+    es.onerror = () => {
+      if (!scanResult) {
+        alert('Connection lost during scan.');
+        setScanning(false);
+        setProgress(null);
+      }
+      es.close();
+    };
+  }
+
+  function toggleSelect(id) {
+    setSelected(s => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+
+  function toggleAll() {
+    if (!scanResult) return;
+    const unsignedFlagged = scanResult.flagged.filter(n => !signedIds.has(n.cosignId));
+    if (selected.size === unsignedFlagged.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(unsignedFlagged.map(n => n.cosignId)));
+    }
+  }
+
+  async function signNotes(notes, label) {
+    if (!notes.length) return;
+    const ids = new Set(notes.map(n => n.cosignId));
+    setSigningIds(s => new Set([...s, ...ids]));
+    try {
+      const { signed, failed } = await api.post('/ps/cosign/sign', { notes, runId: scanResult?.runId });
+      setSignedIds(s => new Set([...s, ...ids]));
+      setSelected(sel => { const n = new Set(sel); ids.forEach(id => n.delete(id)); return n; });
+      alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.`);
+    } catch (ex) { alert('Sign error: ' + ex.message); }
+    finally { setSigningIds(s => { const n = new Set(s); ids.forEach(id => n.delete(id)); return n; }); }
+  }
+
+  async function signClean() {
+    if (!scanResult?.clean?.length) return;
+    if (!window.confirm(`Sign all ${scanResult.clean.length} clean notes?`)) return;
+    await signNotes(scanResult.clean, 'Sign All Clean');
+  }
+
+  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !signedIds.has(n.cosignId)) : [];
+  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.cosignId) && !signedIds.has(n.cosignId)) : [];
+  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !signedIds.has(n.cosignId)) : [];
+
+  return (
+    <div>
+      {/* Run button + progress */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+        <button className="btn btn-gold" onClick={startScan} disabled={scanning} style={{ minWidth: 120 }}>
+          {scanning ? 'Scanning…' : 'Run Now'}
+        </button>
+        {scanning && progress && (
+          <div style={{ flex: 1, minWidth: 200 }}>
+            <div style={{ fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: 5 }}>{progress.msg}</div>
+            <ProgressBar pct={progress.pct} />
+          </div>
+        )}
+      </div>
+
+      {/* Stats */}
+      {scanResult && (
+        <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+          {[
+            { label: 'Total',   val: scanResult.flagged.length + scanResult.clean.length, color: 'var(--navy)' },
+            { label: 'Flagged', val: scanResult.flagged.length, color: '#dc2626' },
+            { label: 'Clean',   val: scanResult.clean.length,   color: '#16a34a' },
+            { label: 'Signed',  val: signedIds.size,            color: '#64748b' },
+          ].map(({ label, val, color }) => (
+            <div key={label} style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 110, textAlign: 'center' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 800, color }}>{val}</div>
+              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Flagged notes list */}
+      {scanResult && scanResult.flagged.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <h4 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>
+                Flagged Notes ({flaggedUnsigned.length} remaining)
+              </h4>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', color: 'var(--gray-600)', cursor: 'pointer' }}>
+                <input type="checkbox"
+                  checked={flaggedUnsigned.length > 0 && selected.size === flaggedUnsigned.length}
+                  onChange={toggleAll}
+                  style={{ width: 14, height: 14 }} />
+                All
+              </label>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {selectedNotes.length > 0 && (
+                <button className="btn btn-outline btn-sm"
+                  onClick={() => signNotes(selectedNotes, `Sign Selected (${selectedNotes.length})`)}
+                  disabled={signingIds.size > 0}>
+                  Sign Selected ({selectedNotes.length})
+                </button>
+              )}
+              {cleanUnsigned.length > 0 && (
+                <button className="btn btn-gold btn-sm" onClick={signClean} disabled={signingIds.size > 0}>
+                  Sign All Clean ({cleanUnsigned.length})
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {scanResult.flagged.map(note => {
+              const id      = note.cosignId;
+              const signed  = signedIds.has(id);
+              const signing = signingIds.has(id);
+              return (
+                <div key={id} style={{
+                  background: 'white', border: `1px solid ${signed ? '#bbf7d0' : 'var(--gray-200)'}`,
+                  borderRadius: 'var(--radius)', padding: '12px 16px',
+                  opacity: signed ? 0.55 : 1,
+                  display: 'flex', alignItems: 'flex-start', gap: 12,
+                }}>
+                  <input type="checkbox"
+                    checked={selected.has(id) && !signed}
+                    disabled={signed}
+                    onChange={() => toggleSelect(id)}
+                    style={{ width: 15, height: 15, marginTop: 3, flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</span>
+                      {signed && <Chip color="gray">Signed ✓</Chip>}
+                    </div>
+                    <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
+                      {note.peerName} · {fmtDt(note.visitDatetime)}
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {note.flags?.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+                      {note.aiFlag && note.aiReason && <Chip color="red">AI: {note.aiReason}</Chip>}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    <button className="btn btn-outline btn-xs" onClick={() => setNoteModal(note)}>Read</button>
+                    {!signed && (
+                      <button className="btn btn-outline btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={signing}>
+                        {signing ? '…' : 'Sign'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {scanResult && scanResult.flagged.length === 0 && scanResult.clean.length > 0 && (
+        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 'var(--radius)', padding: '14px 18px', marginBottom: 24 }}>
+          <p style={{ margin: 0, fontWeight: 600, color: '#15803d', fontSize: '0.88rem' }}>
+            All {scanResult.clean.length} notes are clean. No flags found.
+          </p>
+          {cleanUnsigned.length > 0 && (
+            <button className="btn btn-gold btn-sm" onClick={signClean} disabled={signingIds.size > 0} style={{ marginTop: 10 }}>
+              Sign All ({cleanUnsigned.length})
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* History */}
+      {!histLoading && <HistoryAccordion history={history} />}
+
+      <NoteModal note={noteModal} onClose={() => setNoteModal(null)} />
+    </div>
+  );
+}
+
+// ── PSCoSignPage ──────────────────────────────────────────────────────────────
+
+export default function PSCoSignPage() {
+  const [tab, setTab] = useState('run');
+
+  return (
+    <div style={{ padding: '24px 32px', maxWidth: 900, margin: '0 auto' }}>
+      <h2 style={{ margin: '0 0 20px', fontSize: '1.15rem', fontWeight: 700, color: 'var(--navy)' }}>Co-Sign Review</h2>
+
+      {/* Sub-tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 28, borderBottom: '2px solid var(--gray-100)' }}>
+        {[['run', 'Run & Review'], ['settings', 'Settings']].map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            padding: '8px 20px', fontSize: '0.85rem', fontWeight: tab === key ? 700 : 400,
+            color: tab === key ? 'var(--navy)' : 'var(--gray-400)',
+            borderBottom: tab === key ? '2px solid var(--navy)' : '2px solid transparent',
+            marginBottom: -2, transition: 'color 0.15s',
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {tab === 'settings' ? <SettingsTab /> : <RunReviewTab />}
+    </div>
+  );
+}
