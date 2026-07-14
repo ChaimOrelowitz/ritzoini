@@ -31,18 +31,32 @@ async function getAccessToken() {
     throw new Error('Zoho not configured (ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN)');
   }
 
+  // Trim to defend against stray whitespace/newlines/quotes pasted into env UIs.
+  const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
   const params = new URLSearchParams({
-    refresh_token: process.env.ZOHO_REFRESH_TOKEN,
-    client_id:     process.env.ZOHO_CLIENT_ID,
-    client_secret: process.env.ZOHO_CLIENT_SECRET,
+    refresh_token: clean(process.env.ZOHO_REFRESH_TOKEN),
+    client_id:     clean(process.env.ZOHO_CLIENT_ID),
+    client_secret: clean(process.env.ZOHO_CLIENT_SECRET),
     grant_type:    'refresh_token',
   });
 
-  const resp = await fetch(`${ACCOUNTS_DOMAIN}/oauth/v2/token?${params.toString()}`, { method: 'POST' });
-  const body = await resp.json().catch(() => ({}));
+  // Zoho wants the params as a form-encoded body (query-string also works, but
+  // the body form is the documented one and avoids some general_error cases).
+  const resp = await fetch(`${ACCOUNTS_DOMAIN}/oauth/v2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const raw = await resp.text();
+  let body = {};
+  try { body = JSON.parse(raw); } catch { /* non-JSON */ }
 
   if (!resp.ok || !body.access_token) {
-    throw new Error(`Zoho token refresh failed: ${resp.status} ${body.error || JSON.stringify(body)}`);
+    console.error(`[zoho] token refresh raw response (${resp.status}) from ${ACCOUNTS_DOMAIN}:`, raw);
+    const hint = body.error === 'general_error'
+      ? ' — usually means client_id/secret and refresh_token are from different apps, or a different Zoho data center'
+      : '';
+    throw new Error(`Zoho token refresh failed: ${resp.status} ${body.error || raw.slice(0, 200)}${hint}`);
   }
 
   cachedToken = body.access_token;
