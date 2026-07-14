@@ -69,6 +69,8 @@ export const api = {
   // Config
   getEmailEnabled:  () => authFetch('/api/config/email'),
   setEmailEnabled:  (enabled) => authFetch('/api/config/email', { method: 'POST', body: JSON.stringify({ enabled }) }),
+  getDeliveryMode:  () => authFetch('/api/config/soap-note-delivery'),
+  setDeliveryMode:  (mode) => authFetch('/api/config/soap-note-delivery', { method: 'POST', body: JSON.stringify({ mode }) }),
 
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),

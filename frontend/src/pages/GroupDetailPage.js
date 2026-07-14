@@ -123,7 +123,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
     try {
       const updated = await api.sendEmail(session.id);
       onUpdate(updated);
-    } catch (err) { alert('Failed to send email: ' + err.message); }
+    } catch (err) { alert('Failed to send note: ' + err.message); }
     finally { setSendingEmail(false); }
   }
 
@@ -322,7 +322,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
               </button>
             )}
             <button type="button" className="btn btn-outline btn-xs" onClick={handleSendEmail} disabled={sendingEmail || !soapNote.trim()}>
-              {sendingEmail ? 'Sending…' : 'Send Email'}
+              {sendingEmail ? 'Sending…' : 'Send Note'}
             </button>
           </div>
         )}

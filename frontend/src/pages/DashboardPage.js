@@ -299,6 +299,7 @@ export default function DashboardPage() {
   const [filter, setFilter]           = useState('active');
   const [emailEnabled, setEmailEnabledState] = useState(null);
   const [myEmailEnabled, setMyEmailEnabled] = useState(null);
+  const [deliveryMode, setDeliveryMode] = useState(null); // 'zoho' | 'email' | 'both'
   const [error, setError]             = useState('');
 
   const load = useCallback(async () => {
@@ -314,7 +315,23 @@ export default function DashboardPage() {
   useEffect(() => {
     api.getEmailEnabled().then(r => setEmailEnabledState(r.email_enabled)).catch(() => {});
     api.getMyProfile().then(p => setMyEmailEnabled(p.email_enabled !== false)).catch(() => {});
+    api.getDeliveryMode().then(r => setDeliveryMode(r.mode)).catch(() => {});
   }, []);
+
+  const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
+  async function cycleDeliveryMode() {
+    const order = ['zoho', 'email', 'both'];
+    const next = order[(order.indexOf(deliveryMode) + 1) % order.length];
+    const prev = deliveryMode;
+    setDeliveryMode(next);
+    try {
+      const res = await api.setDeliveryMode(next);
+      setDeliveryMode(res.mode);
+    } catch (err) {
+      setDeliveryMode(prev);
+      alert('Failed to change note destination: ' + err.message);
+    }
+  }
 
   async function toggleEmail() {
     const res = await api.setEmailEnabled(!emailEnabled);
@@ -404,6 +421,16 @@ export default function DashboardPage() {
               title={emailEnabled ? 'Global emails on — click to disable all' : 'Global emails off — click to enable all'}
             >
               {emailEnabled ? 'Global On' : 'Global Off'}
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={cycleDeliveryMode}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Where saved notes are delivered — click to cycle Zoho / Email / Both"
+            >
+              {DELIVERY_LABELS[deliveryMode] || deliveryMode}
             </button>
           )}
           {!showArchived && (

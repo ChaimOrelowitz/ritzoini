@@ -56,7 +56,7 @@ export default function SubmitNotesModal({ session, onClose, onSubmitted }) {
           <div className="modal-footer">
             <button type="button" className="btn btn-outline" onClick={onClose}>Cancel</button>
             <button type="submit" className="btn btn-gold" disabled={loading}>
-              {loading ? 'Submitting…' : 'Submit & Send Email'}
+              {loading ? 'Submitting…' : 'Submit & Send Note'}
             </button>
           </div>
         </form>
