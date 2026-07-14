@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
+const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
 const { requireAuth } = require('./middleware/auth');
 
 const app = express();
@@ -56,7 +57,23 @@ app.post('/api/config/email', requireAuth, async (req, res) => {
   res.json({ email_enabled: getEmailEnabled() });
 });
 
+// SOAP note delivery mode: 'zoho' | 'email' | 'both'
+app.get('/api/config/soap-note-delivery', requireAuth, (req, res) => {
+  res.json({ mode: getDeliveryMode() });
+});
+
+app.post('/api/config/soap-note-delivery', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    await setDeliveryMode(req.body.mode);
+    res.json({ mode: getDeliveryMode() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, async () => {
   await loadEmailEnabled();
-  console.log(`Ritzoini API running on port ${PORT} (email_enabled: ${getEmailEnabled()})`);
+  await loadDeliveryMode();
+  console.log(`Ritzoini API running on port ${PORT} (email_enabled: ${getEmailEnabled()}, soap_note_delivery: ${getDeliveryMode()})`);
 });
