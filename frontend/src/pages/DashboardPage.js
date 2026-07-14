@@ -318,6 +318,21 @@ export default function DashboardPage() {
     api.getDeliveryMode().then(r => setDeliveryMode(r.mode)).catch(() => {});
   }, []);
 
+  async function handleTestZoho() {
+    try {
+      const r = await api.testZoho();
+      const lines = [
+        `Configured: ${r.configured ? 'yes' : 'NO'}`,
+        `Token/auth: ${r.tokenOk ? 'OK' : 'FAILED'}`,
+        `Read ${r.module}: ${r.moduleReadOk ? 'OK' : 'FAILED'}`,
+        r.errors?.length ? `\nErrors:\n- ${r.errors.join('\n- ')}` : '\nAll checks passed ✅',
+      ];
+      alert('Zoho connection test\n\n' + lines.join('\n'));
+    } catch (err) {
+      alert('Zoho test failed: ' + err.message);
+    }
+  }
+
   const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
   async function cycleDeliveryMode() {
     const order = ['zoho', 'email', 'both'];
@@ -431,6 +446,16 @@ export default function DashboardPage() {
               title="Where saved notes are delivered — click to cycle Zoho / Email / Both"
             >
               {DELIVERY_LABELS[deliveryMode] || deliveryMode}
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleTestZoho}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Read-only check of Zoho connection, token scope, and module access"
+            >
+              Test Zoho
             </button>
           )}
           {!showArchived && (

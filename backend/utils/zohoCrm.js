@@ -156,4 +156,72 @@ async function postSoapNoteToZoho(sessionId) {
   console.log(`[zoho] Posted SOAP note for session ${sessionId} → ${OCC_MODULE}/${zohoId} ("${matchedName}" ${sessionDate})`);
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken };
+// Read-only health check: verifies creds → token → module read access, and
+// (if a session is given) whether its matching occurrence can be found. Writes
+// nothing. Used by the admin "Test Zoho" button.
+async function zohoDiagnostic(sessionId) {
+  const result = {
+    configured: zohoConfigured(),
+    tokenOk: false,
+    moduleReadOk: false,
+    module: OCC_MODULE,
+    dataCenter: API_DOMAIN,
+    match: null,
+    errors: [],
+  };
+
+  if (!result.configured) {
+    result.errors.push('Missing ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN');
+    return result;
+  }
+
+  try {
+    await getAccessToken();
+    result.tokenOk = true;
+  } catch (e) {
+    result.errors.push(`Token refresh failed: ${e.message}`);
+    return result;
+  }
+
+  // Probe module read — this is what proves the token's CRM scope is wide enough.
+  try {
+    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=${NAME_FIELD},${DATE_FIELD}&per_page=1`);
+    if (resp.status === 204) {
+      result.moduleReadOk = true; // reachable, just empty
+    } else {
+      const body = await resp.json().catch(() => ({}));
+      if (resp.ok) result.moduleReadOk = true;
+      else result.errors.push(`Module read failed (${resp.status}): ${body.code || ''} ${body.message || JSON.stringify(body)}`);
+    }
+  } catch (e) {
+    result.errors.push(`Module read error: ${e.message}`);
+  }
+
+  // Optional: does a specific session's occurrence resolve?
+  if (sessionId && result.moduleReadOk) {
+    try {
+      const { data: session } = await supabase
+        .from('sessions')
+        .select('id, session_date, scheduled_date, group:groups!group_id(internal_name, group_name, name)')
+        .eq('id', sessionId)
+        .single();
+      const g = session?.group;
+      const date = session?.session_date || session?.scheduled_date;
+      const names = [g?.group_name, g?.name, g?.internal_name].filter(Boolean);
+      let occ = null, matchedName = null;
+      for (const n of names) {
+        occ = await findOccurrence(n, date);
+        if (occ) { matchedName = n; break; }
+      }
+      result.match = occ
+        ? { found: true, occurrenceId: occ.id, matchedName, date, ecw: occ.ECW, locked: occ.Locked_Notes === 'Yes' }
+        : { found: false, date, triedNames: names };
+    } catch (e) {
+      result.errors.push(`Session match error: ${e.message}`);
+    }
+  }
+
+  return result;
+}
+
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic };

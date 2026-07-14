@@ -71,6 +71,7 @@ export const api = {
   setEmailEnabled:  (enabled) => authFetch('/api/config/email', { method: 'POST', body: JSON.stringify({ enabled }) }),
   getDeliveryMode:  () => authFetch('/api/config/soap-note-delivery'),
   setDeliveryMode:  (mode) => authFetch('/api/config/soap-note-delivery', { method: 'POST', body: JSON.stringify({ mode }) }),
+  testZoho:         (sessionId) => authFetch('/api/config/zoho-test' + (sessionId ? `?session_id=${sessionId}` : '')),
 
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),

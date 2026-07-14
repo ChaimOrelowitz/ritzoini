@@ -3,6 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
+const { zohoDiagnostic } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 
 const app = express();
@@ -69,6 +70,17 @@ app.post('/api/config/soap-note-delivery', requireAuth, async (req, res) => {
     res.json({ mode: getDeliveryMode() });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Read-only Zoho connectivity/scope/match check (admin). ?session_id=… also
+// tests whether that session's occurrence resolves. Writes nothing.
+app.get('/api/config/zoho-test', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json(await zohoDiagnostic(req.query.session_id || null));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
