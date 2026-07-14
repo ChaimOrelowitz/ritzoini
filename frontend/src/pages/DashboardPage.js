@@ -355,7 +355,11 @@ export default function DashboardPage() {
     if (!code || !code.trim()) return;
     try {
       const r = await api.zohoExchange(code.trim());
-      window.prompt('✅ Success! Copy this refresh token and save it as ZOHO_REFRESH_TOKEN in your host env vars, then redeploy:', r.refresh_token);
+      const msg = r.saved
+        ? '✅ Success! Refresh token minted and saved automatically — it\'s live now. Click "Test Zoho" to confirm.'
+        : '✅ Token minted, but auto-save failed. Copy this and set it as ZOHO_REFRESH_TOKEN in env, then redeploy:';
+      if (r.saved) alert(msg);
+      else window.prompt(msg, r.refresh_token);
     } catch (err) {
       alert('Exchange failed: ' + err.message);
     }

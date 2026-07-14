@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
-const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode } = require('./utils/zohoCrm');
+const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 
 const app = express();
@@ -109,5 +109,6 @@ app.post('/api/config/zoho-exchange', requireAuth, async (req, res) => {
 app.listen(PORT, async () => {
   await loadEmailEnabled();
   await loadDeliveryMode();
+  await loadZohoRefreshToken();
   console.log(`Ritzoini API running on port ${PORT} (email_enabled: ${getEmailEnabled()}, soap_note_delivery: ${getDeliveryMode()})`);
 });

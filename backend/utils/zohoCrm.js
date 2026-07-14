@@ -19,8 +19,30 @@ const STATUS_VALUE = process.env.ZOHO_OCC_STATUS_VALUE || 'Notes Received';
 let cachedToken = null;
 let cachedTokenExpiry = 0; // epoch ms
 
+// Refresh token can come from the DB (minted via the exchange helper, survives
+// restarts) or fall back to the env var. DB wins so the "Get Refresh Token"
+// button takes effect immediately with no redeploy.
+let dbRefreshToken = null;
+
+const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
+
+function currentRefreshToken() {
+  return dbRefreshToken || clean(process.env.ZOHO_REFRESH_TOKEN);
+}
+
+// Load a previously-exchanged refresh token from app_config on startup.
+async function loadZohoRefreshToken() {
+  try {
+    const { data } = await supabase
+      .from('app_config').select('value').eq('key', 'zoho_refresh_token').single();
+    if (data?.value) dbRefreshToken = clean(data.value);
+  } catch (err) {
+    // Table row absent is fine — falls back to env.
+  }
+}
+
 function zohoConfigured() {
-  return !!(process.env.ZOHO_CLIENT_ID && process.env.ZOHO_CLIENT_SECRET && process.env.ZOHO_REFRESH_TOKEN);
+  return !!(process.env.ZOHO_CLIENT_ID && process.env.ZOHO_CLIENT_SECRET && currentRefreshToken());
 }
 
 // Exchange the long-lived refresh token for a short-lived access token.
@@ -31,10 +53,8 @@ async function getAccessToken() {
     throw new Error('Zoho not configured (ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET / ZOHO_REFRESH_TOKEN)');
   }
 
-  // Trim to defend against stray whitespace/newlines/quotes pasted into env UIs.
-  const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
   const params = new URLSearchParams({
-    refresh_token: clean(process.env.ZOHO_REFRESH_TOKEN),
+    refresh_token: currentRefreshToken(),
     client_id:     clean(process.env.ZOHO_CLIENT_ID),
     client_secret: clean(process.env.ZOHO_CLIENT_SECRET),
     grant_type:    'refresh_token',
@@ -282,7 +302,6 @@ async function zohoWriteTest() {
 // exchanged once and expires in minutes, so this must run promptly after
 // generating the code in the Zoho API console.
 async function exchangeGrantCode(code) {
-  const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
   const clientId = clean(process.env.ZOHO_CLIENT_ID);
   const clientSecret = clean(process.env.ZOHO_CLIENT_SECRET);
   if (!clientId || !clientSecret) throw new Error('ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET not set in env');
@@ -313,11 +332,25 @@ async function exchangeGrantCode(code) {
     throw new Error(`Grant exchange failed: ${resp.status} ${body.error || raw.slice(0, 200)}${hint}`);
   }
 
+  // Persist immediately so it's live without a redeploy or manual env edit,
+  // and drop any cached access token so the next call uses the new credential.
+  dbRefreshToken = clean(body.refresh_token);
+  cachedToken = null;
+  cachedTokenExpiry = 0;
+  let saved = false;
+  try {
+    await supabase.from('app_config').upsert({ key: 'zoho_refresh_token', value: dbRefreshToken });
+    saved = true;
+  } catch (err) {
+    console.error('[zoho] Failed to persist refresh token to app_config:', err.message);
+  }
+
   return {
     refresh_token: body.refresh_token,
     api_domain:    body.api_domain || API_DOMAIN,
     scope:         body.scope || null,
+    saved,
   };
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode };
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken };
