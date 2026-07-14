@@ -95,9 +95,60 @@ function NoteModal({ note, onClose }) {
   );
 }
 
+// ── CompareModal ──────────────────────────────────────────────────────────────
+
+function ComparePane({ note }) {
+  return (
+    <div style={{ flex: '1 1 320px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
+        <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', marginTop: 2 }}>
+          {note.peerName} · {fmtDt(note.visitDatetime)}
+        </div>
+      </div>
+      <div style={{ padding: '14px 16px', maxHeight: '58vh', overflowY: 'auto' }}>
+        {note.fullNoteText
+          ? <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: '0.8rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', color: 'var(--gray-700)' }}>{note.fullNoteText}</pre>
+          : <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', fontStyle: 'italic' }}>Note text not available.</p>
+        }
+      </div>
+    </div>
+  );
+}
+
+function CompareModal({ pair, onClose }) {
+  if (!pair) return null;
+  const { a, b } = pair;
+  const pct = a.clonePct || b.clonePct;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '40px 16px', overflowY: 'auto',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 1200,
+        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+      }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Cloned Notes</h3>
+            {pct && <Chip color="orange">{pct}% match</Chip>}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+        </div>
+        <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+          <ComparePane note={a} />
+          <ComparePane note={b} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── HistoryAccordion ──────────────────────────────────────────────────────────
 
-function HistoryAccordion({ history }) {
+function HistoryAccordion({ history, onCompare }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState(null);
 
@@ -133,16 +184,24 @@ function HistoryAccordion({ history }) {
                   <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '10px 0 6px' }}>
                     Flagged Notes
                   </p>
-                  {run.flagged_notes.map((n, i) => (
-                    <div key={i} style={{ fontSize: '0.8rem', color: 'var(--gray-700)', padding: '4px 0', borderBottom: '1px solid var(--gray-100)', display: 'flex', gap: 12, alignItems: 'center' }}>
-                      <span style={{ fontWeight: 600, minWidth: 160 }}>{n.patientName}</span>
-                      <span style={{ color: 'var(--gray-500)' }}>{n.peerName}</span>
-                      <span style={{ color: 'var(--gray-400)' }}>{fmtDt(n.visitDatetime)}</span>
-                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                        {n.flags?.map((f, j) => <Chip key={j} color={flagChipColor(f)}>{f}</Chip>)}
+                  {run.flagged_notes.map((n, i) => {
+                    const partner = n.clonePartnerEid
+                      ? run.flagged_notes.find(x => x.eid === n.clonePartnerEid)
+                      : null;
+                    return (
+                      <div key={i} style={{ fontSize: '0.8rem', color: 'var(--gray-700)', padding: '4px 0', borderBottom: '1px solid var(--gray-100)', display: 'flex', gap: 12, alignItems: 'center' }}>
+                        <span style={{ fontWeight: 600, minWidth: 160 }}>{n.patientName}</span>
+                        <span style={{ color: 'var(--gray-500)' }}>{n.peerName}</span>
+                        <span style={{ color: 'var(--gray-400)' }}>{fmtDt(n.visitDatetime)}</span>
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                          {n.flags?.map((f, j) => <Chip key={j} color={flagChipColor(f)}>{f}</Chip>)}
+                          {partner && (
+                            <button className="btn btn-outline btn-xs" onClick={() => onCompare({ a: n, b: partner })}>Compare</button>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -269,7 +328,8 @@ function RunReviewTab() {
   const [selected,    setSelected]    = useState(new Set());
   const [signingIds,  setSigningIds]  = useState(new Set());
   const [signedIds,   setSignedIds]   = useState(new Set());
-  const [noteModal,   setNoteModal]   = useState(null);
+  const [noteModal,    setNoteModal]    = useState(null);
+  const [compareModal, setCompareModal] = useState(null);   // { a, b }
   const [history,     setHistory]     = useState([]);
   const [histLoading, setHistLoading] = useState(true);
   const esRef = useRef(null);
@@ -347,7 +407,10 @@ function RunReviewTab() {
     const ids = new Set(notes.map(n => n.cosignId));
     setSigningIds(s => new Set([...s, ...ids]));
     try {
-      const { signed, failed } = await api.post('/ps/cosign/sign', { notes, runId: scanResult?.runId });
+      // Send only the fields bulkSign needs — full note objects (with note text)
+      // overflow the server's JSON body limit on large batches (HTTP 413).
+      const slim = notes.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId }));
+      const { signed, failed } = await api.post('/ps/cosign/sign', { notes: slim, runId: scanResult?.runId });
       setSignedIds(s => new Set([...s, ...ids]));
       setSelected(sel => { const n = new Set(sel); ids.forEach(id => n.delete(id)); return n; });
       alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.`);
@@ -434,6 +497,9 @@ function RunReviewTab() {
               const id      = note.cosignId;
               const signed  = signedIds.has(id);
               const signing = signingIds.has(id);
+              const partner = note.clonePartnerEid
+                ? scanResult.flagged.find(x => x.eid === note.clonePartnerEid)
+                : null;
               return (
                 <div key={id} style={{
                   background: 'white', border: `1px solid ${signed ? '#bbf7d0' : 'var(--gray-200)'}`,
@@ -460,6 +526,9 @@ function RunReviewTab() {
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                    {partner && (
+                      <button className="btn btn-outline btn-xs" onClick={() => setCompareModal({ a: note, b: partner })}>Compare</button>
+                    )}
                     <button className="btn btn-outline btn-xs" onClick={() => setNoteModal(note)}>Read</button>
                     {!signed && (
                       <button className="btn btn-outline btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={signing}>
@@ -488,9 +557,10 @@ function RunReviewTab() {
       )}
 
       {/* History */}
-      {!histLoading && <HistoryAccordion history={history} />}
+      {!histLoading && <HistoryAccordion history={history} onCompare={setCompareModal} />}
 
       <NoteModal note={noteModal} onClose={() => setNoteModal(null)} />
+      <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} />
     </div>
   );
 }

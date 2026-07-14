@@ -458,6 +458,7 @@ class InsyncCoSignEngine {
 
   detectClones(notes) {
     const flags    = {};
+    const partners = {};
     const prepared = notes.map(n => {
       let norm = ((n.sessionNarrative || n.noteText) || '').toLowerCase().replace(/\s+/g, ' ').trim();
       for (const part of (n.patientName || '').toLowerCase().replace(',', ' ').split(' '))
@@ -480,11 +481,11 @@ class InsyncCoSignEngine {
         const fb = samePeer
           ? `Possible cloned note (${pct}% match): same peer as ${na.patientName || 'another client'}`
           : `Possible cloned note (${pct}% match): matches ${na.peerName || 'another peer'}'s note for ${na.patientName || 'another client'}`;
-        if (!flags[na.eid]) flags[na.eid] = fa;
-        if (!flags[nb.eid]) flags[nb.eid] = fb;
+        if (!flags[na.eid]) { flags[na.eid] = fa; partners[na.eid] = { eid: nb.eid, pct }; }
+        if (!flags[nb.eid]) { flags[nb.eid] = fb; partners[nb.eid] = { eid: na.eid, pct }; }
       }
     }
-    return flags;
+    return { flags, partners };
   }
 
   // ── AI review ───────────────────────────────────────────────────────────────
@@ -596,18 +597,23 @@ Respond ONLY with valid JSON, no other text:
     }
 
     report('Checking for cloned notes...', 60);
-    const cloneFlags = this.detectClones(notes);
+    const { flags: cloneFlags, partners: clonePartners } = this.detectClones(notes);
 
     report('Running compliance checks...', 62);
     const flagged = [...cantLoad];
     const provClean = [];
 
     for (const note of notes) {
-      const flags = this.checkNote(note);
-      const cf    = cloneFlags[note.eid];
+      const flags   = this.checkNote(note);
+      const cf      = cloneFlags[note.eid];
+      const partner = clonePartners[note.eid];
       if (cf) flags.push(cf);
-      if (flags.length) flagged.push({ ...note, flags, aiFlag: null });
-      else              provClean.push(note);
+      if (flags.length) flagged.push({
+        ...note, flags, aiFlag: null,
+        clonePartnerEid: partner?.eid ?? null,
+        clonePct:        partner?.pct ?? null,
+      });
+      else provClean.push(note);
     }
 
     let clean = [];

@@ -22,7 +22,7 @@ app.use(cors({
 // Scoped ahead of the global parser so the raw bytes are available for Zoom's
 // webhook signature verification (body-parser no-ops on the second json() call).
 app.use('/api/zoom/webhook', express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
-app.use(express.json());
+app.use(express.json({ limit: '5mb' }));
 
 // Routes
 app.use('/api/groups',      require('./routes/groups'));
