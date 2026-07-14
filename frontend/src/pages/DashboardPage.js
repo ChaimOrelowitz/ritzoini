@@ -333,6 +333,23 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleTestZohoWrite() {
+    if (!window.confirm('Run a safe Zoho write test?\n\nThis rewrites one occurrence’s note to its own current value to prove write access. No data is changed and no status is advanced.')) return;
+    try {
+      const r = await api.testZohoWrite();
+      const occ = r.occurrence ? `${r.occurrence.name || '(unnamed)'} — ${r.occurrence.date || 'no date'}` : '(none)';
+      const lines = [
+        `Token/auth: ${r.tokenOk ? 'OK' : 'FAILED'}`,
+        `Write access: ${r.writeOk ? 'OK ✅' : 'FAILED'}`,
+        `Tested against: ${occ}`,
+        r.errors?.length ? `\nErrors:\n- ${r.errors.join('\n- ')}` : '',
+      ];
+      alert('Zoho write test\n\n' + lines.join('\n'));
+    } catch (err) {
+      alert('Zoho write test failed: ' + err.message);
+    }
+  }
+
   const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
   async function cycleDeliveryMode() {
     const order = ['zoho', 'email', 'both'];
@@ -456,6 +473,16 @@ export default function DashboardPage() {
               title="Read-only check of Zoho connection, token scope, and module access"
             >
               Test Zoho
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleTestZohoWrite}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Safe write test — proves Zoho write access without changing any data"
+            >
+              Test Write
             </button>
           )}
           {!showArchived && (

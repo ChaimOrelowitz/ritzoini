@@ -224,4 +224,42 @@ async function zohoDiagnostic(sessionId) {
   return result;
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic };
+// Safe write probe: rewrites one occurrence's Clinical_Note to its OWN current
+// value (a no-op — no data change, ECW/status untouched) purely to prove the
+// token's write scope works. Needs no Ritzoini session. Returns which record
+// it exercised.
+async function zohoWriteTest() {
+  const result = { tokenOk: false, writeOk: false, occurrence: null, errors: [] };
+
+  try { await getAccessToken(); result.tokenOk = true; }
+  catch (e) { result.errors.push(`Token refresh failed: ${e.message}`); return result; }
+
+  // Grab one occurrence to write back to.
+  let occ;
+  try {
+    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=${NAME_FIELD},${DATE_FIELD},${NOTE_FIELD}&per_page=1`);
+    if (resp.status === 204) { result.errors.push(`No ${OCC_MODULE} records exist to test against`); return result; }
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) { result.errors.push(`Read failed (${resp.status}): ${body.code || ''} ${body.message || ''}`); return result; }
+    occ = body.data?.[0];
+    if (!occ) { result.errors.push(`No ${OCC_MODULE} records returned`); return result; }
+  } catch (e) { result.errors.push(`Read error: ${e.message}`); return result; }
+
+  result.occurrence = { id: occ.id, name: occ[NAME_FIELD], date: occ[DATE_FIELD] };
+
+  // Write the same note value back — proves write scope without changing data.
+  // Deliberately does NOT send the status field, so nothing is advanced.
+  try {
+    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/${occ.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ data: [{ [NOTE_FIELD]: occ[NOTE_FIELD] ?? '' }] }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (resp.ok && body.data?.[0]?.code === 'SUCCESS') result.writeOk = true;
+    else result.errors.push(`Write failed (${resp.status}): ${body.data?.[0]?.code || body.code || ''} ${body.data?.[0]?.message || body.message || JSON.stringify(body)}`);
+  } catch (e) { result.errors.push(`Write error: ${e.message}`); }
+
+  return result;
+}
+
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest };
