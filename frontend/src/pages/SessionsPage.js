@@ -156,7 +156,7 @@ function Section({ title, sessions, open, onToggle: onToggleSection, onFieldTogg
                     <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Internal Name</th>
                     <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Group Name</th>
                     <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Status</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Email Sent</th>
+                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Note Sent</th>
                     <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Ready to Lock</th>
                     <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Locked (ECW)</th>
                   </tr>

@@ -5,6 +5,8 @@ const { autoCompleteSessions } = require('./sessions');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const { generateOrRefreshDigest } = require('../utils/peerDigestGenerator');
+const { postSoapNoteToZoho } = require('../utils/zohoCrm');
+const { getDeliveryMode } = require('../utils/soapNoteDelivery');
 
 function requireCronSecret(req, res, next) {
   const secret = process.env.CRON_SECRET;
@@ -42,6 +44,53 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
     res.json({ processed, skipped, failed, log });
   } catch (err) {
     console.error('[cron] Fatal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cron/zoho-sync
+// Reposts any done-session SOAP note that isn't in Zoho yet. Handles Zoho's
+// delay in making an occurrence available ("ready for notes") — a note that
+// couldn't match a Zoho record when the session finished lands on a later run
+// once the occurrence exists. Idempotent: already-posted sessions are skipped.
+router.post('/zoho-sync', requireCronSecret, async (req, res) => {
+  const mode = getDeliveryMode();
+  if (mode !== 'zoho' && mode !== 'both') {
+    return res.json({ skipped: true, reason: `delivery mode is '${mode}'` });
+  }
+
+  const sinceDate = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  let checked = 0, posted = 0, pending = 0, failed = 0;
+  const log = [];
+
+  try {
+    const { data: sessions, error } = await supabase
+      .from('sessions')
+      .select('id, soap_note, notes, session_date')
+      .eq('status', 'completed')
+      .gte('session_date', sinceDate)
+      .or('zoho_posted.is.null,zoho_posted.eq.false')
+      .limit(300);
+    if (error) throw error;
+
+    for (const s of (sessions || [])) {
+      const note = (s.soap_note || s.notes || '').trim();
+      if (!note) continue; // nothing to send yet
+      checked++;
+      try {
+        await postSoapNoteToZoho(s.id);
+        posted++;
+      } catch (err) {
+        // "No Session_Occurrences record found" = Zoho not ready yet → retry next run.
+        if (/No .* record found/i.test(err.message)) pending++;
+        else { failed++; log.push({ id: s.id, error: err.message }); }
+      }
+    }
+
+    console.log(`[cron] zoho-sync: checked=${checked} posted=${posted} pending=${pending} failed=${failed}`);
+    res.json({ checked, posted, pending, failed, log });
+  } catch (err) {
+    console.error('[cron] zoho-sync fatal:', err.message);
     res.status(500).json({ error: err.message });
   }
 });

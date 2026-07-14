@@ -177,10 +177,14 @@ async function postSoapNoteToZoho(sessionId) {
 
   const zohoId = await updateOccurrenceNote(occ.id, noteText);
 
+  const now = new Date().toISOString();
   const { error: updateErr } = await supabase.from('sessions').update({
     zoho_posted: true,
-    zoho_posted_at: new Date().toISOString(),
+    zoho_posted_at: now,
     zoho_note_id: zohoId,
+    // Also tick the generic "note delivered" flag that drives the Note Sent box.
+    email_sent: true,
+    email_sent_at: now,
   }).eq('id', sessionId);
   if (updateErr) {
     // Note landed in Zoho; only local bookkeeping failed (e.g. columns missing).

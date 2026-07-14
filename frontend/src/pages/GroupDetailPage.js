@@ -238,7 +238,7 @@ function SessionRow({ session, groupDuration, onUpdate, onCancel, onUncancel, on
         {/* Checkboxes + timestamps */}
         <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap', marginLeft: 'auto' }}>
           {[
-            { field: 'email_sent',    label: 'Email Sent',    tsField: 'email_sent_at',    messageId: session.email_message_id },
+            { field: 'email_sent',    label: 'Note Sent',     tsField: 'email_sent_at',    messageId: session.email_message_id },
             { field: 'ready_to_lock', label: 'Ready to Lock', tsField: 'ready_to_lock_at', messageId: null },
             { field: 'locked',        label: 'Locked (ECW)',  tsField: 'locked_at',         messageId: null },
           ].map(({ field, label, tsField, messageId }) => (
