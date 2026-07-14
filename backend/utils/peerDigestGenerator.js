@@ -93,11 +93,7 @@ async function generateOrRefreshDigest({
         peer_note_ids_included: [],
         notes_included_count:   0,
         digest_status:          'No Peer Notes Found',
-        main_themes:            null,
-        notable_concerns:       null,
-        progress_strengths:     null,
-        peer_support_interventions: null,
-        suggested_oo_followup:  null,
+        summary:                null,
         error_message:          null,
       }, { onConflict: 'client_id,generation_mode,digest_window_start,digest_window_end' })
       .select()
@@ -121,42 +117,41 @@ async function generateOrRefreshDigest({
 
 ${noteBlocks}
 
-Based ONLY on the peer support notes above, generate a brief therapist-facing weekly digest. Return ONLY valid JSON — no markdown, no explanation, no code fences.
+Based ONLY on these peer support notes, write a brief therapist-facing weekly digest. The therapist will read this at a glance before their OO session.
 
-Return exactly this JSON structure:
-{
-  "main_themes": "...",
-  "notable_concerns": "...",
-  "progress_strengths": "...",
-  "peer_support_interventions": "...",
-  "suggested_oo_followup": "..."
-}
+Format exactly as follows — no headings, no extra sections:
+
+[2–3 sentence paragraph summarizing what the client dealt with this week across peer work]
+
+• Problem/theme: [key problems or themes from the week]
+• Intervention/support: [peer interventions or support approaches used]
+• Progress/response: [how the client responded or what progress was noted]
+• OO focus: [one suggested OO focus area — include only if clearly supported by the notes]
 
 Rules:
-- Each field: 1–4 bullet points using "• " as the bullet prefix. One point per line.
-- Summarize ONLY what the notes say. Do not infer or invent beyond what is written.
+- Maximum 3–4 bullets total. Omit "OO focus" if the notes do not clearly support a suggestion.
+- Do not use headings or section labels beyond the bullet labels above.
+- Do not list every session date, activity, or intervention name.
+- Do not mention locations or provider names unless clinically important.
+- Do not include "no safety concerns" unless safety was actually a relevant issue.
+- Total output: roughly 175 words maximum.
+- Summarize ONLY what is in the notes. Do not invent or infer beyond what is written.
 - Use neutral, therapist-facing clinical language.
-- If a field has nothing to report, write "• Nothing noted in these peer notes."
-- If notes are sparse or unclear, say so in the relevant field.
 - Do NOT write as if the OO therapist provided the peer service.
-- Do NOT invent diagnoses, prognoses, or medical necessity language.
-- Do NOT mention audits, billing, documentation requirements, or compliance.
-- Do NOT include scheduling chatter, meeting arrangements, or administrative filler.
+- Do NOT add diagnosis language, medical necessity language, or compliance concerns.
+- Do NOT mention audits, billing, documentation, or administrative details.
 - Do NOT say peer services happened in school unless the notes explicitly state it.
-- Do NOT include any information not present in the notes provided.`;
+- Return only the digest text. No JSON, no markdown, no code fences, no explanation.`;
 
-  let fields = null;
+  let digestText = null;
   try {
     const response = await anthropic.messages.create({
       model:      'claude-sonnet-4-6',
-      max_tokens: 2048,
+      max_tokens: 1024,
       messages:   [{ role: 'user', content: prompt }],
     });
-    const text = response.content[0].text.trim();
-    const jsonStart = text.indexOf('{');
-    const jsonEnd   = text.lastIndexOf('}');
-    if (jsonStart === -1) throw new Error('No JSON in AI response');
-    fields = JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+    digestText = response.content[0].text.trim();
+    if (!digestText) throw new Error('Empty response from AI');
   } catch (aiErr) {
     summary.errors.push(`AI error: ${aiErr.message}`);
     summary.digestStatus = 'Error';
@@ -168,6 +163,7 @@ Rules:
         notes_included_count:   capped.length,
         digest_status:          'Error',
         error_message:          aiErr.message,
+        summary:                null,
       }, { onConflict: 'client_id,generation_mode,digest_window_start,digest_window_end' })
       .select().single();
     return { digest: upserted, summary };
@@ -180,15 +176,11 @@ Rules:
     .from('peer_weekly_digests')
     .upsert({
       ...basePayload,
-      peer_note_ids_included:    capped.map(n => n.id),
-      notes_included_count:      capped.length,
-      main_themes:               fields.main_themes               || null,
-      notable_concerns:          fields.notable_concerns          || null,
-      progress_strengths:        fields.progress_strengths        || null,
-      peer_support_interventions: fields.peer_support_interventions || null,
-      suggested_oo_followup:     fields.suggested_oo_followup     || null,
-      digest_status:             digestStatus,
-      error_message:             null,
+      peer_note_ids_included: capped.map(n => n.id),
+      notes_included_count:   capped.length,
+      summary:                digestText,
+      digest_status:          digestStatus,
+      error_message:          null,
     }, { onConflict: 'client_id,generation_mode,digest_window_start,digest_window_end' })
     .select()
     .single();

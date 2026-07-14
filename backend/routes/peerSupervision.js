@@ -105,20 +105,17 @@ router.delete('/sessions/:id', requireAuth, async (req, res) => {
 // ── Co-Sign ───────────────────────────────────────────────────────────────────
 
 async function buildEngine() {
-  const [uRow, pRow, provRow, nsStartRow, nsEndRow] = await Promise.all([
-    supabase.from('app_settings').select('value').eq('key', 'insync_username').maybeSingle(),
-    supabase.from('app_settings').select('value').eq('key', 'insync_password').maybeSingle(),
-    supabase.from('app_settings').select('value').eq('key', 'insync_provider_id').maybeSingle(),
-    supabase.from('app_settings').select('value').eq('key', 'ps_no_school_start').maybeSingle(),
-    supabase.from('app_settings').select('value').eq('key', 'ps_no_school_end').maybeSingle(),
-  ]);
+  const { data: rows } = await supabase.from('app_settings').select('key, value')
+    .in('key', ['insync_username','insync_password','insync_provider_id',
+                'ps_no_school_start','ps_no_school_end','anthropic_api_key']);
+  const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
   return new InsyncCoSignEngine({
-    username:      uRow.data?.value    || process.env.INSYNC_USERNAME || '',
-    password:      pRow.data?.value    || process.env.INSYNC_PASSWORD || '',
-    anthropicKey:  process.env.ANTHROPIC_API_KEY,
-    providerId:    provRow.data?.value || process.env.INSYNC_PROVIDER_ID || '2317',
-    noSchoolStart: nsStartRow.data?.value || '',
-    noSchoolEnd:   nsEndRow.data?.value   || '',
+    username:      S.insync_username    || process.env.INSYNC_USERNAME      || '',
+    password:      S.insync_password    || process.env.INSYNC_PASSWORD      || '',
+    anthropicKey:  S.anthropic_api_key  || process.env.ANTHROPIC_API_KEY    || '',
+    providerId:    S.insync_provider_id || process.env.INSYNC_PROVIDER_ID   || '2317',
+    noSchoolStart: S.ps_no_school_start || '',
+    noSchoolEnd:   S.ps_no_school_end   || '',
   });
 }
 
@@ -193,16 +190,21 @@ router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
   res.json(data);
 });
 
-// POST /api/ps/cosign/settings — save no-school dates + provider id
+// POST /api/ps/cosign/settings
 router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { no_school_start, no_school_end, provider_id } = req.body;
-    const upserts = [];
-    if (no_school_start !== undefined) upserts.push({ key: 'ps_no_school_start', value: no_school_start });
-    if (no_school_end   !== undefined) upserts.push({ key: 'ps_no_school_end',   value: no_school_end   });
-    if (provider_id     !== undefined) upserts.push({ key: 'insync_provider_id', value: provider_id     });
-    for (const row of upserts)
-      await supabase.from('app_settings').upsert(row, { onConflict: 'key' });
+    const { no_school_start, no_school_end, provider_id, insync_username, insync_password, anthropic_api_key } = req.body;
+    const map = {
+      ps_no_school_start: no_school_start,
+      ps_no_school_end:   no_school_end,
+      insync_provider_id: provider_id,
+      insync_username,
+      insync_password,
+      anthropic_api_key,
+    };
+    for (const [key, value] of Object.entries(map))
+      if (value !== undefined && value !== null)
+        await supabase.from('app_settings').upsert({ key, value }, { onConflict: 'key' });
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -212,12 +214,16 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
 // GET /api/ps/cosign/settings
 router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   const { data } = await supabase.from('app_settings').select('key, value')
-    .in('key', ['ps_no_school_start', 'ps_no_school_end', 'insync_provider_id']);
+    .in('key', ['ps_no_school_start','ps_no_school_end','insync_provider_id',
+                'insync_username','insync_password','anthropic_api_key']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
-    no_school_start: S.ps_no_school_start || '07/01',
-    no_school_end:   S.ps_no_school_end   || '08/31',
-    provider_id:     S.insync_provider_id  || '2317',
+    no_school_start:   S.ps_no_school_start || '07/01',
+    no_school_end:     S.ps_no_school_end   || '08/31',
+    provider_id:       S.insync_provider_id  || '2317',
+    insync_username:   S.insync_username     || '',
+    insync_password:   S.insync_password     || '',
+    anthropic_api_key: S.anthropic_api_key   || '',
   });
 });
 
