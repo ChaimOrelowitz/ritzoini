@@ -350,6 +350,17 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleZohoExchange() {
+    const code = window.prompt('Paste the grant token (code) generated in the Zoho API console (Self Client → Generate Code, scope ZohoCRM.modules.ALL). It expires in minutes, so do this promptly:');
+    if (!code || !code.trim()) return;
+    try {
+      const r = await api.zohoExchange(code.trim());
+      window.prompt('✅ Success! Copy this refresh token and save it as ZOHO_REFRESH_TOKEN in your host env vars, then redeploy:', r.refresh_token);
+    } catch (err) {
+      alert('Exchange failed: ' + err.message);
+    }
+  }
+
   const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
   async function cycleDeliveryMode() {
     const order = ['zoho', 'email', 'both'];
@@ -483,6 +494,16 @@ export default function DashboardPage() {
               title="Safe write test — proves Zoho write access without changing any data"
             >
               Test Write
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleZohoExchange}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Turn a Zoho Self Client grant code into a refresh token"
+            >
+              Get Refresh Token
             </button>
           )}
           {!showArchived && (

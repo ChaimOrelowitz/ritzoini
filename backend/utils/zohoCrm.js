@@ -276,4 +276,48 @@ async function zohoWriteTest() {
   return result;
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest };
+// One-time exchange: turn a Self Client "grant token" (code) into a long-lived
+// refresh token, using the client_id/secret already in env. The returned
+// refresh_token is what belongs in ZOHO_REFRESH_TOKEN. A grant code can only be
+// exchanged once and expires in minutes, so this must run promptly after
+// generating the code in the Zoho API console.
+async function exchangeGrantCode(code) {
+  const clean = (v) => (v || '').trim().replace(/^["']|["']$/g, '');
+  const clientId = clean(process.env.ZOHO_CLIENT_ID);
+  const clientSecret = clean(process.env.ZOHO_CLIENT_SECRET);
+  if (!clientId || !clientSecret) throw new Error('ZOHO_CLIENT_ID / ZOHO_CLIENT_SECRET not set in env');
+  if (!code || !clean(code)) throw new Error('No grant code provided');
+
+  const params = new URLSearchParams({
+    grant_type:    'authorization_code',
+    client_id:     clientId,
+    client_secret: clientSecret,
+    code:          clean(code),
+  });
+
+  const resp = await fetch(`${ACCOUNTS_DOMAIN}/oauth/v2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const raw = await resp.text();
+  let body = {};
+  try { body = JSON.parse(raw); } catch { /* non-JSON */ }
+
+  if (!resp.ok || body.error || !body.refresh_token) {
+    const hint = body.error === 'invalid_code'
+      ? ' — the grant code is expired or already used; generate a fresh one and try again immediately'
+      : (body.error === 'invalid_client'
+        ? ' — client_id/secret in env do not match this Self Client'
+        : '');
+    throw new Error(`Grant exchange failed: ${resp.status} ${body.error || raw.slice(0, 200)}${hint}`);
+  }
+
+  return {
+    refresh_token: body.refresh_token,
+    api_domain:    body.api_domain || API_DOMAIN,
+    scope:         body.scope || null,
+  };
+}
+
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode };

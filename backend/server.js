@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
-const { zohoDiagnostic, zohoWriteTest } = require('./utils/zohoCrm');
+const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 
 const app = express();
@@ -92,6 +92,17 @@ app.post('/api/config/zoho-write-test', requireAuth, async (req, res) => {
     res.json(await zohoWriteTest());
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Exchange a Self Client grant code for a refresh token (admin). Returns the
+// refresh_token to paste into ZOHO_REFRESH_TOKEN. Does not persist anything.
+app.post('/api/config/zoho-exchange', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json(await exchangeGrantCode(req.body.code));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
