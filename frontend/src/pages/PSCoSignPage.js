@@ -156,6 +156,37 @@ function commonRanges(textA, textB) {
   return { a: build(A, 0), b: build(B, 1) };
 }
 
+// Char range [start, end) of the per-session narrative (Focus of the meeting →
+// Plan) inside a full note. Mirrors the backend's _sessionContent so clone
+// highlighting is scoped to the exact same text the detector compares — never
+// the demographics/times/treatment-plan boilerplate.
+function sessionContentRange(text) {
+  if (!text) return null;
+  const sm = /Focus of the meeting\s*[:\-]/i.exec(text);
+  if (!sm) return null;
+  const start = sm.index;
+  const tail  = text.slice(start);
+  let end = tail.length;
+  for (const re of [/\bF\d{2}\.\d/, /Visit Codes\s*[:\-]/i, /Treatment Plan/, /Electronically Signed/i, /Provider NPI/i]) {
+    const mm = re.exec(tail);
+    if (mm && mm.index > 0) end = Math.min(end, mm.index);
+  }
+  return { start, end: start + end };
+}
+
+// Common-text ranges between two notes, computed ONLY over each note's session
+// narrative and mapped back to full-note offsets for highlighting.
+function scopedCommonRanges(ta, tb) {
+  const ra = sessionContentRange(ta), rb = sessionContentRange(tb);
+  if (!ra || !rb) return null;
+  const cr = commonRanges(ta.slice(ra.start, ra.end), tb.slice(rb.start, rb.end));
+  if (!cr) return null;
+  return {
+    a: cr.a.map(([s, e]) => [s + ra.start, e + ra.start]),
+    b: cr.b.map(([s, e]) => [s + rb.start, e + rb.start]),
+  };
+}
+
 // Render a text slice, wrapping any part inside `ranges` (absolute char ranges)
 // in a light-red highlight. Returns React nodes.
 function highlightSlice(slice, sliceStart, ranges) {
@@ -293,7 +324,7 @@ function ComparePane({ note, highlightRanges }) {
 }
 
 function CompareModal({ pair, onClose, onReopen }) {
-  const ranges = pair ? commonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
+  const ranges = pair ? scopedCommonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
   if (!pair) return null;
   const { a, b } = pair;
   const pct = a.clonePct || b.clonePct;
