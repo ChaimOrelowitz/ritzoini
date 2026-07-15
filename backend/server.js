@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
-const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups } = require('./utils/zohoCrm');
+const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, zohoLockBackfill } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 const supabase = require('./db/supabase');
 
@@ -129,6 +129,17 @@ app.get('/api/config/zoho-alignment', requireAuth, async (req, res) => {
     if (g.error) throw g.error;
     if (z.error) throw z.error;
     res.json({ groups: g.data || [], zohoGroups: z.data || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// One-time lock reconciliation for sessions with a Zoho note (dry-run unless
+// { apply: true }). Ritzoini-writes only.
+app.post('/api/config/zoho-lock-backfill', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json(await zohoLockBackfill({ apply: req.body.apply === true }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -237,6 +237,45 @@ async function syncZohoLockStatus({ windowDays = 21, batch = 40, concurrency = 5
   return { checked, readyToLock, locked, errors };
 }
 
+// One-time full-history lock reconciliation for sessions that have a Zoho note
+// (no 21-day window, unlike the cron). Reads Locked_Notes/Approved_notes off
+// each occurrence and reflects it onto Ritzoini. dry run reports only.
+// Ritzoini-writes only — never touches Zoho.
+async function zohoLockBackfill({ apply = false } = {}) {
+  const { data, error } = await supabase
+    .from('sessions')
+    .select('id, session_date, zoho_note_id, ready_to_lock, locked, group:groups(group_name)')
+    .not('zoho_note_id', 'is', null);
+  if (error) throw error;
+
+  const todo = (data || []).filter(s => !s.locked); // already-locked need nothing
+  const CONCURRENCY = 8;
+  let checked = 0, wouldLock = 0, wouldReady = 0, errors = 0, applied = 0;
+  const sample = [];
+
+  for (let i = 0; i < todo.length; i += CONCURRENCY) {
+    await Promise.all(todo.slice(i, i + CONCURRENCY).map(async (s) => {
+      checked++;
+      try {
+        const occ = await getOccurrenceRaw(s.zoho_note_id);
+        if (!occ) return;
+        const isLocked   = String(occ.Locked_Notes   || '').toLowerCase() === 'yes';
+        const isApproved = String(occ.Approved_notes || '').toLowerCase() === 'yes';
+        const upd = {};
+        if (isLocked) { upd.locked = true; upd.locked_at = new Date().toISOString(); wouldLock++; }
+        else if (isApproved && !s.ready_to_lock) { upd.ready_to_lock = true; upd.ready_to_lock_at = new Date().toISOString(); wouldReady++; }
+        if (Object.keys(upd).length) {
+          if (sample.length < 25) sample.push({ date: s.session_date, group: s.group?.group_name, action: upd.locked ? 'lock' : 'ready-to-lock' });
+          if (apply) { await supabase.from('sessions').update(upd).eq('id', s.id); applied++; }
+        }
+      } catch (e) { errors++; }
+    }));
+  }
+
+  console.log(`[zoho] lock-backfill (${apply ? 'APPLY' : 'dry'}): checked=${checked} wouldLock=${wouldLock} wouldReady=${wouldReady} applied=${applied} errors=${errors}`);
+  return { mode: apply ? 'applied' : 'dry-run', totalWithZohoNote: (data || []).length, unlockedInRitzoini: todo.length, checked, wouldLock, wouldReady, errors, applied, sample };
+}
+
 // Fetch an occurrence's full raw record (all fields) — for the inspector.
 async function getOccurrenceRaw(occId) {
   if (!occId) throw new Error('occurrence id required');
@@ -562,4 +601,4 @@ async function syncZohoGroups() {
   return { fetched: sessions.length, aligned, alreadyLinked, unmatched };
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, setOccurrenceLock, syncZohoLockStatus };
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, setOccurrenceLock, syncZohoLockStatus, zohoLockBackfill };

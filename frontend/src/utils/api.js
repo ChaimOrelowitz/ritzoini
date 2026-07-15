@@ -78,6 +78,7 @@ export const api = {
   syncZohoGroups:   () => authFetch('/api/config/zoho-sync-groups', { method: 'POST' }),
   getZohoGroups:    () => authFetch('/api/config/zoho-groups'),
   getZohoAlignment: () => authFetch('/api/config/zoho-alignment'),
+  zohoLockBackfill: (apply) => authFetch('/api/config/zoho-lock-backfill', { method: 'POST', body: JSON.stringify({ apply: !!apply }) }),
 
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),

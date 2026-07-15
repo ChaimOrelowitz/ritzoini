@@ -401,6 +401,32 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleLockBackfill() {
+    try {
+      const r = await api.zohoLockBackfill(false); // dry run
+      const lines = [
+        `Sessions with a Zoho note: ${r.totalWithZohoNote}`,
+        `  not yet locked in Ritzoini: ${r.unlockedInRitzoini}`,
+        `  checked against Zoho: ${r.checked}`,
+        ``,
+        `WOULD set Locked: ${r.wouldLock}`,
+        `WOULD set Ready to Lock: ${r.wouldReady}`,
+        `Errors: ${r.errors}`,
+        r.sample.length ? `\nSample:\n` + r.sample.map(x => `• ${x.date} — ${x.group || '?'} → ${x.action}`).join('\n') : '',
+      ];
+      if (r.wouldLock + r.wouldReady === 0) {
+        alert('Lock backfill — dry run\n\n' + lines.join('\n') + '\n\nNothing to change.');
+        return;
+      }
+      const go = window.confirm('Lock backfill — DRY RUN\n\n' + lines.join('\n') + `\n\nApply these ${r.wouldLock + r.wouldReady} change(s) to Ritzoini? (Zoho is not touched.)`);
+      if (!go) return;
+      const applied = await api.zohoLockBackfill(true);
+      alert(`✅ Applied ${applied.applied} change(s) (${applied.wouldLock} locked, ${applied.wouldReady} ready-to-lock).`);
+    } catch (err) {
+      alert('Lock backfill failed: ' + err.message);
+    }
+  }
+
   const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
   async function cycleDeliveryMode() {
     const order = ['zoho', 'email', 'both'];
@@ -568,6 +594,14 @@ export default function DashboardPage() {
                 title="Dump a Zoho occurrence's raw fields (read-only)"
               >
                 Inspect Occurrence
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleLockBackfill}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="One-time: reconcile Locked status from Zoho for all sessions with a Zoho note (dry run first)"
+              >
+                Lock Backfill
               </button>
             </div>
           )}
