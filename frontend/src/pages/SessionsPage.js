@@ -31,11 +31,9 @@ function fmtDateTime(ts) {
   return new Date(ts).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
-// Deep links out to the two systems.
+// Deep link to the Zoho occurrence record.
 const ZOHO_ORG = '871314197';
 const zohoOccurrenceUrl = (id) => `https://crm.zoho.com/crm/org${ZOHO_ORG}/tab/Session_Occurrences/${id}`;
-// eCW lands on the logged-in user's home/schedule (session comes from their existing cookies).
-const ECW_URL = 'https://nysphis2sr72r38w2lapp.ecwcloud.com/mobiledoc/jsp/webemr/index.jsp';
 
 // A checkbox that stays visually centered; its timestamp + "view" link live in a
 // hover popover so the three columns line up cleanly.
@@ -103,12 +101,6 @@ function SessionRow({ session, onToggle }) {
       <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} zohoId={session.zoho_note_id} accent="#2563eb" />
       <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} timestamp={session.ready_to_lock_at} accent="#E0A50E" />
       <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)}        timestamp={session.locked_at} accent="#12855C" />
-      <td style={{ padding: '10px 12px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-        <a href={ECW_URL} target="_blank" rel="noreferrer"
-          style={{ fontSize: '0.72rem', fontWeight: 600, color: '#0e7490', textDecoration: 'none', whiteSpace: 'nowrap', border: '1px solid #a5d8e6', borderRadius: 6, padding: '3px 8px' }}>
-          eCW ↗
-        </a>
-      </td>
     </tr>
   );
 }
@@ -129,6 +121,7 @@ export default function SessionsPage() {
   const [supervisors, setSupervisors] = useState([]);
   const [supervisorFilter, setSupervisorFilter] = useState('');
   const [filter, setFilter] = useState('ready'); // her default queue
+  const [zohoOnly, setZohoOnly] = useState(true); // hide pre-Zoho sessions by default
   const [toast, setToast] = useState(null);
 
   const load = useCallback(async () => {
@@ -167,14 +160,16 @@ export default function SessionsPage() {
     }
   }
 
-  const completed = sessions.filter(s => s.status === 'completed');
+  // "Zoho Sessions Only" hides pre-Zoho orphans (never posted → no occurrence id).
+  const base = zohoOnly ? sessions.filter(s => s.zoho_note_id) : sessions;
+  const completed = base.filter(s => s.status === 'completed');
   const buckets = {
     ready:     completed.filter(s => s.ready_to_lock && !s.locked),
     awaiting:  completed.filter(s => s.email_sent && !s.ready_to_lock && !s.locked),
     needsNote: completed.filter(s => !s.email_sent),
     locked:    completed.filter(s => s.locked),
-    upcoming:  sessions.filter(s => s.status === 'scheduled'),
-    all:       sessions,
+    upcoming:  base.filter(s => s.status === 'scheduled'),
+    all:       base,
   };
   const counts = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, v.length]));
 
@@ -201,7 +196,7 @@ export default function SessionsPage() {
       </div>
 
       {/* Filter tiles */}
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10, alignItems: 'stretch' }}>
         {TILES.map(t => {
           const on = filter === t.key;
           return (
@@ -221,6 +216,11 @@ export default function SessionsPage() {
         })}
       </div>
 
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginBottom: 18, fontSize: '0.82rem', color: 'var(--gray-600)', cursor: 'pointer', userSelect: 'none' }}>
+        <input type="checkbox" checked={zohoOnly} onChange={e => setZohoOnly(e.target.checked)} style={{ width: 15, height: 15, accentColor: '#6941C6', cursor: 'pointer' }} />
+        Zoho Sessions Only <span style={{ color: 'var(--gray-400)', fontSize: '0.76rem' }}>(hide old pre-Zoho sessions)</span>
+      </label>
+
       {/* Table */}
       <div style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
         {rows.length === 0 ? (
@@ -235,7 +235,7 @@ export default function SessionsPage() {
                   {['Date', 'Time (ECW)', 'Group Name', 'Status'].map(h => (
                     <th key={h} style={{ padding: '9px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
-                  {['Note Sent', 'Ready to Lock', 'Locked', ''].map((h, i) => (
+                  {['Note Sent', 'Ready to Lock', 'Locked'].map((h, i) => (
                     <th key={i} style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
                   ))}
                 </tr>
