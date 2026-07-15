@@ -7,8 +7,8 @@ const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov
 
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
-  const [, m, d] = dateStr.split('-').map(Number);
-  return `${MONTHS[m - 1]} ${d}`;
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return `${MONTHS[m - 1]} ${d}, ${y}`;
 }
 
 function fmt12(timeStr) {

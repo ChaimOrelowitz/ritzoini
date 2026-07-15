@@ -179,7 +179,7 @@ router.get('/all', requireAuth, async (req, res) => {
       .select(`
         id, group_id, session_number, session_date, scheduled_date,
         start_time, scheduled_time, ecw_time, status, email_sent, email_sent_at, email_message_id,
-        ready_to_lock, ready_to_lock_at, locked, locked_at,
+        ready_to_lock, ready_to_lock_at, locked, locked_at, zoho_note_id, zoho_posted,
         group:groups!inner(id, internal_name, group_name, supervisor_id)
       `)
       .not('status', 'in', '("cancelled","group_ended","skipped")')
