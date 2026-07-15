@@ -114,6 +114,29 @@ const TILES = [
   { key: 'all',       label: 'All', sub: '', accent: '#6b7280', bg: '#f3f4f6', border: '#e5e7eb' },
 ];
 
+const COLUMNS = [
+  { key: 'date',          label: 'Date',          align: 'left'   },
+  { key: 'time',          label: 'Time (ECW)',    align: 'left'   },
+  { key: 'group',         label: 'Group Name',    align: 'left'   },
+  { key: 'status',        label: 'Status',        align: 'left'   },
+  { key: 'email_sent',    label: 'Note Sent',     align: 'center' },
+  { key: 'ready_to_lock', label: 'Ready to Lock', align: 'center' },
+  { key: 'locked',        label: 'Locked',        align: 'center' },
+];
+
+function sortVal(s, key) {
+  switch (key) {
+    case 'date':   return s.session_date || s.scheduled_date || '';
+    case 'time':   return (s.ecw_time || s.start_time || s.scheduled_time || '').slice(0, 5);
+    case 'group':  return (s.group?.group_name || s.group?.internal_name || '').toLowerCase();
+    case 'status': return s.status || '';
+    case 'email_sent':    return s.email_sent ? 1 : 0;
+    case 'ready_to_lock': return s.ready_to_lock ? 1 : 0;
+    case 'locked':        return s.locked ? 1 : 0;
+    default: return '';
+  }
+}
+
 export default function SessionsPage() {
   const { isAdmin } = useAuth();
   const [sessions, setSessions] = useState([]);
@@ -122,7 +145,14 @@ export default function SessionsPage() {
   const [supervisorFilter, setSupervisorFilter] = useState('');
   const [filter, setFilter] = useState('ready'); // her default queue
   const [zohoOnly, setZohoOnly] = useState(true); // hide pre-Zoho sessions by default
+  const [sort, setSort] = useState({ key: 'date', dir: 'desc' }); // default newest first
   const [toast, setToast] = useState(null);
+
+  function toggleSort(key) {
+    setSort(prev => prev.key === key
+      ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+      : { key, dir: key === 'date' ? 'desc' : 'asc' });
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -173,11 +203,11 @@ export default function SessionsPage() {
   };
   const counts = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, v.length]));
 
-  // Action queues oldest-first (work chronologically); done/upcoming most-recent-first.
-  const oldestFirst = ['ready', 'awaiting', 'needsNote'].includes(filter);
-  const dateOf = s => s.session_date || s.scheduled_date || '';
-  const rows = [...buckets[filter]].sort((a, b) =>
-    oldestFirst ? dateOf(a).localeCompare(dateOf(b)) : dateOf(b).localeCompare(dateOf(a)));
+  const rows = [...buckets[filter]].sort((a, b) => {
+    const va = sortVal(a, sort.key), vb = sortVal(b, sort.key);
+    const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
+    return sort.dir === 'asc' ? cmp : -cmp;
+  });
 
   const activeTile = TILES.find(t => t.key === filter);
 
@@ -232,12 +262,15 @@ export default function SessionsPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
               <thead>
                 <tr style={{ background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)' }}>
-                  {['Date', 'Time (ECW)', 'Group Name', 'Status'].map(h => (
-                    <th key={h} style={{ padding: '9px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
-                  {['Note Sent', 'Ready to Lock', 'Locked'].map((h, i) => (
-                    <th key={i} style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
-                  ))}
+                  {COLUMNS.map(c => {
+                    const active = sort.key === c.key;
+                    return (
+                      <th key={c.key} onClick={() => toggleSort(c.key)}
+                        style={{ padding: '9px 12px', textAlign: c.align, fontWeight: 600, color: active ? 'var(--navy)' : 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}>
+                        {c.label}<span style={{ opacity: active ? 1 : 0.25, marginLeft: 4 }}>{active ? (sort.dir === 'asc' ? '▲' : '▼') : '▾'}</span>
+                      </th>
+                    );
+                  })}
                 </tr>
               </thead>
               <tbody>
