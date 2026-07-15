@@ -593,18 +593,16 @@ Respond ONLY with valid JSON, no other text:
     const plan       = (note.treatmentPlan || '').slice(0, 8000);
     const dx         = (note.diagnosis || '').slice(0, 1500);
 
-    const prompt = `You are a clinical documentation reviewer for peer support services. Review this session note for coherence. Apply MODERATE strictness: flag clear, defensible problems, not minor nitpicks.
+    const prompt = `You are a QA reviewer for peer support session documentation. Review this note and flag clear, defensible problems (not minor nitpicks).
 
-The session Start Time, End Time, and Total Time are AUTHORITATIVE FACTS - the true reported length of the session. Do NOT re-add activity minutes to check the total; the total is given. Use the stated duration as the anchor for judging coherence.
+STATED TOTAL DURATION: ${duration}
 
-STATED DURATION (authoritative): ${duration}
-
-SESSION NARRATIVE (what the note says happened):
+SESSION NARRATIVE (what the note says happened, including any per-activity minute breakdown):
 ---
 ${narrative}
 ---
 
-TREATMENT PLAN (the client documented goals and interventions):
+TREATMENT PLAN (the client's documented goals and interventions — this is the ANCHOR for judging clinical fit):
 ---
 ${plan || '(not found in note)'}
 ---
@@ -613,18 +611,20 @@ DIAGNOSES (context only): ${dx || '(not found)'}
 
 The above sections contain the COMPLETE note content — nothing is truncated. Do not remark on the note being cut off.
 
-Evaluate TWO things and flag if EITHER shows a clear problem:
+Evaluate THREE things and flag if ANY shows a clear problem:
 
-1. DURATION vs NARRATIVE DEPTH: Does the amount and depth of activity described plausibly fit the stated duration? A short session (e.g. 30 min) crammed with many deep interventions across multiple complex topics is implausible. A long session (e.g. 2 hr) described in one or two thin sentences is also implausible.
+1. ACTIVITY-TIME ARITHMETIC: The narrative often breaks the session into timed chunks (e.g. "the first 30 minutes...", "the next 25 minutes..."). If it does, add those minutes up and compare to the STATED TOTAL DURATION. Flag a clear mismatch — the chunks summing to well under the total (padded/over-billed time) or well over it. Allow small rounding differences; only flag a material gap. If the narrative gives no per-activity minutes, skip this check.
 
-2. NARRATIVE vs TREATMENT PLAN: Do the focus, interventions, and goals described in the session align with the documented treatment plan? If the session describes work unrelated to any plan goal or intervention, flag it.
+2. DURATION vs NARRATIVE DEPTH: Does the amount and depth of activity described plausibly fit the stated total duration? A short session (e.g. 30 min) crammed with many deep interventions is implausible; a long session (e.g. 2 hr) described in one or two thin sentences is also implausible.
+
+3. SESSION vs TREATMENT PLAN (anchor): Do the focus, activities, and interventions in the session align with the documented treatment plan? If the session describes work unrelated to any plan goal or intervention, flag it. Use the treatment plan as the anchor; the diagnosis is only supporting context.
 
 Respond ONLY with valid JSON, no other text:
-{"flag": true or false, "reason": "one specific sentence naming the concern if flagged, null if coherent"}`;
+{"flag": true or false, "reason": "one specific sentence naming the concern if flagged (for an arithmetic mismatch, state the numbers — e.g. 'activities sum to 80 min but 2 hr billed'), null if coherent"}`;
 
     try {
       const msg = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6', max_tokens: 150,
+        model: 'claude-sonnet-4-6', max_tokens: 200,
         messages: [{ role: 'user', content: prompt }],
       });
       const raw    = msg.content[0].text.trim().replace(/```json/g, '').replace(/```/g, '').trim();
@@ -745,35 +745,37 @@ Respond ONLY with valid JSON, no other text:
       }
     }
 
-    report('Running compliance checks...', 64);
+    // The AI coherence review is QA and runs on EVERY note (not just the ones
+    // that passed the deterministic + clone checks). Flags accumulate: a note can
+    // carry a rule flag AND a clone flag AND a coherence flag at once. A note is
+    // "clean" only if nothing flagged it.
+    report('Running QA review...', 64);
     const flagged = [...cantLoad];
-    const provClean = [];
+    const clean   = [];
+    const n = notes.length;
 
-    for (const note of notes) {
-      const flags   = this.checkNote(note);
-      const cf      = cloneFlags[note.eid];
+    for (let i = 0; i < n; i++) {
+      const note    = notes[i];
+      const flags   = this.checkNote(note);            // deterministic: time / minor
       const partner = clonePartners[note.eid];
-      if (cf) flags.push(cf);
-      if (flags.length) flagged.push({
-        ...note, flags, aiFlag: null,
-        clonePartnerEid: partner?.eid ?? null,
-        clonePct:        partner?.pct ?? null,
-      });
-      else provClean.push(note);
-    }
+      if (cloneFlags[note.eid]) flags.push(cloneFlags[note.eid]);   // AI clone verdict
 
-    let clean = [];
-    if (this.anthropicKey && provClean.length) {
-      const n = provClean.length;
-      for (let i = 0; i < provClean.length; i++) {
-        report(`AI reviewing note ${i+1} of ${n}...`, 62 + Math.floor((i / n) * 35));
-        const aiFlag = await this.aiReview(provClean[i]);
-        if (aiFlag) flagged.push({ ...provClean[i], flags: [], aiFlag });
-        else        clean.push({ ...provClean[i], aiFlag: null });
+      let aiFlag = null;
+      if (this.anthropicKey) {
+        report(`AI QA review ${i + 1} of ${n}...`, 64 + Math.floor((i / n) * 34));
+        aiFlag = await this.aiReview(note);            // coherence QA — every note
         await sleep(80);
       }
-    } else {
-      clean = provClean.map(n => ({ ...n, aiFlag: null }));
+
+      if (flags.length || aiFlag) {
+        flagged.push({
+          ...note, flags, aiFlag,
+          clonePartnerEid: partner?.eid ?? null,
+          clonePct:        partner?.pct ?? null,
+        });
+      } else {
+        clean.push({ ...note, aiFlag: null });
+      }
     }
 
     report('Done!', 100);
