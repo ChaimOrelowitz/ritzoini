@@ -463,18 +463,19 @@ async function syncZohoGroups() {
     .from('groups').select('id, group_name, name, zoho_session_id');
   if (gErr) throw gErr;
 
-  let aligned = 0, alreadyAligned = 0;
+  let aligned = 0, alreadyLinked = 0;
   const unmatched = [];
   for (const g of (groups || [])) {
+    // Never overwrite an existing link — manual picks and prior links are sticky.
+    if (g.zoho_session_id) { alreadyLinked++; continue; }
     const target = byName.get(normalizeName(g.group_name || g.name));
     if (!target) { unmatched.push(g.group_name || g.name); continue; }
-    if (g.zoho_session_id === target) { alreadyAligned++; continue; }
     const { error } = await supabase.from('groups').update({ zoho_session_id: target }).eq('id', g.id);
     if (!error) aligned++;
   }
 
-  console.log(`[zoho] sync-groups: fetched=${sessions.length} aligned=${aligned} already=${alreadyAligned} unmatched=${unmatched.length}`);
-  return { fetched: sessions.length, aligned, alreadyAligned, unmatched };
+  console.log(`[zoho] sync-groups: fetched=${sessions.length} aligned=${aligned} already=${alreadyLinked} unmatched=${unmatched.length}`);
+  return { fetched: sessions.length, aligned, alreadyLinked, unmatched };
 }
 
 module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups };

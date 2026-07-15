@@ -5,6 +5,7 @@ const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
 const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
+const supabase = require('./db/supabase');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -114,6 +115,20 @@ app.get('/api/config/zoho-inspect', requireAuth, async (req, res) => {
     res.json(await getOccurrenceRaw(req.query.occurrence_id));
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// List the cached Zoho groups (for the manual link picker dropdown).
+app.get('/api/config/zoho-groups', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('zoho_groups')
+      .select('id, session_name, session_code, group_activity, class_day, status')
+      .order('session_name');
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

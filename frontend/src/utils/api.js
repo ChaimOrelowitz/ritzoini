@@ -76,6 +76,7 @@ export const api = {
   zohoExchange:     (code) => authFetch('/api/config/zoho-exchange', { method: 'POST', body: JSON.stringify({ code }) }),
   inspectOccurrence:(id) => authFetch('/api/config/zoho-inspect?occurrence_id=' + encodeURIComponent(id)),
   syncZohoGroups:   () => authFetch('/api/config/zoho-sync-groups', { method: 'POST' }),
+  getZohoGroups:    () => authFetch('/api/config/zoho-groups'),
 
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),

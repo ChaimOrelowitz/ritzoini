@@ -390,8 +390,8 @@ export default function DashboardPage() {
       const r = await api.syncZohoGroups();
       const lines = [
         `Zoho groups fetched: ${r.fetched}`,
-        `Newly aligned: ${r.aligned}`,
-        `Already aligned: ${r.alreadyAligned}`,
+        `Newly linked: ${r.aligned}`,
+        `Already linked: ${r.alreadyLinked}`,
         `Unmatched Ritzoini groups: ${r.unmatched.length}`,
         r.unmatched.length ? '\n' + r.unmatched.map(n => '• ' + n).join('\n') : '',
       ];

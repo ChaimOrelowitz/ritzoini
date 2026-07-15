@@ -6,6 +6,57 @@ import EditGroupModal from '../components/admin/EditGroupModal';
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
+// Admin-only: link this Ritzoini group to its Zoho group (stores the Zoho id).
+// The link is what note-posting matches on; names are only ever the auto-guess.
+function ZohoLinkPicker({ group, onLinked }) {
+  const [options, setOptions] = useState(null);
+  const [saving, setSaving]   = useState(false);
+
+  useEffect(() => { api.getZohoGroups().then(setOptions).catch(() => setOptions([])); }, []);
+
+  const current = options && options.find(o => o.id === group.zoho_session_id);
+
+  async function handleChange(e) {
+    const id = e.target.value || null;
+    setSaving(true);
+    try {
+      await api.updateGroup(group.id, { zoho_session_id: id });
+      onLinked(id);
+    } catch (err) {
+      alert('Failed to save Zoho link: ' + err.message);
+    } finally { setSaving(false); }
+  }
+
+  const linked = !!group.zoho_session_id;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: '0.82rem', marginBottom: 6 }}>
+      <span style={{ color: 'var(--gray-500)' }}>Zoho link:</span>
+      {linked ? (
+        <span style={{ color: '#12855C', fontWeight: 600 }}>
+          ✓ {current ? current.session_name : group.zoho_session_id}
+          {current && current.session_code ? ` · ${current.session_code}` : ''}
+        </span>
+      ) : (
+        <span style={{ color: '#9A7A12', fontWeight: 600 }}>not linked</span>
+      )}
+      <select
+        value={group.zoho_session_id || ''}
+        onChange={handleChange}
+        disabled={saving || options === null}
+        style={{ fontSize: '0.8rem', padding: '3px 6px', borderRadius: 6, border: '1px solid var(--gray-300)', maxWidth: 340 }}
+      >
+        <option value="">{options === null ? 'Loading Zoho groups…' : '— not linked —'}</option>
+        {(options || []).map(o => (
+          <option key={o.id} value={o.id}>
+            {o.session_name}{o.session_code ? ` · ${o.session_code}` : ''}{o.class_day ? ` · ${o.class_day}` : ''}
+          </option>
+        ))}
+      </select>
+      {saving && <span style={{ color: 'var(--gray-400)' }}>saving…</span>}
+    </div>
+  );
+}
+
 function fmt12(t) {
   if (!t) return '';
   const [h, m] = t.slice(0,5).split(':').map(Number);
@@ -589,10 +640,17 @@ export default function GroupDetailPage() {
             {group.total_sessions && <span>{group.total_sessions} sessions</span>}
           </div>
 
-          <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: group.description ? 10 : 0 }}>
+          <div style={{ fontSize: '0.82rem', color: 'var(--gray-500)', display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 6 }}>
             <span>👤 {supervisorName}</span>
             {instructorName && <span>🎓 {instructorName}{group.instructor.phone && ` · ${fmtPhone(group.instructor.phone)}`}</span>}
           </div>
+
+          {isAdmin && (
+            <ZohoLinkPicker
+              group={group}
+              onLinked={(id) => setGroup(prev => ({ ...prev, zoho_session_id: id }))}
+            />
+          )}
 
           {group.description && (
             <div style={{ marginTop: 8 }}>
