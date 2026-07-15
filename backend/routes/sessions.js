@@ -3,6 +3,7 @@ const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth } = require('../middleware/auth');
 const { deliverSoapNote } = require('../utils/soapNoteDelivery');
+const { setOccurrenceLock } = require('../utils/zohoCrm');
 const { generateSessionNote } = require('../utils/noteGenerator');
 
 function addMinutesToTime(timeStr, mins) {
@@ -284,6 +285,16 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const { data, error } = await supabase
       .from('sessions').update(updates).eq('id', req.params.id).select().single();
     if (error) throw error;
+
+    // Reflect a lock/unlock into Zoho (Locked_Notes) for the matched occurrence.
+    if (updates.locked !== undefined && session.zoho_note_id) {
+      try {
+        await setOccurrenceLock(session.zoho_note_id, updates.locked === true);
+      } catch (e) {
+        console.error('[zoho-lock]', e.message);
+        return res.json({ ...data, zoho_lock_warning: `Locked in Ritzoini, but Zoho didn't update: ${e.message}` });
+      }
+    }
 
     if (updates.status === 'completed' && session.status !== 'completed') {
       const { data: group } = await supabase

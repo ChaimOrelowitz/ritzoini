@@ -5,7 +5,7 @@ const { autoCompleteSessions } = require('./sessions');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const { generateOrRefreshDigest } = require('../utils/peerDigestGenerator');
-const { postSoapNoteToZoho, syncZohoGroups } = require('../utils/zohoCrm');
+const { postSoapNoteToZoho, syncZohoGroups, syncZohoLockStatus } = require('../utils/zohoCrm');
 const { getDeliveryMode } = require('../utils/soapNoteDelivery');
 
 function requireCronSecret(req, res, next) {
@@ -106,8 +106,13 @@ router.post('/zoho-sync', requireCronSecret, async (req, res) => {
       }));
     }
 
+    // Reverse: reflect Zoho lock state (Approved_notes → Ready to Lock, Locked_Notes → Locked).
+    let lockStatus = null;
+    try { lockStatus = await syncZohoLockStatus(); }
+    catch (e) { console.error('[cron] zoho lock-status error:', e.message); lockStatus = { error: e.message }; }
+
     console.log(`[cron] zoho-sync: checked=${checked} posted=${posted} pending=${pending} failed=${failed}`);
-    res.json({ checked, posted, pending, failed, windowDays: WINDOW_DAYS, log });
+    res.json({ checked, posted, pending, failed, windowDays: WINDOW_DAYS, lockStatus, log });
   } catch (err) {
     console.error('[cron] zoho-sync fatal:', err.message);
     res.status(500).json({ error: err.message });

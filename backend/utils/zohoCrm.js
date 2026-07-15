@@ -182,6 +182,61 @@ function buildOccHeader(occ, cacheRow, groupName) {
   return lines.join('\n');
 }
 
+// Set an occurrence's lock (Ritzoini "Locked" click → Zoho Locked_Notes).
+async function setOccurrenceLock(occId, locked) {
+  const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/${occId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ data: [{ Locked_Notes: locked ? 'Yes' : 'No' }] }),
+  });
+  const body = await resp.json().catch(() => ({}));
+  const rec = body.data?.[0];
+  if (!resp.ok || rec?.code !== 'SUCCESS') {
+    throw new Error(`Zoho lock update failed: ${resp.status} ${JSON.stringify(body)}`);
+  }
+  return true;
+}
+
+// Reverse sync: reflect Zoho lock state onto posted sessions.
+//   Approved_notes = "Yes" (and not locked) → Ritzoini ready_to_lock
+//   Locked_Notes   = "Yes"                  → Ritzoini locked
+// Keyed by the stored occurrence id; stops polling a session once it's locked.
+async function syncZohoLockStatus({ windowDays = 21, batch = 40, concurrency = 5 } = {}) {
+  const since = new Date(Date.now() - windowDays * 864e5).toISOString().slice(0, 10);
+  const { data: sessions, error } = await supabase
+    .from('sessions')
+    .select('id, zoho_note_id, ready_to_lock, locked')
+    .not('zoho_note_id', 'is', null)
+    .or('locked.is.null,locked.eq.false')
+    .gte('session_date', since)
+    .order('session_date', { ascending: false })
+    .limit(batch);
+  if (error) throw error;
+
+  let checked = 0, readyToLock = 0, locked = 0, errors = 0;
+  const todo = sessions || [];
+  for (let i = 0; i < todo.length; i += concurrency) {
+    await Promise.all(todo.slice(i, i + concurrency).map(async (s) => {
+      checked++;
+      try {
+        const occ = await getOccurrenceRaw(s.zoho_note_id);
+        if (!occ) return;
+        const isLocked   = String(occ.Locked_Notes   || '').toLowerCase() === 'yes';
+        const isApproved = String(occ.Approved_notes || '').toLowerCase() === 'yes';
+        const upd = {};
+        if (isLocked && !s.locked) { upd.locked = true; upd.locked_at = new Date().toISOString(); }
+        if (!isLocked && isApproved && !s.ready_to_lock) { upd.ready_to_lock = true; upd.ready_to_lock_at = new Date().toISOString(); }
+        if (Object.keys(upd).length) {
+          await supabase.from('sessions').update(upd).eq('id', s.id);
+          if (upd.locked) locked++;
+          if (upd.ready_to_lock) readyToLock++;
+        }
+      } catch (e) { errors++; }
+    }));
+  }
+  console.log(`[zoho] lock-status: checked=${checked} readyToLock=${readyToLock} locked=${locked} errors=${errors}`);
+  return { checked, readyToLock, locked, errors };
+}
+
 // Fetch an occurrence's full raw record (all fields) — for the inspector.
 async function getOccurrenceRaw(occId) {
   if (!occId) throw new Error('occurrence id required');
@@ -507,4 +562,4 @@ async function syncZohoGroups() {
   return { fetched: sessions.length, aligned, alreadyLinked, unmatched };
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups };
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, setOccurrenceLock, syncZohoLockStatus };
