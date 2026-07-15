@@ -9,11 +9,16 @@ const API_DOMAIN      = process.env.ZOHO_API_DOMAIN      || 'https://www.zohoapi
 // defaults match the widget (utils reverse-engineered from "Iframe for zoho");
 // override via env only if the org renamed the module/fields.
 const OCC_MODULE   = process.env.ZOHO_OCC_MODULE   || 'Session_Occurrences';
-const NAME_FIELD   = process.env.ZOHO_OCC_NAME_FIELD || 'Session_Name'; // matched to group name
 const DATE_FIELD   = process.env.ZOHO_OCC_DATE_FIELD || 'Session_Date'; // matched to session_date
 const NOTE_FIELD   = process.env.ZOHO_OCC_NOTE_FIELD || 'Clinical_Note';
 const STATUS_FIELD = process.env.ZOHO_OCC_STATUS_FIELD || 'ECW';
 const STATUS_VALUE = process.env.ZOHO_OCC_STATUS_VALUE || 'Notes Received';
+
+// The parent group module ("Session"). Its Session_Name is the friendly group
+// name; occurrences link to it via their `Session` lookup. Occurrences carry NO
+// Session_Name of their own — matching goes through the parent id.
+const PARENT_MODULE     = process.env.ZOHO_PARENT_MODULE || 'Session';
+const PARENT_NAME_FIELD = process.env.ZOHO_PARENT_NAME_FIELD || 'Session_Name';
 
 // Cached access token — Zoho access tokens live ~1h; refresh on demand.
 let cachedToken = null;
@@ -101,20 +106,40 @@ function normalizeName(v) {
 }
 
 // Find the Session_Occurrences record for a given group name + date.
-// Session_Name is not a searchable field in Zoho, so we search on the
-// (searchable) date and match the name client-side. Returns the record object
-// (with id, ECW, Locked_Notes) or null.
-async function findOccurrence(sessionName, sessionDate) {
-  if (!sessionName || !sessionDate) return null;
+// Fetch every Session_Occurrences record on a given date (Session_Date is a
+// searchable YYYY-MM-DD field). Returns the array (each record carries its
+// `Session` parent lookup and `Name`).
+async function searchOccurrencesByDate(sessionDate) {
+  if (!sessionDate) return [];
   const criteria = encodeURIComponent(`(${DATE_FIELD}:equals:${sessionDate})`);
   const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/search?criteria=${criteria}&per_page=200`);
-
-  if (resp.status === 204) return null; // Zoho returns 204 for no matches
+  if (resp.status === 204) return []; // Zoho returns 204 for no matches
   const body = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(`Zoho search failed: ${resp.status} ${JSON.stringify(body)}`);
+  return body.data || [];
+}
 
-  const wanted = normalizeName(sessionName);
-  return (body.data || []).find(o => normalizeName(o[NAME_FIELD]) === wanted) || null;
+// Pick the occurrence for a Ritzoini group out of a date's occurrences.
+// Primary: the aligned parent id (group.zoho_session_id === occ.Session.id).
+// Fallback (unaligned groups): the occurrence's Name embeds the group name,
+// e.g. "Emotional Boundaries Skills Group - Session 7".
+function matchOccurrence(occurrences, group) {
+  const zohoId = group?.zoho_session_id;
+  if (zohoId) {
+    const byId = occurrences.find(o => o.Session && o.Session.id === zohoId);
+    if (byId) return byId;
+  }
+  const gname = normalizeName(group?.group_name || group?.name);
+  if (gname) {
+    const byName = occurrences.find(o => normalizeName(o.Name).startsWith(gname));
+    if (byName) return byName;
+  }
+  return null;
+}
+
+// Match a single group + date (used by the diagnostic).
+async function findOccurrence(group, sessionDate) {
+  return matchOccurrence(await searchOccurrencesByDate(sessionDate), group);
 }
 
 // Zoho preloads Clinical_Note with a header ("Group Name:" / "Group Activity:")
@@ -136,6 +161,15 @@ function mergeWithHeader(existing, note) {
   let i = 0;
   while (i < noteLines.length && (HEADER_RE.test(noteLines[i]) || noteLines[i].trim() === '')) i++;
   return `${header.join('\n')}\n\n${noteLines.slice(i).join('\n').trim()}`;
+}
+
+// Fetch an occurrence's full raw record (all fields) — for the inspector.
+async function getOccurrenceRaw(occId) {
+  if (!occId) throw new Error('occurrence id required');
+  const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/${encodeURIComponent(occId)}`);
+  const body = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(`Zoho get failed: ${resp.status} ${JSON.stringify(body)}`);
+  return body.data?.[0] || null;
 }
 
 // Read an occurrence's current Clinical_Note (to preserve its header).
@@ -169,7 +203,7 @@ async function postSoapNoteToZoho(sessionId) {
     .from('sessions')
     .select(`
       id, session_date, scheduled_date, soap_note, notes,
-      group:groups!group_id(internal_name, group_name, name)
+      group:groups!group_id(internal_name, group_name, name, zoho_session_id)
     `)
     .eq('id', sessionId)
     .single();
@@ -184,25 +218,18 @@ async function postSoapNoteToZoho(sessionId) {
     return;
   }
 
-  // Zoho's Session_Name is the full group name; fall back to internal_name.
-  const candidateNames = [group?.group_name, group?.name, group?.internal_name].filter(Boolean);
-
-  let occ = null;
-  let matchedName = null;
-  for (const name of candidateNames) {
-    occ = await findOccurrence(name, sessionDate);
-    if (occ) { matchedName = name; break; }
-  }
+  const occ = matchOccurrence(await searchOccurrencesByDate(sessionDate), group);
 
   if (!occ) {
     throw new Error(
-      `No ${OCC_MODULE} record found for ${DATE_FIELD}=${sessionDate} matching ${NAME_FIELD} in [${candidateNames.join(', ')}]`
+      `No ${OCC_MODULE} record found for ${DATE_FIELD}=${sessionDate} for group "${group?.group_name}" ` +
+      `(${group?.zoho_session_id ? 'aligned id ' + group.zoho_session_id : 'not aligned — run Sync Zoho Groups'})`
     );
   }
 
   // Don't clobber a note that's already locked in Zoho.
   if (occ.Locked_Notes === 'Yes') {
-    throw new Error(`Occurrence ${occ.id} ("${matchedName}" ${sessionDate}) is locked in Zoho; not overwriting`);
+    throw new Error(`Occurrence ${occ.id} ("${group?.group_name}" ${sessionDate}) is locked in Zoho; not overwriting`);
   }
 
   // Preserve Zoho's preloaded "Group Name:" / "Group Activity:" header.
@@ -225,7 +252,7 @@ async function postSoapNoteToZoho(sessionId) {
     console.error(`[zoho] Posted note to ${zohoId} but failed to update session ${sessionId}:`, updateErr.message);
   }
 
-  console.log(`[zoho] Posted SOAP note for session ${sessionId} → ${OCC_MODULE}/${zohoId} ("${matchedName}" ${sessionDate})`);
+  console.log(`[zoho] Posted SOAP note for session ${sessionId} → ${OCC_MODULE}/${zohoId} ("${group?.group_name}" ${sessionDate})`);
 }
 
 // Read-only health check: verifies creds → token → module read access, and
@@ -257,7 +284,7 @@ async function zohoDiagnostic(sessionId) {
 
   // Probe module read — this is what proves the token's CRM scope is wide enough.
   try {
-    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=${NAME_FIELD},${DATE_FIELD}&per_page=1`);
+    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=Name,${DATE_FIELD}&per_page=1`);
     if (resp.status === 204) {
       result.moduleReadOk = true; // reachable, just empty
     } else {
@@ -274,20 +301,15 @@ async function zohoDiagnostic(sessionId) {
     try {
       const { data: session } = await supabase
         .from('sessions')
-        .select('id, session_date, scheduled_date, group:groups!group_id(internal_name, group_name, name)')
+        .select('id, session_date, scheduled_date, group:groups!group_id(internal_name, group_name, name, zoho_session_id)')
         .eq('id', sessionId)
         .single();
       const g = session?.group;
       const date = session?.session_date || session?.scheduled_date;
-      const names = [g?.group_name, g?.name, g?.internal_name].filter(Boolean);
-      let occ = null, matchedName = null;
-      for (const n of names) {
-        occ = await findOccurrence(n, date);
-        if (occ) { matchedName = n; break; }
-      }
+      const occ = await findOccurrence(g, date);
       result.match = occ
-        ? { found: true, occurrenceId: occ.id, matchedName, date, ecw: occ.ECW, locked: occ.Locked_Notes === 'Yes' }
-        : { found: false, date, triedNames: names };
+        ? { found: true, occurrenceId: occ.id, occurrenceName: occ.Name, parentId: occ.Session?.id, date, ecw: occ.ECW, locked: occ.Locked_Notes === 'Yes' }
+        : { found: false, date, group: g?.group_name, aligned: !!g?.zoho_session_id };
     } catch (e) {
       result.errors.push(`Session match error: ${e.message}`);
     }
@@ -309,7 +331,7 @@ async function zohoWriteTest() {
   // Grab one occurrence to write back to.
   let occ;
   try {
-    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=${NAME_FIELD},${DATE_FIELD},${NOTE_FIELD}&per_page=1`);
+    const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}?fields=Name,${DATE_FIELD},${NOTE_FIELD}&per_page=1`);
     if (resp.status === 204) { result.errors.push(`No ${OCC_MODULE} records exist to test against`); return result; }
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) { result.errors.push(`Read failed (${resp.status}): ${body.code || ''} ${body.message || ''}`); return result; }
@@ -317,7 +339,7 @@ async function zohoWriteTest() {
     if (!occ) { result.errors.push(`No ${OCC_MODULE} records returned`); return result; }
   } catch (e) { result.errors.push(`Read error: ${e.message}`); return result; }
 
-  result.occurrence = { id: occ.id, name: occ[NAME_FIELD], date: occ[DATE_FIELD] };
+  result.occurrence = { id: occ.id, name: occ.Name, date: occ[DATE_FIELD] };
 
   // Write the same note value back — proves write scope without changing data.
   // Deliberately does NOT send the status field, so nothing is advanced.
@@ -391,4 +413,65 @@ async function exchangeGrantCode(code) {
   };
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken };
+// Pull all parent Session (group) records from Zoho, paginated.
+async function listZohoSessions() {
+  const out = [];
+  const fields = `${PARENT_NAME_FIELD},Session_Code,Group_Activity,Class_Day,Group_Type,Status`;
+  for (let page = 1; page <= 25; page++) {
+    const resp = await zohoFetch(`/crm/v2/${PARENT_MODULE}?fields=${fields}&per_page=200&page=${page}`);
+    if (resp.status === 204) break;
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(`Zoho ${PARENT_MODULE} list failed: ${resp.status} ${JSON.stringify(body)}`);
+    for (const r of (body.data || [])) out.push(r);
+    if (!body.info || !body.info.more_records) break;
+  }
+  return out;
+}
+
+// Sync Zoho groups into the zoho_groups cache and auto-align Ritzoini groups
+// (groups.zoho_session_id) by matching group_name to the parent Session_Name.
+async function syncZohoGroups() {
+  const sessions = await listZohoSessions();
+  const now = new Date().toISOString();
+
+  const rows = sessions.map(s => ({
+    id:             s.id,
+    session_name:   s[PARENT_NAME_FIELD] || null,
+    session_code:   s.Session_Code || null,
+    group_activity: s.Group_Activity || null,
+    class_day:      s.Class_Day || null,
+    group_type:     s.Group_Type || null,
+    status:         s.Status || null,
+    synced_at:      now,
+  }));
+  if (rows.length) {
+    const { error } = await supabase.from('zoho_groups').upsert(rows, { onConflict: 'id' });
+    if (error) throw new Error(`zoho_groups upsert failed: ${error.message}`);
+  }
+
+  // name → parent id (first wins on duplicate names)
+  const byName = new Map();
+  for (const s of sessions) {
+    const n = normalizeName(s[PARENT_NAME_FIELD]);
+    if (n && !byName.has(n)) byName.set(n, s.id);
+  }
+
+  const { data: groups, error: gErr } = await supabase
+    .from('groups').select('id, group_name, name, zoho_session_id');
+  if (gErr) throw gErr;
+
+  let aligned = 0, alreadyAligned = 0;
+  const unmatched = [];
+  for (const g of (groups || [])) {
+    const target = byName.get(normalizeName(g.group_name || g.name));
+    if (!target) { unmatched.push(g.group_name || g.name); continue; }
+    if (g.zoho_session_id === target) { alreadyAligned++; continue; }
+    const { error } = await supabase.from('groups').update({ zoho_session_id: target }).eq('id', g.id);
+    if (!error) aligned++;
+  }
+
+  console.log(`[zoho] sync-groups: fetched=${sessions.length} aligned=${aligned} already=${alreadyAligned} unmatched=${unmatched.length}`);
+  return { fetched: sessions.length, aligned, alreadyAligned, unmatched };
+}
+
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups };

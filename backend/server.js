@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
-const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken } = require('./utils/zohoCrm');
+const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 
 const app = express();
@@ -103,6 +103,27 @@ app.post('/api/config/zoho-exchange', requireAuth, async (req, res) => {
     res.json(await exchangeGrantCode(req.body.code));
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Read-only: dump one occurrence's full raw Zoho record (admin). For diagnosing
+// field values/formats (Session_Name, Session_Date, parent Session lookup, …).
+app.get('/api/config/zoho-inspect', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json(await getOccurrenceRaw(req.query.occurrence_id));
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Pull Zoho groups + auto-align to Ritzoini groups by name (admin button).
+app.post('/api/config/zoho-sync-groups', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json(await syncZohoGroups());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

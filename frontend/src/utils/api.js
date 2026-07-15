@@ -74,6 +74,8 @@ export const api = {
   testZoho:         (sessionId) => authFetch('/api/config/zoho-test' + (sessionId ? `?session_id=${sessionId}` : '')),
   testZohoWrite:    () => authFetch('/api/config/zoho-write-test', { method: 'POST' }),
   zohoExchange:     (code) => authFetch('/api/config/zoho-exchange', { method: 'POST', body: JSON.stringify({ code }) }),
+  inspectOccurrence:(id) => authFetch('/api/config/zoho-inspect?occurrence_id=' + encodeURIComponent(id)),
+  syncZohoGroups:   () => authFetch('/api/config/zoho-sync-groups', { method: 'POST' }),
 
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),

@@ -365,6 +365,42 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleInspectOccurrence() {
+    const id = window.prompt('Zoho occurrence id to inspect:', '6513966000028141570');
+    if (!id || !id.trim()) return;
+    try {
+      const r = await api.inspectOccurrence(id.trim());
+      const s = r.Session; // parent lookup {name, id}
+      const lines = [
+        `Session_Name (occ field): ${JSON.stringify(r.Session_Name)}`,
+        `Session_Date: ${JSON.stringify(r.Session_Date)}`,
+        `Start_Time: ${JSON.stringify(r.Start_Time)}`,
+        `Session_Code: ${JSON.stringify(r.Session_Code)}`,
+        `Parent Session: ${s ? `${s.name}  (id ${s.id})` : '(none)'}`,
+        `ECW: ${r.ECW}   Locked_Notes: ${r.Locked_Notes}`,
+      ];
+      alert('Occurrence ' + id.trim() + '\n\n' + lines.join('\n'));
+    } catch (err) {
+      alert('Inspect failed: ' + err.message);
+    }
+  }
+
+  async function handleSyncZohoGroups() {
+    try {
+      const r = await api.syncZohoGroups();
+      const lines = [
+        `Zoho groups fetched: ${r.fetched}`,
+        `Newly aligned: ${r.aligned}`,
+        `Already aligned: ${r.alreadyAligned}`,
+        `Unmatched Ritzoini groups: ${r.unmatched.length}`,
+        r.unmatched.length ? '\n' + r.unmatched.map(n => '• ' + n).join('\n') : '',
+      ];
+      alert('Zoho group sync\n\n' + lines.join('\n'));
+    } catch (err) {
+      alert('Sync failed: ' + err.message);
+    }
+  }
+
   const DELIVERY_LABELS = { zoho: 'Notes → Zoho', email: 'Notes → Email', both: 'Notes → Zoho + Email' };
   async function cycleDeliveryMode() {
     const order = ['zoho', 'email', 'both'];
@@ -508,6 +544,26 @@ export default function DashboardPage() {
               title="Turn a Zoho Self Client grant code into a refresh token"
             >
               Get Refresh Token
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleInspectOccurrence}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Dump a Zoho occurrence's raw fields (read-only)"
+            >
+              Inspect Occurrence
+            </button>
+          )}
+          {isAdmin && deliveryMode !== null && (
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={handleSyncZohoGroups}
+              style={{ color: '#6941C6', fontSize: '0.75rem' }}
+              title="Pull Zoho groups and align them to Ritzoini groups by name"
+            >
+              Sync Zoho Groups
             </button>
           )}
           {!showArchived && (

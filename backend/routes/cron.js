@@ -5,7 +5,7 @@ const { autoCompleteSessions } = require('./sessions');
 const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const { generateOrRefreshDigest } = require('../utils/peerDigestGenerator');
-const { postSoapNoteToZoho } = require('../utils/zohoCrm');
+const { postSoapNoteToZoho, syncZohoGroups } = require('../utils/zohoCrm');
 const { getDeliveryMode } = require('../utils/soapNoteDelivery');
 
 function requireCronSecret(req, res, next) {
@@ -44,6 +44,16 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
     res.json({ processed, skipped, failed, log });
   } catch (err) {
     console.error('[cron] Fatal error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/cron/zoho-sync-groups — daily pull of Zoho groups + auto-align.
+router.post('/zoho-sync-groups', requireCronSecret, async (req, res) => {
+  try {
+    res.json(await syncZohoGroups());
+  } catch (err) {
+    console.error('[cron] zoho-sync-groups error:', err.message);
     res.status(500).json({ error: err.message });
   }
 });
