@@ -24,49 +24,53 @@ const STATUS_STYLE = {
   completed: { background: '#dcfce7', color: '#166534' },
   skipped:   { background: '#f3f4f6', color: '#6b7280' },
 };
-
-const STATUS_LABEL = {
-  scheduled: 'Scheduled',
-  completed: 'Completed',
-  skipped:   'Skipped',
-};
+const STATUS_LABEL = { scheduled: 'Scheduled', completed: 'Completed', skipped: 'Skipped' };
 
 function fmtDateTime(ts) {
   if (!ts) return null;
-  const d = new Date(ts);
-  return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
+  return new Date(ts).toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
-// Zoho CRM deep link to a Session_Occurrences record (the note that was posted).
+// Deep links out to the two systems.
 const ZOHO_ORG = '871314197';
 const zohoOccurrenceUrl = (id) => `https://crm.zoho.com/crm/org${ZOHO_ORG}/tab/Session_Occurrences/${id}`;
+// eCW lands on the logged-in user's home/schedule (session comes from their existing cookies).
+const ECW_URL = 'https://nysphis2sr72r38w2lapp.ecwcloud.com/mobiledoc/jsp/webemr/index.jsp';
 
-function CheckCell({ checked, onChange, timestamp, messageId, zohoId }) {
+// A checkbox that stays visually centered; its timestamp + "view" link live in a
+// hover popover so the three columns line up cleanly.
+function CheckCell({ checked, onChange, timestamp, messageId, zohoId, accent }) {
+  const [hover, setHover] = useState(false);
+  const hasInfo = timestamp || zohoId || messageId;
   return (
     <td
-      style={{ textAlign: 'center', padding: '6px 12px', verticalAlign: 'middle' }}
+      style={{ textAlign: 'center', padding: '10px 14px', verticalAlign: 'middle', position: 'relative' }}
       onClick={e => e.stopPropagation()}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
     >
       <input
         type="checkbox"
         checked={!!checked}
         onChange={e => onChange(e.target.checked)}
-        style={{ width: 16, height: 16, cursor: 'pointer', accentColor: 'var(--gold)' }}
+        style={{ width: 17, height: 17, cursor: 'pointer', accentColor: accent || 'var(--gold)', verticalAlign: 'middle' }}
       />
-      {timestamp && (
-        <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 2, whiteSpace: 'nowrap' }}>
-          {fmtDateTime(timestamp)}
-          {zohoId ? (
+      {hover && hasInfo && (
+        <div style={{
+          position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)',
+          marginTop: 2, zIndex: 20, whiteSpace: 'nowrap',
+          background: 'var(--navy)', color: '#fff', borderRadius: 6, padding: '4px 8px',
+          fontSize: '0.68rem', boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+        }}>
+          {timestamp ? fmtDateTime(timestamp) : 'set'}
+          {zohoId && (
             <a href={zohoOccurrenceUrl(zohoId)} target="_blank" rel="noreferrer"
-              style={{ marginLeft: 4, color: '#6941C6', textDecoration: 'underline' }}>
-              view in Zoho
-            </a>
-          ) : messageId ? (
+              style={{ marginLeft: 6, color: '#c4b5fd', textDecoration: 'underline' }}>view in Zoho</a>
+          )}
+          {!zohoId && messageId && (
             <a href={`https://resend.com/emails/${messageId}`} target="_blank" rel="noreferrer"
-              style={{ marginLeft: 4, color: 'var(--navy)', textDecoration: 'underline' }}>
-              view
-            </a>
-          ) : null}
+              style={{ marginLeft: 6, color: '#93c5fd', textDecoration: 'underline' }}>view</a>
+          )}
         </div>
       )}
     </td>
@@ -76,122 +80,56 @@ function CheckCell({ checked, onChange, timestamp, messageId, zohoId }) {
 function SessionRow({ session, onToggle }) {
   const navigate = useNavigate();
   const dateStr = session.session_date || session.scheduled_date || '';
-  const needsAttention = session.status === 'completed' && !session.email_sent;
+  const tint = session.locked ? '#f0fdf4' : (session.ready_to_lock ? '#fffbeb' : undefined);
+  const edge = session.locked ? '#12855C' : (session.ready_to_lock ? '#E0A50E' : 'transparent');
 
   return (
     <tr
       onClick={() => navigate(`/groups/${session.group_id}`)}
-      style={{
-        cursor: 'pointer',
-        background: needsAttention ? '#fef9ec' : undefined,
-        borderLeft: needsAttention ? '3px solid #f59e0b' : '3px solid transparent',
-        transition: 'background 0.15s',
-      }}
-      onMouseEnter={e => { if (!needsAttention) e.currentTarget.style.background = 'var(--gray-50)'; }}
-      onMouseLeave={e => { e.currentTarget.style.background = needsAttention ? '#fef9ec' : ''; }}
+      style={{ cursor: 'pointer', background: tint, borderLeft: `3px solid ${edge}`, transition: 'background 0.15s' }}
+      onMouseEnter={e => { e.currentTarget.style.background = tint || 'var(--gray-50)'; }}
+      onMouseLeave={e => { e.currentTarget.style.background = tint || ''; }}
     >
-      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: 'var(--navy)', fontWeight: 500 }}>
-        {fmtDate(dateStr)}
+      <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--navy)', fontWeight: 500 }}>{fmtDate(dateStr)}</td>
+      <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>{fmt12(session.ecw_time || session.start_time || session.scheduled_time)}</td>
+      <td style={{ padding: '10px 12px', color: 'var(--navy)', fontWeight: 500, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {session.group?.group_name || session.group?.internal_name || '—'}
       </td>
-      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>
-        {fmt12(session.start_time || session.scheduled_time)}
-      </td>
-      <td style={{ padding: '8px 12px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>
-        {fmt12(session.ecw_time)}
-      </td>
-      <td style={{ padding: '8px 12px', color: 'var(--navy)', fontWeight: 500, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {session.group?.internal_name || '—'}
-      </td>
-      <td style={{ padding: '8px 12px', color: 'var(--gray-600)', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {session.group?.group_name || '—'}
-      </td>
-      <td style={{ padding: '8px 12px' }}>
-        <span style={{
-          ...(STATUS_STYLE[session.status] || {}),
-          borderRadius: 12, padding: '2px 10px',
-          fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap',
-        }}>
+      <td style={{ padding: '10px 12px' }}>
+        <span style={{ ...(STATUS_STYLE[session.status] || {}), borderRadius: 12, padding: '2px 10px', fontSize: '0.72rem', fontWeight: 600, whiteSpace: 'nowrap' }}>
           {STATUS_LABEL[session.status] || session.status}
         </span>
       </td>
-      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} zohoId={session.zoho_note_id} />
-      <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} timestamp={session.ready_to_lock_at} />
-      <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)}        timestamp={session.locked_at} />
+      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} zohoId={session.zoho_note_id} accent="#2563eb" />
+      <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} timestamp={session.ready_to_lock_at} accent="#E0A50E" />
+      <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)}        timestamp={session.locked_at} accent="#12855C" />
+      <td style={{ padding: '10px 12px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+        <a href={ECW_URL} target="_blank" rel="noreferrer"
+          style={{ fontSize: '0.72rem', fontWeight: 600, color: '#0e7490', textDecoration: 'none', whiteSpace: 'nowrap', border: '1px solid #a5d8e6', borderRadius: 6, padding: '3px 8px' }}>
+          eCW ↗
+        </a>
+      </td>
     </tr>
   );
 }
 
-function Section({ title, sessions, open, onToggle: onToggleSection, onFieldToggle, accent }) {
-  return (
-    <div style={{ marginBottom: 24 }}>
-      <button
-        onClick={onToggleSection}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          background: 'none', border: 'none', cursor: 'pointer',
-          padding: '10px 0', width: '100%', textAlign: 'left',
-        }}
-      >
-        <span style={{
-          display: 'inline-block', width: 22, height: 22, lineHeight: '22px',
-          textAlign: 'center', borderRadius: 6,
-          background: accent, color: '#fff', fontSize: '0.7rem', fontWeight: 700,
-        }}>
-          {open ? '▾' : '▸'}
-        </span>
-        <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--navy)' }}>{title}</span>
-        <span style={{
-          background: 'var(--gray-100)', color: 'var(--gray-500)',
-          borderRadius: 10, padding: '1px 8px', fontSize: '0.75rem', fontWeight: 600,
-        }}>
-          {sessions.length}
-        </span>
-      </button>
-
-      {open && (
-        <div style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-          {sessions.length === 0 ? (
-            <div style={{ padding: '24px', textAlign: 'center', color: 'var(--gray-400)', fontSize: '0.85rem' }}>
-              No sessions
-            </div>
-          ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                <thead>
-                  <tr style={{ background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)' }}>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Date</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Time</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>ECW</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Internal Name</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Group Name</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem' }}>Status</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Note Sent</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Ready to Lock</th>
-                    <th style={{ padding: '8px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>Locked (ECW)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sessions.map(s => (
-                    <SessionRow key={s.id} session={s} onToggle={onFieldToggle} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
+const TILES = [
+  { key: 'ready',     label: 'Ready to Lock', sub: 'lock these', accent: '#B4820E', bg: '#FFF8E1', border: '#F2D998' },
+  { key: 'awaiting',  label: 'Sent · Awaiting', sub: "waiting on Zoho", accent: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
+  { key: 'needsNote', label: 'Needs Note', sub: 'no note yet', accent: '#b45309', bg: '#fff7ed', border: '#fed7aa' },
+  { key: 'locked',    label: 'Locked', sub: 'done', accent: '#12855C', bg: '#ecfdf3', border: '#a7f3d0' },
+  { key: 'upcoming',  label: 'Upcoming', sub: 'scheduled', accent: 'var(--navy)', bg: '#eef2ff', border: '#c7d2fe' },
+  { key: 'all',       label: 'All', sub: '', accent: '#6b7280', bg: '#f3f4f6', border: '#e5e7eb' },
+];
 
 export default function SessionsPage() {
   const { isAdmin } = useAuth();
-  const [sessions, setSessions]           = useState([]);
-  const [loading, setLoading]             = useState(true);
-  const [supervisors, setSupervisors]     = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [supervisors, setSupervisors] = useState([]);
   const [supervisorFilter, setSupervisorFilter] = useState('');
-  const [upcomingOpen, setUpcomingOpen]   = useState(false);
-  const [completedOpen, setCompletedOpen] = useState(true);
+  const [filter, setFilter] = useState('ready'); // her default queue
+  const [toast, setToast] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -204,80 +142,129 @@ export default function SessionsPage() {
       if (isAdmin) setSupervisors(users.filter(u => u.role === 'supervisor'));
     } catch (err) {
       console.error('Failed to load sessions:', err.message);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }, [supervisorFilter, isAdmin]);
 
   useEffect(() => { load(); }, [load]);
 
+  function flash(msg, type = 'success') {
+    setToast({ msg, type });
+    setTimeout(() => setToast(t => (t && t.msg === msg ? null : t)), 3800);
+  }
+
   async function handleToggle(sessionId, field, value) {
     setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, [field]: value } : s));
     try {
-      await api.updateSession(sessionId, { [field]: value });
+      const updated = await api.updateSession(sessionId, { [field]: value });
+      if (field === 'locked' && value) {
+        if (updated && updated.zoho_lock_warning) flash(updated.zoho_lock_warning, 'warn');
+        else flash('Locked ✓ — synced to Zoho', 'success');
+      }
     } catch (err) {
       console.error('Toggle failed:', err.message);
       setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, [field]: !value } : s));
+      flash('Could not save: ' + err.message, 'error');
     }
   }
 
-  // Upcoming: descending by date (furthest at top, soonest at bottom)
-  const upcoming = [...sessions]
-    .filter(s => s.status === 'scheduled')
-    .sort((a, b) => (b.session_date || b.scheduled_date || '').localeCompare(a.session_date || a.scheduled_date || ''));
+  const completed = sessions.filter(s => s.status === 'completed');
+  const buckets = {
+    ready:     completed.filter(s => s.ready_to_lock && !s.locked),
+    awaiting:  completed.filter(s => s.email_sent && !s.ready_to_lock && !s.locked),
+    needsNote: completed.filter(s => !s.email_sent),
+    locked:    completed.filter(s => s.locked),
+    upcoming:  sessions.filter(s => s.status === 'scheduled'),
+    all:       sessions,
+  };
+  const counts = Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, v.length]));
 
-  // Completed: descending by date (most recent at top)
-  const completed = [...sessions]
-    .filter(s => s.status === 'completed')
-    .sort((a, b) => (b.session_date || b.scheduled_date || '').localeCompare(a.session_date || a.scheduled_date || ''));
+  // Action queues oldest-first (work chronologically); done/upcoming most-recent-first.
+  const oldestFirst = ['ready', 'awaiting', 'needsNote'].includes(filter);
+  const dateOf = s => s.session_date || s.scheduled_date || '';
+  const rows = [...buckets[filter]].sort((a, b) =>
+    oldestFirst ? dateOf(a).localeCompare(dateOf(b)) : dateOf(b).localeCompare(dateOf(a)));
 
-  const needsAttentionCount = completed.filter(s => !s.email_sent).length;
+  const activeTile = TILES.find(t => t.key === filter);
 
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 style={{ margin: 0, color: 'var(--navy)', fontWeight: 700 }}>Sessions</h2>
-          {needsAttentionCount > 0 && (
-            <div style={{ marginTop: 4, fontSize: '0.8rem', color: '#92400e' }}>
-              ⚠ {needsAttentionCount} completed session{needsAttentionCount !== 1 ? 's' : ''} without email sent
-            </div>
-          )}
-        </div>
+    <div style={{ padding: '28px 32px', maxWidth: 1160, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+        <h2 style={{ margin: 0, color: 'var(--navy)', fontWeight: 700 }}>Sessions</h2>
         {isAdmin && supervisors.length > 0 && (
-          <select
-            className="form-select"
-            value={supervisorFilter}
-            onChange={e => setSupervisorFilter(e.target.value)}
-            style={{ width: 220 }}
-          >
+          <select className="form-select" value={supervisorFilter} onChange={e => setSupervisorFilter(e.target.value)} style={{ width: 220 }}>
             <option value="">All supervisors</option>
-            {supervisors.map(s => (
-              <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>
-            ))}
+            {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
           </select>
         )}
       </div>
 
-      <Section
-        title="Upcoming"
-        sessions={upcoming}
-        open={upcomingOpen}
-        onToggle={() => setUpcomingOpen(o => !o)}
-        onFieldToggle={handleToggle}
-        accent="var(--navy)"
-      />
+      {/* Filter tiles */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 20 }}>
+        {TILES.map(t => {
+          const on = filter === t.key;
+          return (
+            <button key={t.key} onClick={() => setFilter(t.key)}
+              style={{
+                cursor: 'pointer', textAlign: 'left', minWidth: 120,
+                background: on ? t.bg : 'var(--white)',
+                border: `1.5px solid ${on ? t.accent : 'var(--gray-200)'}`,
+                borderRadius: 10, padding: '10px 14px', transition: 'all 0.12s',
+                boxShadow: on ? `0 1px 6px ${t.accent}22` : 'none',
+              }}>
+              <div style={{ fontSize: '1.4rem', fontWeight: 700, lineHeight: 1, color: t.accent, fontVariantNumeric: 'tabular-nums' }}>{counts[t.key]}</div>
+              <div style={{ fontSize: '0.78rem', fontWeight: 600, color: on ? t.accent : 'var(--gray-600)', marginTop: 3 }}>{t.label}</div>
+              {t.sub && <div style={{ fontSize: '0.66rem', color: 'var(--gray-400)', marginTop: 1 }}>{t.sub}</div>}
+            </button>
+          );
+        })}
+      </div>
 
-      <Section
-        title="Completed"
-        sessions={completed}
-        open={completedOpen}
-        onToggle={() => setCompletedOpen(o => !o)}
-        onFieldToggle={handleToggle}
-        accent="#166534"
-      />
+      {/* Table */}
+      <div style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+        {rows.length === 0 ? (
+          <div style={{ padding: '32px', textAlign: 'center', color: 'var(--gray-400)', fontSize: '0.9rem' }}>
+            {filter === 'ready' ? '🎉 Nothing waiting to be locked.' : 'No sessions here.'}
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+              <thead>
+                <tr style={{ background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)' }}>
+                  {['Date', 'Time (ECW)', 'Group Name', 'Status'].map(h => (
+                    <th key={h} style={{ padding: '9px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                  {['Note Sent', 'Ready to Lock', 'Locked', ''].map((h, i) => (
+                    <th key={i} style={{ padding: '9px 12px', textAlign: 'center', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(s => <SessionRow key={s.id} session={s} onToggle={handleToggle} />)}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {activeTile && rows.length > 0 && (
+        <div style={{ marginTop: 10, fontSize: '0.78rem', color: 'var(--gray-500)' }}>
+          Showing <strong>{rows.length}</strong> {activeTile.label.toLowerCase()} · {counts.locked} locked so far
+        </div>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: 'fixed', bottom: 24, right: 24, zIndex: 1000,
+          background: toast.type === 'success' ? '#12855C' : toast.type === 'warn' ? '#B4820E' : '#b42318',
+          color: '#fff', borderRadius: 10, padding: '12px 18px', fontSize: '0.85rem', fontWeight: 500,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.22)', maxWidth: 360,
+        }}>
+          {toast.msg}
+        </div>
+      )}
     </div>
   );
 }
