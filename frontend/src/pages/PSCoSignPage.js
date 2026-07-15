@@ -49,33 +49,58 @@ function flagChipColor(flag) {
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-// Section labels a note is split on, in display order. Matches the labels the
-// backend engine parses out of InSync notes.
-const NOTE_LABELS = [
-  'MRN', 'DOB', 'Age', 'Address', 'Phone', 'E-mail', 'Visit Date',
-  'Encounter Type', 'POS', 'Start Time', 'End Time', 'Total Time',
+// Field-style sub-headers ("Label: value", "Label? value"). These are regex
+// sources — goal/intervention labels carry an optional trailing number, and the
+// "?" that ends the activities question is handled by the separator class. Order
+// matters: a longer label must precede any shorter one it could prefix-match.
+const FIELD_LABELS = [
   'Persons Present', 'Location of the Meeting', 'Focus of the meeting',
-  'Note of Session', 'Diagnosis', 'Plan / Visit Codes', 'Treatment Plan',
-  'Electronically Signed', 'Provider NPI',
+  'What activities took place, and for how long',
+  'Peer Support Interventions', "Patient's Response/Content", 'Plan',
+  'Visit Codes', 'Provider NPI',
+  'Long Term Goal\\(s\\)(?:\\s*\\d+)?', 'Short Term Goal\\(s\\)(?:\\s*\\d+)?',
+  'Intervention\\(s\\)(?:\\s*\\d+)?',
+  'Name', 'DOB', 'Age', 'Address', 'Phone', 'MRN', 'E-mail', 'Visit Date',
+  'Encounter Type', 'POS', 'Start Time', 'End Time', 'Total Time',
 ];
 
-// Split a flat note string into { label, value, start } sections. `start` is the
-// char offset of `value` inside the original text (used for highlight mapping).
+// Standalone banner/divider headers (no trailing colon). Case-sensitive so a
+// lowercase "treatment plan" inside a narrative can't trigger a false divider.
+const DIVIDER_LABELS = ['Note of Session', 'Diagnosis', 'Plan / Visit Codes', 'Treatment Plan', 'Electronically Signed'];
+
+// Split a flat note string into { label, value, start, divider } sections.
+// `start` is the char offset of `value` in the original text (for highlighting).
 function segmentNote(text) {
   if (!text) return [];
-  const re = new RegExp('(' + NOTE_LABELS.map(escapeRe).join('|') + ')\\s*[:\\-]\\s*', 'gi');
   const marks = [];
   let m;
-  while ((m = re.exec(text)) !== null)
-    marks.push({ label: m[1], labelStart: m.index, valueStart: m.index + m[0].length });
-  if (!marks.length) return [{ label: null, value: text, start: 0 }];
+
+  const fieldRe = new RegExp('\\b(' + FIELD_LABELS.join('|') + ')\\s*[:?\\-]\\s*', 'gi');
+  while ((m = fieldRe.exec(text)) !== null)
+    marks.push({ label: m[1].trim(), labelStart: m.index, valueStart: m.index + m[0].length, divider: false });
+
+  const divRe = new RegExp('(?:^|\\s)(' + DIVIDER_LABELS.map(escapeRe).join('|') + ')(?=\\s|$)', 'g');
+  while ((m = divRe.exec(text)) !== null) {
+    const s = m.index + m[0].length - m[1].length;
+    marks.push({ label: m[1], labelStart: s, valueStart: s + m[1].length, divider: true });
+  }
+
+  marks.sort((a, b) => a.labelStart - b.labelStart);
+  // Drop any mark that begins inside the previous mark's label text (overlaps).
+  const clean = [];
+  for (const mk of marks) {
+    const prev = clean[clean.length - 1];
+    if (prev && mk.labelStart < prev.valueStart) continue;
+    clean.push(mk);
+  }
+  if (!clean.length) return [{ label: null, value: text, start: 0 }];
 
   const segs = [];
-  if (marks[0].labelStart > 0)
-    segs.push({ label: null, value: text.slice(0, marks[0].labelStart), start: 0 });
-  for (let i = 0; i < marks.length; i++) {
-    const end = i + 1 < marks.length ? marks[i + 1].labelStart : text.length;
-    segs.push({ label: marks[i].label, value: text.slice(marks[i].valueStart, end), start: marks[i].valueStart });
+  if (clean[0].labelStart > 0)
+    segs.push({ label: null, value: text.slice(0, clean[0].labelStart), start: 0 });
+  for (let i = 0; i < clean.length; i++) {
+    const end = i + 1 < clean.length ? clean[i + 1].labelStart : text.length;
+    segs.push({ label: clean[i].label, value: text.slice(clean[i].valueStart, end), start: clean[i].valueStart, divider: clean[i].divider });
   }
   return segs;
 }
@@ -155,18 +180,31 @@ function NoteBody({ text, highlightRanges }) {
   const segs = segmentNote(text);
   return (
     <div>
-      {segs.map((seg, i) => (
-        <div key={i} style={{ marginBottom: seg.label ? 12 : 8 }}>
-          {seg.label && (
-            <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 3 }}>
-              {seg.label}
-            </div>
-          )}
-          <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.82rem', lineHeight: 1.6, color: seg.label ? 'var(--gray-700)' : 'var(--gray-500)' }}>
-            {highlightRanges ? highlightSlice(seg.value, seg.start, highlightRanges) : seg.value.trim()}
+      {segs.map((seg, i) => {
+        const hasValue = seg.value.trim().length > 0;
+        if (seg.divider && !hasValue) return null;   // drop empty banner headers
+        return (
+          <div key={i} style={{
+            marginBottom: seg.label ? 12 : 8,
+            ...(seg.divider ? { marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--gray-100)' } : {}),
+          }}>
+            {seg.label && (
+              <div style={{
+                fontWeight: 700, color: 'var(--navy)', marginBottom: 3,
+                fontSize: seg.divider ? '0.82rem' : '0.72rem',
+                textTransform: 'uppercase', letterSpacing: '0.04em',
+              }}>
+                {seg.label}
+              </div>
+            )}
+            {(hasValue || highlightRanges) && (
+              <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.82rem', lineHeight: 1.6, color: seg.label ? 'var(--gray-700)' : 'var(--gray-500)' }}>
+                {highlightRanges ? highlightSlice(seg.value, seg.start, highlightRanges) : seg.value.trim()}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -306,7 +344,7 @@ function CompareModal({ pair, onClose, onReopen }) {
 
 // ctx = { title, notes: [{ note, partner }] }. Reopens (sends back to the peer
 // for revision) one or more notes, each with an editable reason. onDone receives
-// the cosignIds that were successfully reopened.
+// the eids that were successfully reopened.
 function ReopenModal({ ctx, onClose, onDone }) {
   const [reasons, setReasons] = useState([]);
   const [busy,    setBusy]    = useState(false);
@@ -327,7 +365,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
       (res || []).forEach(r => {
         byEid[r.eid] = r;
         const match = ctx.notes.find(x => x.note.eid === r.eid);
-        if (r.ok && match) okIds.push(match.note.cosignId);
+        if (r.ok && match) okIds.push(match.note.eid);
       });
       setResults(byEid);
       if (okIds.length) onDone(okIds);
@@ -644,17 +682,17 @@ function RunReviewTab() {
 
   function toggleAll() {
     if (!scanResult) return;
-    const unsignedFlagged = scanResult.flagged.filter(n => !isDone(n.cosignId));
+    const unsignedFlagged = scanResult.flagged.filter(n => !isDone(n.eid));
     if (selected.size === unsignedFlagged.length) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(unsignedFlagged.map(n => n.cosignId)));
+      setSelected(new Set(unsignedFlagged.map(n => n.eid)));
     }
   }
 
   async function signNotes(notes, label) {
     if (!notes.length) return;
-    const ids = new Set(notes.map(n => n.cosignId));
+    const ids = new Set(notes.map(n => n.eid));
     setSigningIds(s => new Set([...s, ...ids]));
     try {
       // Send only the fields bulkSign needs — full note objects (with note text)
@@ -674,9 +712,9 @@ function RunReviewTab() {
     await signNotes(scanResult.clean, 'Sign All Clean');
   }
 
-  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !isDone(n.cosignId)) : [];
-  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.cosignId) && !isDone(n.cosignId)) : [];
-  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !isDone(n.cosignId)) : [];
+  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !isDone(n.eid)) : [];
+  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.eid) && !isDone(n.eid)) : [];
+  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !isDone(n.eid)) : [];
 
   return (
     <div>
@@ -744,7 +782,7 @@ function RunReviewTab() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {scanResult.flagged.map(note => {
-              const id       = note.cosignId;
+              const id       = note.eid;
               const signed   = signedIds.has(id);
               const reopened = reopenedIds.has(id);
               const signing  = signingIds.has(id);

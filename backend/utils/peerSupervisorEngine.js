@@ -374,6 +374,7 @@ class InsyncCoSignEngine {
     else { tm = /(\d+)\s*min[s]?/i.exec(totalTime); if (tm) dur = parseInt(tm[1]); }
 
     const sessionNarrative = this._section(text, 'Note of Session', ['Diagnosis','Plan / Visit Codes','Electronically Signed']);
+    const sessionContent   = this._sessionContent(text);
     const diagnosis        = this._section(text, 'Diagnosis',        ['Plan / Visit Codes','Treatment Plan','Electronically Signed']);
     const treatmentPlan    = this._section(text, 'Treatment Plan',   ['Electronically Signed','Provider NPI']);
 
@@ -389,9 +390,28 @@ class InsyncCoSignEngine {
       visitDateObj: this._parseDate(row.visitDatetime),
       noteText:     text,
       sessionNarrative: sessionNarrative || text,
+      sessionContent,
       diagnosis, treatmentPlan,
       fullNoteText: text,
     };
+  }
+
+  // The genuinely session-specific free text: "Focus of the meeting" through
+  // "Plan", stopping before the diagnosis codes / visit codes / treatment plan /
+  // signature. This is the part a peer actually writes per-session (and clones);
+  // everything outside it (demographics, times, ICD codes, the templated
+  // treatment-plan goals) is boilerplate that shouldn't drive clone matching.
+  _sessionContent(text) {
+    const sm = /Focus of the meeting\s*[:\-]/i.exec(text);
+    if (!sm) return '';
+    const start = sm.index;
+    const tail  = text.slice(start);
+    let end = tail.length;
+    for (const re of [/\bF\d{2}\.\d/, /Visit Codes\s*[:\-]/i, /Treatment Plan/, /Electronically Signed/i, /Provider NPI/i]) {
+      const mm = re.exec(tail);
+      if (mm && mm.index > 0) end = Math.min(end, mm.index);
+    }
+    return tail.slice(0, end).replace(/\s+/g, ' ').trim();
   }
 
   _section(text, startLabel, endLabels) {
@@ -480,8 +500,12 @@ class InsyncCoSignEngine {
   detectClones(notes) {
     const flags    = {};
     const partners = {};
+    // Compare ONLY the per-session narrative (Focus → Plan). Notes without an
+    // extractable session-content block get an empty string and are skipped by
+    // the length guard below — we deliberately do NOT fall back to the whole
+    // note, which is what produced false matches on templated boilerplate.
     const prepared = notes.map(n => {
-      let norm = ((n.sessionNarrative || n.noteText) || '').toLowerCase().replace(/\s+/g, ' ').trim();
+      let norm = (n.sessionContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
       for (const part of (n.patientName || '').toLowerCase().replace(',', ' ').split(' '))
         if (part.length > 2) norm = norm.split(part).join('');
       return norm;
@@ -515,7 +539,7 @@ class InsyncCoSignEngine {
     if (!this.anthropicKey || !note.noteText) return null;
     const anthropic  = new Anthropic({ apiKey: this.anthropicKey });
     const duration   = note.totalTime || 'unknown';
-    const narrative  = (note.sessionNarrative || note.noteText || '').slice(0, 12000);
+    const narrative  = (note.sessionContent || note.sessionNarrative || note.noteText || '').slice(0, 12000);
     const plan       = (note.treatmentPlan || '').slice(0, 8000);
     const dx         = (note.diagnosis || '').slice(0, 1500);
 
