@@ -45,6 +45,132 @@ function flagChipColor(flag) {
   return 'gray';
 }
 
+// ── Note formatting + similarity highlighting ─────────────────────────────────
+
+const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Section labels a note is split on, in display order. Matches the labels the
+// backend engine parses out of InSync notes.
+const NOTE_LABELS = [
+  'MRN', 'DOB', 'Age', 'Address', 'Phone', 'E-mail', 'Visit Date',
+  'Encounter Type', 'POS', 'Start Time', 'End Time', 'Total Time',
+  'Persons Present', 'Location of the Meeting', 'Focus of the meeting',
+  'Note of Session', 'Diagnosis', 'Plan / Visit Codes', 'Treatment Plan',
+  'Electronically Signed', 'Provider NPI',
+];
+
+// Split a flat note string into { label, value, start } sections. `start` is the
+// char offset of `value` inside the original text (used for highlight mapping).
+function segmentNote(text) {
+  if (!text) return [];
+  const re = new RegExp('(' + NOTE_LABELS.map(escapeRe).join('|') + ')\\s*[:\\-]\\s*', 'gi');
+  const marks = [];
+  let m;
+  while ((m = re.exec(text)) !== null)
+    marks.push({ label: m[1], labelStart: m.index, valueStart: m.index + m[0].length });
+  if (!marks.length) return [{ label: null, value: text, start: 0 }];
+
+  const segs = [];
+  if (marks[0].labelStart > 0)
+    segs.push({ label: null, value: text.slice(0, marks[0].labelStart), start: 0 });
+  for (let i = 0; i < marks.length; i++) {
+    const end = i + 1 < marks.length ? marks[i + 1].labelStart : text.length;
+    segs.push({ label: marks[i].label, value: text.slice(marks[i].valueStart, end), start: marks[i].valueStart });
+  }
+  return segs;
+}
+
+function tokenize(text) {
+  const toks = [], re = /\S+/g;
+  let m;
+  while ((m = re.exec(text)) !== null) toks.push({ t: m[0].toLowerCase(), s: m.index, e: m.index + m[0].length });
+  return toks;
+}
+
+// Word-level matching blocks (difflib-style) → merged absolute char ranges of the
+// text that both notes share. Returns { a, b } range lists, or null if too large.
+function commonRanges(textA, textB) {
+  const A = tokenize(textA), B = tokenize(textB);
+  if (!A.length || !B.length || A.length > 6000 || B.length > 6000) return null;
+
+  const b2j = new Map();
+  B.forEach((tk, j) => { if (!b2j.has(tk.t)) b2j.set(tk.t, []); b2j.get(tk.t).push(j); });
+
+  const blocks = [], stack = [[0, A.length, 0, B.length]];
+  while (stack.length) {
+    const [alo, ahi, blo, bhi] = stack.pop();
+    let besti = alo, bestj = blo, bestsize = 0, j2 = new Map();
+    for (let i = alo; i < ahi; i++) {
+      const nj = new Map();
+      for (const j of (b2j.get(A[i].t) || [])) {
+        if (j < blo) continue;
+        if (j >= bhi) break;
+        const k = (j2.get(j - 1) || 0) + 1;
+        nj.set(j, k);
+        if (k > bestsize) { besti = i - k + 1; bestj = j - k + 1; bestsize = k; }
+      }
+      j2 = nj;
+    }
+    if (bestsize > 0) {
+      blocks.push([besti, bestj, bestsize]);
+      if (alo < besti && blo < bestj) stack.push([alo, besti, blo, bestj]);
+      if (besti + bestsize < ahi && bestj + bestsize < bhi) stack.push([besti + bestsize, ahi, bestj + bestsize, bhi]);
+    }
+  }
+
+  const build = (toks, idx) => {
+    const r = blocks.filter(bl => bl[2] >= 2).map(bl => [toks[bl[idx]].s, toks[bl[idx] + bl[2] - 1].e]).sort((x, y) => x[0] - y[0]);
+    const merged = [];
+    for (const rng of r) {
+      const last = merged[merged.length - 1];
+      if (last && rng[0] <= last[1]) last[1] = Math.max(last[1], rng[1]);
+      else merged.push([...rng]);
+    }
+    return merged;
+  };
+  return { a: build(A, 0), b: build(B, 1) };
+}
+
+// Render a text slice, wrapping any part inside `ranges` (absolute char ranges)
+// in a light-red highlight. Returns React nodes.
+function highlightSlice(slice, sliceStart, ranges) {
+  if (!ranges || !ranges.length) return slice;
+  const nodes = [], end = sliceStart + slice.length;
+  let cur = sliceStart, key = 0;
+  for (const [rs, re] of ranges) {
+    if (re <= cur) continue;
+    if (rs >= end) break;
+    const s = Math.max(rs, cur), e = Math.min(re, end);
+    if (s > cur) nodes.push(slice.slice(cur - sliceStart, s - sliceStart));
+    nodes.push(<mark key={key++} style={{ background: '#fee2e2', color: 'inherit', borderRadius: 2 }}>{slice.slice(s - sliceStart, e - sliceStart)}</mark>);
+    cur = e;
+  }
+  if (cur < end) nodes.push(slice.slice(cur - sliceStart, end - sliceStart));
+  return nodes;
+}
+
+// Renders a note as bold-headed sections, optionally highlighting matching text.
+function NoteBody({ text, highlightRanges }) {
+  if (!text) return <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', fontStyle: 'italic' }}>Note text not available.</p>;
+  const segs = segmentNote(text);
+  return (
+    <div>
+      {segs.map((seg, i) => (
+        <div key={i} style={{ marginBottom: seg.label ? 12 : 8 }}>
+          {seg.label && (
+            <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 3 }}>
+              {seg.label}
+            </div>
+          )}
+          <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.82rem', lineHeight: 1.6, color: seg.label ? 'var(--gray-700)' : 'var(--gray-500)' }}>
+            {highlightRanges ? highlightSlice(seg.value, seg.start, highlightRanges) : seg.value.trim()}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ProgressBar({ pct }) {
   return (
     <div style={{ background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden', width: '100%' }}>
@@ -85,10 +211,7 @@ function NoteModal({ note, onClose }) {
           </div>
         )}
         <div style={{ padding: '20px 24px', maxHeight: '60vh', overflowY: 'auto' }}>
-          {note.fullNoteText
-            ? <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: '0.82rem', lineHeight: 1.65, whiteSpace: 'pre-wrap', color: 'var(--gray-700)' }}>{note.fullNoteText}</pre>
-            : <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', fontStyle: 'italic' }}>Note text not available.</p>
-          }
+          <NoteBody text={note.fullNoteText} />
         </div>
       </div>
     </div>
@@ -97,7 +220,7 @@ function NoteModal({ note, onClose }) {
 
 // ── CompareModal ──────────────────────────────────────────────────────────────
 
-function ComparePane({ note }) {
+function ComparePane({ note, highlightRanges }) {
   return (
     <div style={{ flex: '1 1 320px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
@@ -107,16 +230,14 @@ function ComparePane({ note }) {
         </div>
       </div>
       <div style={{ padding: '14px 16px', maxHeight: '58vh', overflowY: 'auto' }}>
-        {note.fullNoteText
-          ? <pre style={{ margin: 0, fontFamily: 'inherit', fontSize: '0.8rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', color: 'var(--gray-700)' }}>{note.fullNoteText}</pre>
-          : <p style={{ color: 'var(--gray-400)', fontSize: '0.85rem', fontStyle: 'italic' }}>Note text not available.</p>
-        }
+        <NoteBody text={note.fullNoteText} highlightRanges={highlightRanges} />
       </div>
     </div>
   );
 }
 
 function CompareModal({ pair, onClose }) {
+  const ranges = pair ? commonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
   if (!pair) return null;
   const { a, b } = pair;
   const pct = a.clonePct || b.clonePct;
@@ -134,12 +255,16 @@ function CompareModal({ pair, onClose }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Cloned Notes</h3>
             {pct && <Chip color="orange">{pct}% match</Chip>}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
+              <span style={{ display: 'inline-block', width: 12, height: 12, background: '#fee2e2', borderRadius: 2, border: '1px solid #fecaca' }} />
+              matching text
+            </span>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
         </div>
         <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          <ComparePane note={a} />
-          <ComparePane note={b} />
+          <ComparePane note={a} highlightRanges={ranges?.a} />
+          <ComparePane note={b} highlightRanges={ranges?.b} />
         </div>
       </div>
     </div>
