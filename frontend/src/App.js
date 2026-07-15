@@ -9,6 +9,7 @@ import InstructorsPage from './pages/InstructorsPage';
 import CalendarPage from './pages/CalendarPage';
 import SetPasswordPage from './pages/SetPasswordPage';
 import PaymentsPage from './pages/PaymentsPage';
+import ZohoSyncPage from './pages/ZohoSyncPage';
 import SessionsPage from './pages/SessionsPage';
 import ComingSoonPage from './pages/ComingSoonPage';
 import OOClientsPage from './pages/OOClientsPage';
@@ -47,6 +48,9 @@ export default function App() {
           } />
           <Route path="instructors" element={
             <PrivateRoute><InstructorsPage /></PrivateRoute>
+          } />
+          <Route path="zoho-sync" element={
+            <PrivateRoute adminOnly><ZohoSyncPage /></PrivateRoute>
           } />
           <Route path="payments" element={
             <PrivateRoute adminOnly><PaymentsPage /></PrivateRoute>

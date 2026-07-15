@@ -64,6 +64,11 @@ export default function Layout() {
             <span className="nav-icon">💰</span> Payments
           </NavLink>
         )}
+        {isAdmin && (
+          <NavLink to="/zoho-sync" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            <span className="nav-icon">🔗</span> Zoho Sync
+          </NavLink>
+        )}
       </>
     ),
     'one-on-one': (

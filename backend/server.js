@@ -118,6 +118,22 @@ app.get('/api/config/zoho-inspect', requireAuth, async (req, res) => {
   }
 });
 
+// Everything the Zoho alignment page needs: all Ritzoini groups + cached Zoho groups.
+app.get('/api/config/zoho-alignment', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    const [g, z] = await Promise.all([
+      supabase.from('groups').select('id, group_name, internal_name, status, zoho_session_id').order('group_name'),
+      supabase.from('zoho_groups').select('id, session_name, session_code, group_activity, class_day').order('session_name'),
+    ]);
+    if (g.error) throw g.error;
+    if (z.error) throw z.error;
+    res.json({ groups: g.data || [], zohoGroups: z.data || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // List the cached Zoho groups (for the manual link picker dropdown).
 app.get('/api/config/zoho-groups', requireAuth, async (req, res) => {
   try {
