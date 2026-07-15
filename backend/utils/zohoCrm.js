@@ -117,6 +117,35 @@ async function findOccurrence(sessionName, sessionDate) {
   return (body.data || []).find(o => normalizeName(o[NAME_FIELD]) === wanted) || null;
 }
 
+// Zoho preloads Clinical_Note with a header ("Group Name:" / "Group Activity:")
+// that carries Zoho-only info (e.g. the activity/level). Preserve those leading
+// header lines and put the Ritzoini note beneath them, rather than overwriting.
+const HEADER_RE = /^\s*(Group Name|Group Activity)\s*:/i;
+function mergeWithHeader(existing, note) {
+  const header = [];
+  for (const line of String(existing || '').split(/\r?\n/)) {
+    if (HEADER_RE.test(line)) { header.push(line.replace(/\s+$/, '')); continue; }
+    if (line.trim() === '') { if (header.length) break; else continue; }
+    break; // first real content line ends the header region
+  }
+  const body = String(note || '');
+  if (!header.length) return body.trim();
+
+  // Drop any duplicate header/blank lines already at the top of the note.
+  const noteLines = body.split(/\r?\n/);
+  let i = 0;
+  while (i < noteLines.length && (HEADER_RE.test(noteLines[i]) || noteLines[i].trim() === '')) i++;
+  return `${header.join('\n')}\n\n${noteLines.slice(i).join('\n').trim()}`;
+}
+
+// Read an occurrence's current Clinical_Note (to preserve its header).
+async function getOccurrenceNote(occId) {
+  const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/${occId}?fields=${NOTE_FIELD}`);
+  if (!resp.ok) return '';
+  const body = await resp.json().catch(() => ({}));
+  return body.data?.[0]?.[NOTE_FIELD] || '';
+}
+
 // Write the clinical note onto an occurrence and advance its status.
 async function updateOccurrenceNote(occId, noteText) {
   const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/${occId}`, {
@@ -176,7 +205,11 @@ async function postSoapNoteToZoho(sessionId) {
     throw new Error(`Occurrence ${occ.id} ("${matchedName}" ${sessionDate}) is locked in Zoho; not overwriting`);
   }
 
-  const zohoId = await updateOccurrenceNote(occ.id, noteText);
+  // Preserve Zoho's preloaded "Group Name:" / "Group Activity:" header.
+  const existingNote = occ[NOTE_FIELD] != null ? occ[NOTE_FIELD] : await getOccurrenceNote(occ.id);
+  const finalNote = mergeWithHeader(existingNote, noteText);
+
+  const zohoId = await updateOccurrenceNote(occ.id, finalNote);
 
   const now = new Date().toISOString();
   const { error: updateErr } = await supabase.from('sessions').update({
