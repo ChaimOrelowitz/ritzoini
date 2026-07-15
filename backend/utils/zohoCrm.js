@@ -146,21 +146,40 @@ async function findOccurrence(group, sessionDate) {
 // that carries Zoho-only info (e.g. the activity/level). Preserve those leading
 // header lines and put the Ritzoini note beneath them, rather than overwriting.
 const HEADER_RE = /^\s*(Group Name|Group Activity)\s*:/i;
-function mergeWithHeader(existing, note) {
+// Keep the "Group Name:" / "Group Activity:" header on the note. If the existing
+// Zoho note already has one (a re-post/edit), preserve it; otherwise use the
+// built `fallbackHeader` — Zoho only pre-fills that header client-side in the
+// widget, so on a first post it isn't stored and must be supplied by us.
+function mergeWithHeader(existing, note, fallbackHeader) {
   const header = [];
   for (const line of String(existing || '').split(/\r?\n/)) {
     if (HEADER_RE.test(line)) { header.push(line.replace(/\s+$/, '')); continue; }
     if (line.trim() === '') { if (header.length) break; else continue; }
     break; // first real content line ends the header region
   }
+  const headerStr = header.length ? header.join('\n') : String(fallbackHeader || '').trim();
   const body = String(note || '');
-  if (!header.length) return body.trim();
+  if (!headerStr) return body.trim();
 
   // Drop any duplicate header/blank lines already at the top of the note.
   const noteLines = body.split(/\r?\n/);
   let i = 0;
   while (i < noteLines.length && (HEADER_RE.test(noteLines[i]) || noteLines[i].trim() === '')) i++;
-  return `${header.join('\n')}\n\n${noteLines.slice(i).join('\n').trim()}`;
+  return `${headerStr}\n\n${noteLines.slice(i).join('\n').trim()}`;
+}
+
+// Build the header Zoho would pre-fill: "Group Name: <group>\nGroup Activity: <activity>".
+// Group name from the parent cache (or occ.Name minus the "- Session N" suffix);
+// activity from the parent cache (occurrences don't carry it).
+function buildOccHeader(occ, cacheRow, groupName) {
+  const name = (cacheRow && cacheRow.session_name)
+    || String(occ.Name || '').replace(/\s*-\s*Session\s*\d+\s*$/i, '').trim()
+    || groupName || '';
+  const activity = cacheRow && cacheRow.group_activity;
+  const lines = [];
+  if (name) lines.push(`Group Name: ${name}`);
+  if (activity) lines.push(`Group Activity: ${activity}`);
+  return lines.join('\n');
 }
 
 // Fetch an occurrence's full raw record (all fields) — for the inspector.
@@ -235,9 +254,19 @@ async function postSoapNoteToZoho(sessionId) {
     throw new Error(`Occurrence ${occ.id} ("${group?.group_name}" ${sessionDate}) is locked in Zoho; not overwriting`);
   }
 
-  // Preserve Zoho's preloaded "Group Name:" / "Group Activity:" header.
+  // Build the "Group Name:" / "Group Activity:" header. Zoho only pre-fills it
+  // client-side in the widget (not stored until saved), and Group_Activity lives
+  // on the parent (our zoho_groups cache) — so we supply it on a first post.
+  const parentId = occ.Session && occ.Session.id;
+  let cacheRow = null;
+  if (parentId) {
+    const { data } = await supabase.from('zoho_groups')
+      .select('session_name, group_activity').eq('id', parentId).maybeSingle();
+    cacheRow = data;
+  }
   const existingNote = occ[NOTE_FIELD] != null ? occ[NOTE_FIELD] : await getOccurrenceNote(occ.id);
-  const finalNote = mergeWithHeader(existingNote, noteText);
+  const fallbackHeader = buildOccHeader(occ, cacheRow, group && group.group_name);
+  const finalNote = mergeWithHeader(existingNote, noteText, fallbackHeader);
 
   const zohoId = await updateOccurrenceNote(occ.id, finalNote);
 
