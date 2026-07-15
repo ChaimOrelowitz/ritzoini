@@ -37,7 +37,11 @@ function fmtDateTime(ts) {
   return d.toLocaleString('en-US', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
-function CheckCell({ checked, onChange, timestamp, messageId }) {
+// Zoho CRM deep link to a Session_Occurrences record (the note that was posted).
+const ZOHO_ORG = '871314197';
+const zohoOccurrenceUrl = (id) => `https://crm.zoho.com/crm/org${ZOHO_ORG}/tab/Session_Occurrences/${id}`;
+
+function CheckCell({ checked, onChange, timestamp, messageId, zohoId }) {
   return (
     <td
       style={{ textAlign: 'center', padding: '6px 12px', verticalAlign: 'middle' }}
@@ -52,12 +56,17 @@ function CheckCell({ checked, onChange, timestamp, messageId }) {
       {timestamp && (
         <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', marginTop: 2, whiteSpace: 'nowrap' }}>
           {fmtDateTime(timestamp)}
-          {messageId && (
+          {zohoId ? (
+            <a href={zohoOccurrenceUrl(zohoId)} target="_blank" rel="noreferrer"
+              style={{ marginLeft: 4, color: '#6941C6', textDecoration: 'underline' }}>
+              view in Zoho
+            </a>
+          ) : messageId ? (
             <a href={`https://resend.com/emails/${messageId}`} target="_blank" rel="noreferrer"
               style={{ marginLeft: 4, color: 'var(--navy)', textDecoration: 'underline' }}>
               view
             </a>
-          )}
+          ) : null}
         </div>
       )}
     </td>
@@ -105,7 +114,7 @@ function SessionRow({ session, onToggle }) {
           {STATUS_LABEL[session.status] || session.status}
         </span>
       </td>
-      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} />
+      <CheckCell checked={session.email_sent}    onChange={v => onToggle(session.id, 'email_sent', v)}    timestamp={session.email_sent_at}    messageId={session.email_message_id} zohoId={session.zoho_note_id} />
       <CheckCell checked={session.ready_to_lock} onChange={v => onToggle(session.id, 'ready_to_lock', v)} timestamp={session.ready_to_lock_at} />
       <CheckCell checked={session.locked}        onChange={v => onToggle(session.id, 'locked', v)}        timestamp={session.locked_at} />
     </tr>
