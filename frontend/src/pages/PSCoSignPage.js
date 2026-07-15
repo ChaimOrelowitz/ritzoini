@@ -38,7 +38,7 @@ function Chip({ color, children }) {
 function flagChipColor(flag) {
   if (!flag) return 'gray';
   const f = flag.toLowerCase();
-  if (f.includes('clone') || f.includes('duplicate')) return 'orange';
+  if (f.includes('clone') || f.includes('duplicate') || f.includes('copied')) return 'orange';
   if (f.includes('session') || f.includes('long') || f.includes('hour')) return 'blue';
   if (f.includes('school') || f.includes('minor')) return 'red';
   if (f.includes('ai')) return 'red';

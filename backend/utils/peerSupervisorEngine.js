@@ -5,7 +5,11 @@ const CHROME_UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const SCHOOL_START      = 8  * 60;   // 08:00
 const SCHOOL_END        = 15 * 60;   // 15:00
 const MAX_SESSION_MINS  = 180;
-const SIMILARITY_THRESHOLD = 0.90;
+// Bigram similarity is only a candidate net now — cast wide, the AI judge
+// decides. CANDIDATE_THRESHOLD is intentionally loose; MAX_CANDIDATE_PAIRS
+// bounds the number of AI judge calls per scan.
+const CANDIDATE_THRESHOLD  = 0.60;
+const MAX_CANDIDATE_PAIRS  = 100;
 const SESSION_TIMEOUT_MARKERS = [
   'InSync :: Session Timeout', '/SessionTimeOut',
   'Your session is expired.', 'RE-LOGIN',
@@ -17,23 +21,24 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Bigram similarity — approximates Python SequenceMatcher.ratio()
-function bigramSimilarity(a, b) {
-  if (a === b) return 1;
-  if (!a || !b) return 0;
-  const bigrams = s => {
-    const m = new Map();
-    for (let i = 0; i < s.length - 1; i++) {
-      const g = s.slice(i, i + 2);
-      m.set(g, (m.get(g) || 0) + 1);
-    }
-    return m;
-  };
-  const ba = bigrams(a), bb = bigrams(b);
+// Bigram count map for a string (built once per note, reused across compares).
+function bigramMap(s) {
+  const m = new Map();
+  for (let i = 0; i < s.length - 1; i++) {
+    const g = s.slice(i, i + 2);
+    m.set(g, (m.get(g) || 0) + 1);
+  }
+  return m;
+}
+
+// Bigram (Sørensen-Dice) similarity from two precomputed maps + string lengths.
+// Approximates Python SequenceMatcher.ratio(); iterate the smaller map.
+function bigramSimFromMaps(ma, la, mb, lb) {
+  const [small, big] = ma.size <= mb.size ? [ma, mb] : [mb, ma];
   let intersect = 0;
-  for (const [g, c] of ba) intersect += Math.min(c, bb.get(g) || 0);
-  const total = (a.length - 1) + (b.length - 1);
-  return total === 0 ? 0 : (2 * intersect) / total;
+  for (const [g, c] of small) intersect += Math.min(c, big.get(g) || 0);
+  const total = (la - 1) + (lb - 1);
+  return total <= 0 ? 0 : (2 * intersect) / total;
 }
 
 class InsyncCoSignEngine {
@@ -495,42 +500,87 @@ class InsyncCoSignEngine {
     } catch { return false; }
   }
 
-  // ── Clone detection ─────────────────────────────────────────────────────────
+  // ── Clone candidate finding ───────────────────────────────────────────────────
 
-  detectClones(notes) {
-    const flags    = {};
-    const partners = {};
-    // Compare ONLY the per-session narrative (Focus → Plan). Notes without an
-    // extractable session-content block get an empty string and are skipped by
-    // the length guard below — we deliberately do NOT fall back to the whole
-    // note, which is what produced false matches on templated boilerplate.
+  // The bigram similarity is no longer the verdict — it's a cheap WIDE NET that
+  // surfaces candidate pairs for the AI judge (aiCloneJudge) to rule on. Cast
+  // loose (CANDIDATE_THRESHOLD) so borderline/legit-looking pairs still reach the
+  // AI, which has the judgment the math lacks. Compares only the per-session
+  // narrative (Focus → Plan); notes without one are skipped. Each note is placed
+  // in at most one pair (greedy by score) to bound the number of AI calls, and
+  // the total is capped. Same-client AND cross-client pairs are both eligible.
+  cloneCandidates(notes) {
     const prepared = notes.map(n => {
       let norm = (n.sessionContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
       for (const part of (n.patientName || '').toLowerCase().replace(',', ' ').split(' '))
         if (part.length > 2) norm = norm.split(part).join('');
       return norm;
     });
+    // Precompute each note's bigram map once (instead of rebuilding per compare).
+    const maps = prepared.map(s => s.length >= 120 ? bigramMap(s) : null);
 
+    const pairs = [];
     for (let i = 0; i < notes.length; i++) {
+      if (!maps[i]) continue;
       for (let j = i + 1; j < notes.length; j++) {
-        const a = prepared[i], b = prepared[j];
-        if (a.length < 120 || b.length < 120) continue;
-        const ratio = bigramSimilarity(a, b);
-        if (ratio < SIMILARITY_THRESHOLD) continue;
-        const na = notes[i], nb = notes[j];
-        const pct      = Math.round(ratio * 100);
-        const samePeer = na.peerId && na.peerId === nb.peerId;
-        const fa = samePeer
-          ? `Possible cloned note (${pct}% match): same peer as ${nb.patientName || 'another client'}`
-          : `Possible cloned note (${pct}% match): matches ${nb.peerName || 'another peer'}'s note for ${nb.patientName || 'another client'}`;
-        const fb = samePeer
-          ? `Possible cloned note (${pct}% match): same peer as ${na.patientName || 'another client'}`
-          : `Possible cloned note (${pct}% match): matches ${na.peerName || 'another peer'}'s note for ${na.patientName || 'another client'}`;
-        if (!flags[na.eid]) { flags[na.eid] = fa; partners[na.eid] = { eid: nb.eid, pct }; }
-        if (!flags[nb.eid]) { flags[nb.eid] = fb; partners[nb.eid] = { eid: na.eid, pct }; }
+        if (!maps[j]) continue;
+        const ratio = bigramSimFromMaps(maps[i], prepared[i].length, maps[j], prepared[j].length);
+        if (ratio >= CANDIDATE_THRESHOLD) pairs.push({ i, j, pct: Math.round(ratio * 100) });
       }
     }
-    return { flags, partners };
+    pairs.sort((a, b) => b.pct - a.pct);
+
+    const used = new Set(), out = [];
+    for (const p of pairs) {
+      if (used.has(p.i) || used.has(p.j)) continue;
+      used.add(p.i); used.add(p.j);
+      out.push({ a: notes[p.i], b: notes[p.j], pct: p.pct });
+      if (out.length >= MAX_CANDIDATE_PAIRS) break;
+    }
+    return out;
+  }
+
+  // AI judge for a candidate pair: is one note COPIED from the other (verbatim
+  // reuse / not individualized), or is this legitimate recurring work? Returns
+  // { copy, reason }. Framed to let legitimate similarity through.
+  async aiCloneJudge(a, b) {
+    if (!this.anthropicKey) return { copy: false, reason: null };
+    const anthropic = new Anthropic({ apiKey: this.anthropicKey });
+    const clip = s => (s || '').slice(0, 6000);
+
+    const prompt = `You are a documentation-integrity reviewer for peer support services. You are given TWO session notes. Decide whether one appears COPIED from the other (or both pasted from a shared template) rather than genuinely written for each specific session.
+
+Do NOT flag legitimate similarity. Peer support sessions legitimately recur: the same client, or different clients, may do the same activities (e.g. go for a walk), use the same interventions, and be documented in the peer's consistent writing style. Similar structure, similar activities, and a repetitive "Patient's Response/Content" section are NORMAL and are NOT evidence of copying on their own.
+
+DO flag as a copy when there is clear evidence the note was not individually written for this session, such as:
+- Long verbatim or near-verbatim passages describing what happened (especially the "Focus of the meeting" and activities narrative) that are essentially identical between the two notes.
+- A note that references the WRONG person — a different client's name, or mismatched gender/pronouns — a tell that another client's note was pasted.
+- Generic boilerplate with no concrete detail specific to this particular session.
+- Internal contradictions that indicate careless copying.
+
+This applies whether the two notes are for the SAME client (a prior session recycled) or DIFFERENT clients (one client's note reused for another).
+
+NOTE A — client: ${a.patientName || 'unknown'}, date: ${a.visitDate || a.visitDatetime || 'unknown'}:
+---
+${clip(a.sessionContent)}
+---
+NOTE B — client: ${b.patientName || 'unknown'}, date: ${b.visitDate || b.visitDatetime || 'unknown'}:
+---
+${clip(b.sessionContent)}
+---
+
+Respond ONLY with valid JSON, no other text:
+{"copy": true or false, "reason": "one specific sentence naming the concrete evidence (verbatim passage, wrong name/pronoun, etc.) if copy is true, else null"}`;
+
+    try {
+      const msg = await anthropic.messages.create({
+        model: 'claude-sonnet-4-6', max_tokens: 250,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      const raw    = msg.content[0].text.trim().replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(raw);
+      return { copy: !!parsed.copy, reason: parsed.copy ? parsed.reason : null };
+    } catch { return { copy: false, reason: null }; }
   }
 
   // ── AI review ───────────────────────────────────────────────────────────────
@@ -674,10 +724,28 @@ Respond ONLY with valid JSON, no other text:
       }
     }
 
-    report('Checking for cloned notes...', 60);
-    const { flags: cloneFlags, partners: clonePartners } = this.detectClones(notes);
+    // Wide net → AI judge. The bigram net surfaces candidate pairs; Claude
+    // decides which are actually copied (verbatim reuse / wrong name / not
+    // individualized) vs. legitimate recurring work. Only AI-confirmed pairs
+    // become clone flags. Same-client and cross-client pairs both eligible.
+    report('Finding candidate duplicate pairs...', 58);
+    const candidates = this.cloneCandidates(notes);
+    const cloneFlags = {}, clonePartners = {};
+    if (this.anthropicKey && candidates.length) {
+      for (let i = 0; i < candidates.length; i++) {
+        report(`AI checking possible copies ${i + 1} of ${candidates.length}...`, 58 + Math.floor((i / candidates.length) * 6));
+        const { a, b } = candidates[i];
+        const verdict = await this.aiCloneJudge(a, b);
+        if (verdict.copy) {
+          const reason = verdict.reason || 'Appears copied — not individualized to this session';
+          if (!cloneFlags[a.eid]) { cloneFlags[a.eid] = `Likely copied note: ${reason}`; clonePartners[a.eid] = { eid: b.eid, pct: candidates[i].pct }; }
+          if (!cloneFlags[b.eid]) { cloneFlags[b.eid] = `Likely copied note: ${reason}`; clonePartners[b.eid] = { eid: a.eid, pct: candidates[i].pct }; }
+        }
+        await sleep(80);
+      }
+    }
 
-    report('Running compliance checks...', 62);
+    report('Running compliance checks...', 64);
     const flagged = [...cantLoad];
     const provClean = [];
 
