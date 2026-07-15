@@ -69,7 +69,13 @@ router.post('/zoho-sync', requireCronSecret, async (req, res) => {
     return res.json({ skipped: true, reason: `delivery mode is '${mode}'` });
   }
 
-  const sinceDate = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+  // Only recent notes: a note usually posts on completion or within a run or
+  // two; anything older that still hasn't matched won't (dead group / no Zoho
+  // occurrence) and shouldn't slow every run. Manual "Send Note" covers old ones.
+  const WINDOW_DAYS = 14;
+  const BATCH = 30;      // cap work per run so we stay well under the HTTP timeout
+  const CONCURRENCY = 5; // run Zoho calls a few at a time
+  const sinceDate = new Date(Date.now() - WINDOW_DAYS * 24 * 3600 * 1000).toISOString().slice(0, 10);
   let checked = 0, posted = 0, pending = 0, failed = 0;
   const log = [];
 
@@ -80,25 +86,28 @@ router.post('/zoho-sync', requireCronSecret, async (req, res) => {
       .eq('status', 'completed')
       .gte('session_date', sinceDate)
       .or('zoho_posted.is.null,zoho_posted.eq.false')
-      .limit(300);
+      .order('session_date', { ascending: false }) // newest first
+      .limit(BATCH);
     if (error) throw error;
 
-    for (const s of (sessions || [])) {
-      const note = (s.soap_note || s.notes || '').trim();
-      if (!note) continue; // nothing to send yet
-      checked++;
-      try {
-        await postSoapNoteToZoho(s.id);
-        posted++;
-      } catch (err) {
-        // "No Session_Occurrences record found" = Zoho not ready yet → retry next run.
-        if (/No .* record found/i.test(err.message)) pending++;
-        else { failed++; log.push({ id: s.id, error: err.message }); }
-      }
+    const todo = (sessions || []).filter(s => (s.soap_note || s.notes || '').trim());
+
+    for (let i = 0; i < todo.length; i += CONCURRENCY) {
+      await Promise.all(todo.slice(i, i + CONCURRENCY).map(async (s) => {
+        checked++;
+        try {
+          await postSoapNoteToZoho(s.id);
+          posted++;
+        } catch (err) {
+          // "No ... record found" = Zoho not ready yet → retry next run.
+          if (/No .* record found/i.test(err.message)) pending++;
+          else { failed++; log.push({ id: s.id, error: err.message }); }
+        }
+      }));
     }
 
     console.log(`[cron] zoho-sync: checked=${checked} posted=${posted} pending=${pending} failed=${failed}`);
-    res.json({ checked, posted, pending, failed, log });
+    res.json({ checked, posted, pending, failed, windowDays: WINDOW_DAYS, log });
   } catch (err) {
     console.error('[cron] zoho-sync fatal:', err.message);
     res.status(500).json({ error: err.message });
