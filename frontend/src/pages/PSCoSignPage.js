@@ -254,7 +254,7 @@ function defaultReopenReason(note, partner) {
     return `Possible duplicate of other client's note — please revise. (${who} and ${noteDateStr(partner.visitDatetime)})`;
   }
   const flags = [...(note.flags || [])];
-  if (note.aiFlag && note.aiReason) flags.push(note.aiReason);
+  if (note.aiFlag) flags.push(note.aiFlag);
   return flags.length ? flags.join('; ') : '';
 }
 
@@ -294,7 +294,7 @@ function NoteModal({ note, onClose }) {
         {note.flags?.length > 0 && (
           <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-            {note.aiFlag && note.aiReason && <Chip color="red">AI: {note.aiReason}</Chip>}
+            {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
           </div>
         )}
         <div style={{ padding: '20px 24px', maxHeight: '60vh', overflowY: 'auto' }}>
@@ -844,7 +844,7 @@ function RunReviewTab() {
                     </div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {note.flags?.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-                      {note.aiFlag && note.aiReason && <Chip color="red">AI: {note.aiReason}</Chip>}
+                      {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
                     </div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
