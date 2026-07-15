@@ -96,24 +96,25 @@ async function zohoFetch(path, options = {}) {
   });
 }
 
-// Escape Zoho search-criteria special chars in a value.
-function escapeCriteria(v) {
-  return String(v).replace(/([(),\\])/g, '\\$1');
+function normalizeName(v) {
+  return (v || '').trim().toLowerCase();
 }
 
 // Find the Session_Occurrences record for a given group name + date.
-// Returns the record object (with id, ECW, Locked_Notes) or null.
+// Session_Name is not a searchable field in Zoho, so we search on the
+// (searchable) date and match the name client-side. Returns the record object
+// (with id, ECW, Locked_Notes) or null.
 async function findOccurrence(sessionName, sessionDate) {
   if (!sessionName || !sessionDate) return null;
-  const criteria = encodeURIComponent(
-    `(${NAME_FIELD}:equals:${escapeCriteria(sessionName)})and(${DATE_FIELD}:equals:${sessionDate})`
-  );
-  const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/search?criteria=${criteria}`);
+  const criteria = encodeURIComponent(`(${DATE_FIELD}:equals:${sessionDate})`);
+  const resp = await zohoFetch(`/crm/v2/${OCC_MODULE}/search?criteria=${criteria}&per_page=200`);
 
   if (resp.status === 204) return null; // Zoho returns 204 for no matches
   const body = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(`Zoho search failed: ${resp.status} ${JSON.stringify(body)}`);
-  return body.data?.[0] || null;
+
+  const wanted = normalizeName(sessionName);
+  return (body.data || []).find(o => normalizeName(o[NAME_FIELD]) === wanted) || null;
 }
 
 // Write the clinical note onto an occurrence and advance its status.
