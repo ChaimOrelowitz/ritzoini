@@ -478,100 +478,98 @@ export default function DashboardPage() {
           <h2>Welcome back, {profile?.first_name || profile?.email}</h2>
           <p>{isAdmin ? 'All groups' : 'Your groups'}</p>
         </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <button
-            className="btn btn-outline btn-sm"
-            onClick={() => { setShowArchived(a => !a); setFilter('active'); }}
-            style={{ color: showArchived ? 'var(--navy)' : 'var(--gray-400)' }}
-          >
-            {showArchived ? '← Active Groups' : 'View Archived'}
-          </button>
-          {myEmailEnabled !== null && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'flex-end' }}>
+          {/* Row 1 — groups & email */}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
             <button
               className="btn btn-outline btn-sm"
-              onClick={toggleMyEmail}
-              style={{ color: myEmailEnabled ? '#10b981' : 'var(--gray-400)' }}
-              title={myEmailEnabled ? 'My emails on — click to disable' : 'My emails off — click to enable'}
+              onClick={() => { setShowArchived(a => !a); setFilter('active'); }}
+              style={{ color: showArchived ? 'var(--navy)' : 'var(--gray-400)' }}
             >
-              ✉ {myEmailEnabled ? 'My Emails On' : 'My Emails Off'}
+              {showArchived ? '← Active Groups' : 'View Archived'}
             </button>
-          )}
-          {isAdmin && emailEnabled !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={toggleEmail}
-              style={{ color: emailEnabled ? '#10b981' : 'var(--gray-400)', fontSize: '0.75rem' }}
-              title={emailEnabled ? 'Global emails on — click to disable all' : 'Global emails off — click to enable all'}
-            >
-              {emailEnabled ? 'Global On' : 'Global Off'}
-            </button>
-          )}
+            {myEmailEnabled !== null && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={toggleMyEmail}
+                style={{ color: myEmailEnabled ? '#10b981' : 'var(--gray-400)' }}
+                title={myEmailEnabled ? 'My emails on — click to disable' : 'My emails off — click to enable'}
+              >
+                ✉ {myEmailEnabled ? 'My Emails On' : 'My Emails Off'}
+              </button>
+            )}
+            {isAdmin && emailEnabled !== null && (
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={toggleEmail}
+                style={{ color: emailEnabled ? '#10b981' : 'var(--gray-400)', fontSize: '0.75rem' }}
+                title={emailEnabled ? 'Global emails on — click to disable all' : 'Global emails off — click to enable all'}
+              >
+                {emailEnabled ? 'Global On' : 'Global Off'}
+              </button>
+            )}
+            {!showArchived && (
+              <>
+                {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>}
+                {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkImport(true)}>↑ Import Sheet</button>}
+                <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
+              </>
+            )}
+          </div>
+
+          {/* Row 2 — Zoho controls */}
           {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={cycleDeliveryMode}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Where saved notes are delivered — click to cycle Zoho / Email / Both"
-            >
-              {DELIVERY_LABELS[deliveryMode] || deliveryMode}
-            </button>
-          )}
-          {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleTestZoho}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Read-only check of Zoho connection, token scope, and module access"
-            >
-              Test Zoho
-            </button>
-          )}
-          {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleTestZohoWrite}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Safe write test — proves Zoho write access without changing any data"
-            >
-              Test Write
-            </button>
-          )}
-          {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleZohoExchange}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Turn a Zoho Self Client grant code into a refresh token"
-            >
-              Get Refresh Token
-            </button>
-          )}
-          {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleInspectOccurrence}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Dump a Zoho occurrence's raw fields (read-only)"
-            >
-              Inspect Occurrence
-            </button>
-          )}
-          {isAdmin && deliveryMode !== null && (
-            <button
-              className="btn btn-outline btn-sm"
-              onClick={handleSyncZohoGroups}
-              style={{ color: '#6941C6', fontSize: '0.75rem' }}
-              title="Pull Zoho groups and align them to Ritzoini groups by name"
-            >
-              Sync Zoho Groups
-            </button>
-          )}
-          {!showArchived && (
-            <>
-              {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkAssign(true)}>Assign Supervisor</button>}
-              {isAdmin && <button className="btn btn-outline btn-sm" onClick={() => setShowBulkImport(true)}>↑ Import Sheet</button>}
-              <button className="btn btn-gold" onClick={() => setShowCreate(true)}>+ New Group</button>
-            </>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: '0.7rem', color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: 2 }}>Zoho</span>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={cycleDeliveryMode}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Where saved notes are delivered — click to cycle Zoho / Email / Both"
+              >
+                {DELIVERY_LABELS[deliveryMode] || deliveryMode}
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleSyncZohoGroups}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Pull Zoho groups and align them to Ritzoini groups by name"
+              >
+                Sync Zoho Groups
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleTestZoho}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Read-only check of Zoho connection, token scope, and module access"
+              >
+                Test Zoho
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleTestZohoWrite}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Safe write test — proves Zoho write access without changing any data"
+              >
+                Test Write
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleZohoExchange}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Turn a Zoho Self Client grant code into a refresh token"
+              >
+                Get Refresh Token
+              </button>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={handleInspectOccurrence}
+                style={{ color: '#6941C6', fontSize: '0.75rem' }}
+                title="Dump a Zoho occurrence's raw fields (read-only)"
+              >
+                Inspect Occurrence
+              </button>
+            </div>
           )}
         </div>
       </div>
