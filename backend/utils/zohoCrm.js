@@ -199,7 +199,7 @@ async function updateOccurrenceNote(occId, noteText) {
 // Post a session's SOAP note to Zoho by updating the matching
 // Session_Occurrences record's Clinical_Note (mirrors the widget's Save Note).
 async function postSoapNoteToZoho(sessionId) {
-  const { data: session } = await supabase
+  const { data: session, error: selErr } = await supabase
     .from('sessions')
     .select(`
       id, session_date, scheduled_date, soap_note, notes,
@@ -208,7 +208,10 @@ async function postSoapNoteToZoho(sessionId) {
     .eq('id', sessionId)
     .single();
 
-  if (!session) return;
+  // Surface a real DB error (e.g. missing zoho_session_id column) instead of
+  // silently no-oping and reporting a false success.
+  if (selErr) throw new Error(`Failed to load session ${sessionId} for Zoho post: ${selErr.message}`);
+  if (!session) throw new Error(`Session ${sessionId} not found`);
 
   const group = session.group;
   const sessionDate = session.session_date || session.scheduled_date;
