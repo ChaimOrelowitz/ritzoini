@@ -94,6 +94,25 @@ class InsyncCoSignEngine {
     return res;
   }
 
+  // Raw-body POST with a JSON content-type. InSync's reopen endpoints expect a
+  // loosely-formatted body string (unquoted keys, URL-encoded values) — not
+  // form-encoding — so we pass the exact string through rather than serializing.
+  async _postRaw(path, rawBody, { headers } = {}) {
+    const res = await fetch(`${BASE}${path}`, {
+      method:  'POST',
+      headers: this._headers({
+        'Content-Type':     'application/json; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'Origin':           BASE,
+        'Referer':          `${BASE}/CoSignEncounterList/CoSignature?action=-1`,
+        ...headers,
+      }),
+      body: rawBody,
+    });
+    this._addCookies(res);
+    return res;
+  }
+
   // ── Login ───────────────────────────────────────────────────────────────────
 
   async login() {
@@ -347,6 +366,7 @@ class InsyncCoSignEngine {
     const totalTime = field('Total Time:');
     const startStr  = field('Start Time:');
     const endStr    = field('End Time:');
+    const mrn       = field('MRN');
 
     let dur = null;
     let tm = /(\d+)\s*hr[s]?\s*(?:(\d+)\s*min[s]?)?/i.exec(totalTime);
@@ -359,6 +379,7 @@ class InsyncCoSignEngine {
 
     return {
       ...row,
+      mrn,
       totalTime, startTimeStr: startStr, endTimeStr: endStr,
       durationMinutes: dur,
       startMins:    this._timeMins(startStr),
@@ -564,6 +585,39 @@ Respond ONLY with valid JSON, no other text:
       await sleep(500);
     }
     return { signed, failed };
+  }
+
+  // ── Reopen (send back for revision) ───────────────────────────────────────────
+
+  // Returns { allowed, message }. Reopen is hard-blocked once a billing claim has
+  // been generated for the encounter (InSync's RestrictedToReopenAfterClaimGen).
+  async checkReopenable(eid) {
+    const r = await this._postRaw('/EncounterDetail/RestrictedToReopenAfterClaimGen', `{EncounterId:'${eid}'}`);
+    if (!r.ok) return { allowed: false, message: `Reopen check failed (HTTP ${r.status})` };
+    let j = {};
+    try { j = await r.json(); } catch {}
+    const st = j.RestrictedToReopenStatus || {};
+    return st.HasAccess === 1
+      ? { allowed: true,  message: '' }
+      : { allowed: false, message: 'Cannot reopen — a billing claim has already been generated for this encounter.' };
+  }
+
+  // Reopen a single encounter with a revision reason. Checks the claim gate first.
+  async reopenNote({ eid, pid, reason }) {
+    const gate = await this.checkReopenable(eid);
+    if (!gate.allowed) return { ok: false, blocked: true, message: gate.message };
+
+    // encodeURIComponent leaves apostrophes raw, which would break the single-
+    // quoted value in InSync's loose-JSON body — encode them explicitly.
+    const enc = encodeURIComponent(reason || '').replace(/'/g, '%27');
+    const body = `{PatientId : ${pid}, EncounterId:${eid}, txtReasonToReopen:'${enc}'}`;
+    const r = await this._postRaw('/CoSignEncounterList/EditEncounter', body);
+    if (!r.ok) return { ok: false, message: `Reopen failed (HTTP ${r.status})` };
+    let j = {};
+    try { j = await r.json(); } catch {}
+    if (j.ReopenEncounterRestrictionMessage)
+      return { ok: false, blocked: true, message: j.ReopenEncounterRestrictionMessage };
+    return { ok: true, message: 'Reopened for revision' };
   }
 
   // ── Full scan ───────────────────────────────────────────────────────────────

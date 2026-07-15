@@ -179,6 +179,32 @@ router.post('/cosign/sign', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// POST /api/ps/cosign/reopen — reopen (send back to peer for revision) one or
+// more notes. Body: { notes: [{ eid, pid, reason }] }. Each note is gated on
+// InSync's claim-generated check, so billed encounters are refused per-note.
+router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { notes } = req.body;
+    if (!notes?.length) return res.status(400).json({ error: 'notes required' });
+
+    const engine = await buildEngine();
+    await engine.login();
+
+    const results = [];
+    for (const n of notes) {
+      if (!n.eid || !n.pid) { results.push({ eid: n.eid || null, ok: false, message: 'Missing encounter id' }); continue; }
+      try {
+        results.push({ eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) });
+      } catch (e) {
+        results.push({ eid: n.eid, ok: false, message: e.message });
+      }
+    }
+    res.json({ results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/ps/cosign/history — last 50 scan runs
 router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
   const { data, error } = await supabase

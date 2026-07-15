@@ -171,6 +171,24 @@ function NoteBody({ text, highlightRanges }) {
   );
 }
 
+function noteDateStr(dt) {
+  if (!dt) return '';
+  const d = new Date(dt);
+  return isNaN(d) ? String(dt).split(' ')[0] : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Pre-fills the reopen reason: a duplicate message referencing the partner note
+// for clone pairs, otherwise the note's own flag text.
+function defaultReopenReason(note, partner) {
+  if (partner) {
+    const who = partner.mrn ? `MRN# ${partner.mrn}` : (partner.patientName || 'other client');
+    return `Possible duplicate of other client's note — please revise. (${who} and ${noteDateStr(partner.visitDatetime)})`;
+  }
+  const flags = [...(note.flags || [])];
+  if (note.aiFlag && note.aiReason) flags.push(note.aiReason);
+  return flags.length ? flags.join('; ') : '';
+}
+
 function ProgressBar({ pct }) {
   return (
     <div style={{ background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden', width: '100%' }}>
@@ -236,7 +254,7 @@ function ComparePane({ note, highlightRanges }) {
   );
 }
 
-function CompareModal({ pair, onClose }) {
+function CompareModal({ pair, onClose, onReopen }) {
   const ranges = pair ? commonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
   if (!pair) return null;
   const { a, b } = pair;
@@ -265,6 +283,109 @@ function CompareModal({ pair, onClose }) {
         <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <ComparePane note={a} highlightRanges={ranges?.a} />
           <ComparePane note={b} highlightRanges={ranges?.b} />
+        </div>
+        {onReopen && (
+          <div style={{ padding: '0 20px 18px', display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn btn-outline btn-sm" onClick={() => onReopen({ title: `Reopen ${a.patientName}'s Note`, notes: [{ note: a, partner: b }] })}>
+              Reopen {a.patientName}
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={() => onReopen({ title: `Reopen ${b.patientName}'s Note`, notes: [{ note: b, partner: a }] })}>
+              Reopen {b.patientName}
+            </button>
+            <button className="btn btn-gold btn-sm" onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
+              Reopen Both
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── ReopenModal ───────────────────────────────────────────────────────────────
+
+// ctx = { title, notes: [{ note, partner }] }. Reopens (sends back to the peer
+// for revision) one or more notes, each with an editable reason. onDone receives
+// the cosignIds that were successfully reopened.
+function ReopenModal({ ctx, onClose, onDone }) {
+  const [reasons, setReasons] = useState([]);
+  const [busy,    setBusy]    = useState(false);
+  const [results, setResults] = useState(null);   // { [eid]: { ok, message } }
+
+  useEffect(() => {
+    if (ctx) { setReasons(ctx.notes.map(n => defaultReopenReason(n.note, n.partner))); setResults(null); setBusy(false); }
+  }, [ctx]);
+
+  if (!ctx) return null;
+
+  async function submit() {
+    setBusy(true);
+    try {
+      const payload = ctx.notes.map((n, i) => ({ eid: n.note.eid, pid: n.note.pid, reason: reasons[i] }));
+      const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload });
+      const byEid = {}, okIds = [];
+      (res || []).forEach(r => {
+        byEid[r.eid] = r;
+        const match = ctx.notes.find(x => x.note.eid === r.eid);
+        if (r.ok && match) okIds.push(match.note.cosignId);
+      });
+      setResults(byEid);
+      if (okIds.length) onDone(okIds);
+    } catch (ex) { alert('Reopen error: ' + ex.message); }
+    finally { setBusy(false); }
+  }
+
+  const allDone = results && ctx.notes.every(n => results[n.note.eid]);
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1100,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '40px 16px', overflowY: 'auto',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 620, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{ctx.title}</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+        </div>
+
+        <div style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+          <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--gray-600)' }}>
+            Reopening sends the note back to the peer for revision. Billed encounters cannot be reopened.
+          </p>
+          {ctx.notes.map((n, i) => {
+            const r = results?.[n.note.eid];
+            return (
+              <div key={n.note.eid || i}>
+                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)', marginBottom: 2 }}>{n.note.patientName}</div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)', marginBottom: 6 }}>
+                  {n.note.peerName} · {fmtDt(n.note.visitDatetime)}{n.note.mrn ? ` · MRN ${n.note.mrn}` : ''}
+                </div>
+                <textarea
+                  className="form-input" rows={3} value={reasons[i] || ''}
+                  onChange={e => setReasons(rs => rs.map((v, j) => j === i ? e.target.value : v))}
+                  disabled={busy || (r && r.ok)}
+                  placeholder="Reason for reopening (required)"
+                  style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
+                />
+                {r && (
+                  <div style={{ marginTop: 6, fontSize: '0.78rem', fontWeight: 600, color: r.ok ? '#15803d' : '#dc2626' }}>
+                    {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button className="btn btn-outline btn-sm" onClick={onClose}>{allDone ? 'Close' : 'Cancel'}</button>
+          {!allDone && (
+            <button className="btn btn-gold btn-sm" onClick={submit}
+              disabled={busy || reasons.some(r => !r?.trim())}>
+              {busy ? 'Reopening…' : ctx.notes.length > 1 ? `Reopen ${ctx.notes.length} Notes` : 'Reopen Note'}
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -453,8 +574,10 @@ function RunReviewTab() {
   const [selected,    setSelected]    = useState(new Set());
   const [signingIds,  setSigningIds]  = useState(new Set());
   const [signedIds,   setSignedIds]   = useState(new Set());
+  const [reopenedIds, setReopenedIds] = useState(new Set());
   const [noteModal,    setNoteModal]    = useState(null);
   const [compareModal, setCompareModal] = useState(null);   // { a, b }
+  const [reopenCtx,    setReopenCtx]    = useState(null);   // { title, notes: [{note, partner}] }
   const [history,     setHistory]     = useState([]);
   const [histLoading, setHistLoading] = useState(true);
   const esRef = useRef(null);
@@ -517,9 +640,11 @@ function RunReviewTab() {
     });
   }
 
+  const isDone = id => signedIds.has(id) || reopenedIds.has(id);
+
   function toggleAll() {
     if (!scanResult) return;
-    const unsignedFlagged = scanResult.flagged.filter(n => !signedIds.has(n.cosignId));
+    const unsignedFlagged = scanResult.flagged.filter(n => !isDone(n.cosignId));
     if (selected.size === unsignedFlagged.length) {
       setSelected(new Set());
     } else {
@@ -549,9 +674,9 @@ function RunReviewTab() {
     await signNotes(scanResult.clean, 'Sign All Clean');
   }
 
-  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !signedIds.has(n.cosignId)) : [];
-  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.cosignId) && !signedIds.has(n.cosignId)) : [];
-  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !signedIds.has(n.cosignId)) : [];
+  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !isDone(n.cosignId)) : [];
+  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.cosignId) && !isDone(n.cosignId)) : [];
+  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !isDone(n.cosignId)) : [];
 
   return (
     <div>
@@ -619,28 +744,31 @@ function RunReviewTab() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {scanResult.flagged.map(note => {
-              const id      = note.cosignId;
-              const signed  = signedIds.has(id);
-              const signing = signingIds.has(id);
-              const partner = note.clonePartnerEid
+              const id       = note.cosignId;
+              const signed   = signedIds.has(id);
+              const reopened = reopenedIds.has(id);
+              const signing  = signingIds.has(id);
+              const done     = signed || reopened;
+              const partner  = note.clonePartnerEid
                 ? scanResult.flagged.find(x => x.eid === note.clonePartnerEid)
                 : null;
               return (
                 <div key={id} style={{
-                  background: 'white', border: `1px solid ${signed ? '#bbf7d0' : 'var(--gray-200)'}`,
+                  background: 'white', border: `1px solid ${signed ? '#bbf7d0' : reopened ? '#fed7aa' : 'var(--gray-200)'}`,
                   borderRadius: 'var(--radius)', padding: '12px 16px',
-                  opacity: signed ? 0.55 : 1,
+                  opacity: done ? 0.55 : 1,
                   display: 'flex', alignItems: 'flex-start', gap: 12,
                 }}>
                   <input type="checkbox"
-                    checked={selected.has(id) && !signed}
-                    disabled={signed}
+                    checked={selected.has(id) && !done}
+                    disabled={done}
                     onChange={() => toggleSelect(id)}
                     style={{ width: 15, height: 15, marginTop: 3, flexShrink: 0 }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                       <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</span>
-                      {signed && <Chip color="gray">Signed ✓</Chip>}
+                      {signed   && <Chip color="gray">Signed ✓</Chip>}
+                      {reopened && <Chip color="orange">Reopened ↩</Chip>}
                     </div>
                     <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
                       {note.peerName} · {fmtDt(note.visitDatetime)}
@@ -655,7 +783,13 @@ function RunReviewTab() {
                       <button className="btn btn-outline btn-xs" onClick={() => setCompareModal({ a: note, b: partner })}>Compare</button>
                     )}
                     <button className="btn btn-outline btn-xs" onClick={() => setNoteModal(note)}>Read</button>
-                    {!signed && (
+                    {!done && (
+                      <button className="btn btn-outline btn-xs"
+                        onClick={() => setReopenCtx({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner }] })}>
+                        Reopen
+                      </button>
+                    )}
+                    {!done && (
                       <button className="btn btn-outline btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={signing}>
                         {signing ? '…' : 'Sign'}
                       </button>
@@ -685,7 +819,12 @@ function RunReviewTab() {
       {!histLoading && <HistoryAccordion history={history} onCompare={setCompareModal} />}
 
       <NoteModal note={noteModal} onClose={() => setNoteModal(null)} />
-      <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} />
+      <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} onReopen={ctx => { setCompareModal(null); setReopenCtx(ctx); }} />
+      <ReopenModal
+        ctx={reopenCtx}
+        onClose={() => setReopenCtx(null)}
+        onDone={ids => setReopenedIds(s => new Set([...s, ...ids]))}
+      />
     </div>
   );
 }
