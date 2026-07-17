@@ -106,30 +106,6 @@ export const api = {
   put:    (path, body)  => authFetch(`/api${path}`, { method: 'PUT',    body: JSON.stringify(body) }),
   patch:  (path, body)  => authFetch(`/api${path}`, { method: 'PATCH',  body: JSON.stringify(body) }),
   delete: (path)        => authFetch(`/api${path}`, { method: 'DELETE' }),
-  // Binary/attachment downloads. authFetch always parses JSON, so a PDF or CSV
-  // body has to bypass it; the JWT still has to be attached by hand.
-  download: async (path, filename) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const token = session?.access_token;
-    const res = await fetch(`${API}/api${path}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    });
-    if (!res.ok) {
-      let msg = `Download failed (${res.status})`;
-      try { msg = (await res.json()).error || msg; } catch { /* not json */ }
-      throw new Error(msg);
-    }
-    const blob = await res.blob();
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  },
-
   postForm: async (path, formData) => {
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;

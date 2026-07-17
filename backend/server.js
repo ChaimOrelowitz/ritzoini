@@ -43,7 +43,6 @@ app.use('/api/oo/peer-digest',   require('./routes/ooPeerDigest'));
 app.use('/api/settings',         require('./routes/settings'));
 app.use('/api/zoom',             require('./routes/zoomWebhooks'));
 app.use('/api/ps',               require('./routes/peerSupervision'));
-app.use('/api/ps/payroll',       require('./routes/psPayroll'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

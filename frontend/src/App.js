@@ -19,8 +19,9 @@ import OOCallsPage from './pages/OOCallsPage';
 import OOCallListPage from './pages/OOCallListPage';
 import OOTranscriptsPage from './pages/OOTranscriptsPage';
 import OOPeerNotesPage from './pages/OOPeerNotesPage';
-import PeerManagementPage from './pages/PeerManagementPage';
+import PeerSupervisionPage from './pages/PeerSupervisionPage';
 import PSCoSignPage from './pages/PSCoSignPage';
+import PSCaseloadPage from './pages/PSCaseloadPage';
 
 function PrivateRoute({ children, adminOnly = false }) {
   const { user, profile, loading } = useAuth();
@@ -70,8 +71,10 @@ export default function App() {
           <Route path="oo/sessions" element={<ComingSoonPage title="One-On-One Sessions" />} />
           <Route path="oo/payments" element={<ComingSoonPage title="One-On-One Payments" />} />
 
-          {/* Peer Management section */}
-          <Route path="ps" element={<PeerManagementPage />} />
+          {/* Peer Supervision section */}
+          <Route path="ps" element={<PeerSupervisionPage />} />
+          <Route path="ps/sessions" element={<PeerSupervisionPage />} />
+          <Route path="ps/caseload" element={<PSCaseloadPage />} />
           <Route path="ps/cosign" element={
             <PrivateRoute adminOnly><PSCoSignPage /></PrivateRoute>
           } />
