@@ -8,9 +8,15 @@ const KEY  = process.env.AIRTABLE_API_KEY;
 const BASE = process.env.AIRTABLE_PEER_BASE_ID;
 
 const TABLES = {
-  peers:       'tblAw7MiEuA8utEGs',
-  supervisors: 'tblxDAa8jGTpKwITU',
+  peers:                'tblAw7MiEuA8utEGs',
+  supervisors:          'tblxDAa8jGTpKwITU',
+  supervisionSchedule:  'tblpDjzRkY8ChzaSt',
+  supervisionSessions:  'tblF13XqYD3MD54Cl',
 };
+
+const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const dowIndex = name => { const i = DOW.indexOf(name); return i === -1 ? 99 : i; };
+const first = v => Array.isArray(v) ? (v[0] ?? null) : (v ?? null);
 
 const PEER_FIELDS = [
   'Peer Name', 'Status', 'Supervision Cohort', 'Peer Email', 'Peer Phone',
@@ -80,4 +86,78 @@ async function fetchPeers(peerIds) {
   }));
 }
 
-module.exports = { fetchCaseloadPeerIds, fetchPeers, TABLES };
+// The supervisor's recurring supervision slots (their "Supervision Schedule"
+// link field), by record ID -- same rename-proof pattern as the caseload.
+async function fetchSupervisionSchedule(supervisorId) {
+  const rec     = await call(`${TABLES.supervisors}/${supervisorId}`);
+  const slotIds = rec.fields?.['Supervision Schedule'] || [];
+  if (!slotIds.length) return [];
+
+  const formula = `OR(${slotIds.map(id => `RECORD_ID()='${id}'`).join(',')})`;
+  const fields  = ['Session Slot Name', 'Day of Week', 'Start Time', 'End Time',
+                   'Supervision Cohort', 'Frequency', 'Session Slot Active?',
+                   'Manual Session', 'Session Zoom Link', 'Session Phone Number'];
+  const params  = [
+    `filterByFormula=${encodeURIComponent(formula)}`,
+    'pageSize=50',
+    ...fields.map(f => 'fields[]=' + encodeURIComponent(f)),
+  ];
+  const page = await call(TABLES.supervisionSchedule, params);
+
+  return (page.records || []).map(r => ({
+    airtable_id: r.id,
+    name:        first(r.fields['Session Slot Name']),
+    day:         first(r.fields['Day of Week']),
+    start:       first(r.fields['Start Time']),
+    end:         first(r.fields['End Time']),
+    cohort:      first(r.fields['Supervision Cohort']),
+    frequency:   first(r.fields['Frequency']),
+    active:      r.fields['Session Slot Active?'] === true,
+    manual:      r.fields['Manual Session'] === true,
+    zoom:        first(r.fields['Session Zoom Link']),
+    phone:       first(r.fields['Session Phone Number']),
+  })).sort((a, b) => (dowIndex(a.day) - dowIndex(b.day)) || String(a.start).localeCompare(String(b.start)));
+}
+
+// Individual supervision sessions the supervisor runs -- matched via the slot's
+// supervisor lookup and the manual-supervisor link, so both recurring and
+// one-off sessions are caught. Newest first, capped to a recent window.
+async function fetchSupervisionSessions(supervisorId, { limit = 100 } = {}) {
+  const cond = f => `FIND("${supervisorId}",ARRAYJOIN({${f}}))>0`;
+  const formula = `OR(${cond('Supervisor (from Session Slot)')},${cond('Supervisor (Manual)')})`;
+  const fields  = ['Session Date', 'Status', 'Session Slot Name (from Session Slot)',
+                   'Display Start Time', 'Display End Time', 'Day of Week',
+                   'Supervision Cohort (from Session Slot)', 'Peers Attended'];
+  const params  = [
+    `filterByFormula=${encodeURIComponent(formula)}`,
+    'sort[0][field]=Session Date', 'sort[0][direction]=desc',
+    `pageSize=${Math.min(limit, 100)}`,
+    ...fields.map(f => 'fields[]=' + encodeURIComponent(f)),
+  ];
+
+  const out = [];
+  let offset;
+  do {
+    const page = await call(TABLES.supervisionSessions, offset ? [...params, `offset=${offset}`] : params);
+    out.push(...page.records);
+    offset = out.length < limit ? page.offset : undefined;
+  } while (offset);
+
+  return out.slice(0, limit).map(r => ({
+    airtable_id: r.id,
+    date:        r.fields['Session Date'] || null,
+    day:         r.fields['Day of Week'] || null,
+    start:       first(r.fields['Display Start Time']),
+    end:         first(r.fields['Display End Time']),
+    cohort:      first(r.fields['Supervision Cohort (from Session Slot)']),
+    slot_name:   first(r.fields['Session Slot Name (from Session Slot)']),
+    status:      r.fields['Status'] || null,
+    attended:    r.fields['Peers Attended'] ?? null,
+  }));
+}
+
+module.exports = {
+  fetchCaseloadPeerIds, fetchPeers,
+  fetchSupervisionSchedule, fetchSupervisionSessions,
+  TABLES,
+};

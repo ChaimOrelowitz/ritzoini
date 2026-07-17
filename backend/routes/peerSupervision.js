@@ -4,6 +4,7 @@ const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { InsyncCoSignEngine } = require('../utils/peerSupervisorEngine');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
+const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
 // ── Co-Sign ───────────────────────────────────────────────────────────────────
 
@@ -306,6 +307,23 @@ router.get('/caseload/runs', requireAuth, async (req, res) => {
       .from('ps_sync_runs').select('*').order('ran_at', { ascending: false }).limit(30);
     if (error) throw new Error(error.message);
     res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/ps/supervision — the supervisor's recurring schedule + their
+// individual supervision sessions, live from Airtable (read-only).
+router.get('/supervision', requireAuth, async (req, res) => {
+  try {
+    const sup = req.query.supervisor_id || SUPERVISOR();
+    if (!sup) return res.status(400).json({ error: 'No supervisor configured' });
+
+    const [schedule, sessions] = await Promise.all([
+      fetchSupervisionSchedule(sup),
+      fetchSupervisionSessions(sup, { limit: 100 }),
+    ]);
+    res.json({ schedule, sessions });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

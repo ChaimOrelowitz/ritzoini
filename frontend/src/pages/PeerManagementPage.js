@@ -53,22 +53,25 @@ export default function PeerManagementPage() {
   const [knownPeers, setKnownPeers] = useState([]);
   const [periods,    setPeriods]    = useState([]);
   const [runs,       setRuns]       = useState([]);
+  const [supervision,setSupervision]= useState({ schedule: [], sessions: [] });
   const [loading,    setLoading]    = useState(true);
   const [syncing,    setSyncing]    = useState(false);
 
   const load = useCallback(async () => {
-    const [c, h, k, p, r] = await Promise.all([
+    const [c, h, k, p, r, s] = await Promise.all([
       api.get('/ps/caseload').catch(() => []),
       api.get('/ps/caseload/history').catch(() => []),
       api.get('/ps/caseload/known-peers').catch(() => []),
       api.get('/ps/payroll/periods').catch(() => []),
       api.get('/ps/caseload/runs').catch(() => []),
+      api.get('/ps/supervision').catch(() => ({ schedule: [], sessions: [] })),
     ]);
     setCaseload(Array.isArray(c) ? c : []);
     setHistory(Array.isArray(h) ? h : []);
     setKnownPeers(Array.isArray(k) ? k : []);
     setPeriods(Array.isArray(p) ? p : []);
     setRuns(Array.isArray(r) ? r : []);
+    setSupervision(s && s.schedule ? s : { schedule: [], sessions: [] });
     setLoading(false);
   }, []);
 
@@ -92,9 +95,10 @@ export default function PeerManagementPage() {
   if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
 
   const TABS = [
-    ['peers',   `Peers (${caseload.length})`],
-    ['dates',   `Start / End Dates (${history.length})`],
-    ['payroll', `Payroll Report (${periods.length})`],
+    ['peers',    `Peers (${caseload.length})`],
+    ['dates',    `Start / End Dates (${history.length})`],
+    ['payroll',  `Payroll Report (${periods.length})`],
+    ['sessions', `Supervision Sessions`],
   ];
 
   return (
@@ -126,10 +130,77 @@ export default function PeerManagementPage() {
         ))}
       </div>
 
-      {tab === 'peers'   && <PeersTab rows={caseload} />}
-      {tab === 'dates'   && <DatesTab history={history} knownPeers={knownPeers} reload={load} />}
-      {tab === 'payroll' && <PayrollTab periods={periods} reload={load} />}
+      {tab === 'peers'    && <PeersTab rows={caseload} />}
+      {tab === 'dates'    && <DatesTab history={history} knownPeers={knownPeers} reload={load} />}
+      {tab === 'payroll'  && <PayrollTab periods={periods} reload={load} />}
+      {tab === 'sessions' && <SessionsTab schedule={supervision.schedule} sessions={supervision.sessions} />}
     </div>
+  );
+}
+
+// ── Supervision Sessions ──────────────────────────────────────────
+
+function SessionsTab({ schedule, sessions }) {
+  const slotLabel = s => {
+    if (s.manual || !s.day) return 'Manual session';
+    const freq = s.frequency ? ` · ${s.frequency}` : '';
+    return `${s.day}s · ${s.start}–${s.end}${freq}`;
+  };
+
+  return (
+    <>
+      <h3 style={{ margin: '0 0 10px', fontSize: '0.95rem', fontWeight: 700, color: 'var(--navy)' }}>
+        Recurring schedule
+      </h3>
+      {!schedule.length ? <Empty>No supervision schedule in Airtable yet.</Empty> : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
+          {schedule.map(s => (
+            <div key={s.airtable_id} style={{
+              background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)',
+              padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap',
+              opacity: s.active ? 1 : 0.55,
+            }}>
+              <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{slotLabel(s)}</span>
+              {s.cohort && <Tag bg="#eef2ff" fg="#3730a3">Cohort {s.cohort}</Tag>}
+              {!s.active && <Tag bg="#f3f4f6" fg="#6b7280">inactive</Tag>}
+              <div style={{ flex: 1 }} />
+              {s.zoom  && <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>Zoom: {s.zoom}</span>}
+              {s.phone && s.phone !== 'unknown' && <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>☎ {s.phone}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <h3 style={{ margin: '0 0 10px', fontSize: '0.95rem', fontWeight: 700, color: 'var(--navy)' }}>
+        Sessions {sessions.length ? `(${sessions.length})` : ''}
+      </h3>
+      {!sessions.length ? (
+        <Empty>
+          No individual supervision sessions recorded in Airtable yet. As sessions are held and
+          logged there, they’ll appear here automatically.
+        </Empty>
+      ) : (
+        <table style={tbl}>
+          <thead><tr style={hrow}>
+            <th style={th}>Date</th><th style={th}>Day</th><th style={th}>Time</th>
+            <th style={th}>Cohort</th><th style={th}>Status</th>
+            <th style={{ ...th, textAlign: 'right' }}>Attended</th>
+          </tr></thead>
+          <tbody>
+            {sessions.map(s => (
+              <tr key={s.airtable_id} style={trow}>
+                <td style={{ ...td, fontWeight: 600, color: 'var(--navy)', whiteSpace: 'nowrap' }}>{fmt(s.date)}</td>
+                <td style={td}>{s.day || '—'}</td>
+                <td style={{ ...td, whiteSpace: 'nowrap' }}>{s.start ? `${s.start}–${s.end}` : '—'}</td>
+                <td style={td}>{s.cohort || '—'}</td>
+                <td style={td}>{s.status || '—'}</td>
+                <td style={{ ...td, textAlign: 'right', color: 'var(--gray-500)' }}>{s.attended ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
   );
 }
 
