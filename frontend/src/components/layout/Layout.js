@@ -106,9 +106,6 @@ export default function Layout() {
         <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">☑</span> Schedule
         </NavLink>
-        <NavLink to="/ps/caseload" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">👥</span> My Caseload
-        </NavLink>
         {isAdmin && (
           <NavLink to="/ps/cosign" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">✍</span> Co-Sign Review

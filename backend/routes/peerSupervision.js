@@ -3,7 +3,6 @@ const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { InsyncCoSignEngine } = require('../utils/peerSupervisorEngine');
-const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 
 // ── Cohorts ───────────────────────────────────────────────────────
 
@@ -269,114 +268,6 @@ router.post('/cosign/cron', async (req, res) => {
     });
     res.json({ ok: true, total: flagged.length + clean.length, flagged: flagged.length, clean: clean.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Caseload ──────────────────────────────────────────────────────
-
-const SUPERVISOR = () => process.env.AIRTABLE_SUPERVISOR_RECORD_ID;
-
-// GET /api/ps/caseload — peers currently on the caseload, with entry dates
-router.get('/caseload', requireAuth, async (req, res) => {
-  try {
-    const sup = req.query.supervisor_id || SUPERVISOR();
-
-    const { data: periods, error: pe } = await supabase
-      .from('ps_caseload_periods')
-      .select('*')
-      .eq('supervisor_airtable_id', sup)
-      .is('left_on', null);
-    if (pe) throw new Error(pe.message);
-
-    const ids = (periods || []).map(p => p.peer_airtable_id);
-    const { data: peers, error: qe } = ids.length
-      ? await supabase.from('ps_peers').select('*').in('airtable_id', ids)
-      : { data: [], error: null };
-    if (qe) throw new Error(qe.message);
-
-    const byId = new Map((peers || []).map(p => [p.airtable_id, p]));
-    const rows = (periods || [])
-      .map(p => ({ ...(byId.get(p.peer_airtable_id) || {}), ...p, period_id: p.id }))
-      .sort((a, b) => (a.peer_name || '').localeCompare(b.peer_name || ''));
-
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/ps/caseload/history — every stint, open and closed (payroll view)
-router.get('/caseload/history', requireAuth, async (req, res) => {
-  try {
-    const sup = req.query.supervisor_id || SUPERVISOR();
-    const { data, error } = await supabase
-      .from('ps_caseload_periods')
-      .select('*')
-      .eq('supervisor_airtable_id', sup)
-      .order('entered_on', { ascending: false });
-    if (error) throw new Error(error.message);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// PATCH /api/ps/caseload/periods/:id — hand-correct an entry/exit date
-router.patch('/caseload/periods/:id', requireAuth, async (req, res) => {
-  try {
-    const { entered_on, left_on, note } = req.body;
-    const updates = { updated_at: new Date().toISOString(), source: 'manual' };
-    if (entered_on !== undefined) updates.entered_on = entered_on;
-    if (left_on    !== undefined) updates.left_on    = left_on || null;
-    if (note       !== undefined) updates.note       = note;
-
-    const { data, error } = await supabase
-      .from('ps_caseload_periods')
-      .update(updates).eq('id', req.params.id).select().single();
-    if (error) throw new Error(error.message);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET /api/ps/caseload/runs — recent poll history
-router.get('/caseload/runs', requireAuth, async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('ps_sync_runs').select('*').order('ran_at', { ascending: false }).limit(30);
-    if (error) throw new Error(error.message);
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/ps/caseload/sync — manual "Sync now"; ?dry=1 to preview
-router.post('/caseload/sync', requireAuth, async (req, res) => {
-  try {
-    const result = await syncCaseload({
-      dryRun:     req.query.dry === '1',
-      allowEmpty: req.query.allow_empty === '1',
-    });
-    res.json(result);
-  } catch (err) {
-    await logFailure(SUPERVISOR(), err).catch(() => {});
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/ps/caseload/cron — the daily poll (cron-secret protected)
-router.post('/caseload/cron', async (req, res) => {
-  const secret   = process.env.CRON_SECRET;
-  const provided = req.headers['x-cron-secret'] || req.query.secret;
-  if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    const result = await syncCaseload({});
-    res.json({ ok: true, ...result });
-  } catch (err) {
-    await logFailure(SUPERVISOR(), err).catch(() => {});
     res.status(500).json({ error: err.message });
   }
 });
