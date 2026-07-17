@@ -5,7 +5,7 @@ import { useAuth } from '../../context/AuthContext';
 const SECTIONS = [
   { key: 'ritzoini',   label: 'Ritzoini' },
   { key: 'one-on-one', label: 'One-On-One' },
-  { key: 'peer-sup',   label: 'Peer Supervision' },
+  { key: 'peer-sup',   label: 'Peer Management' },
 ];
 
 function getInitialSection() {
@@ -104,10 +104,7 @@ export default function Layout() {
     'peer-sup': (
       <>
         <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">☑</span> Schedule
-        </NavLink>
-        <NavLink to="/ps/caseload" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
-          <span className="nav-icon">👥</span> My Caseload
+          <span className="nav-icon">👥</span> Peer Management
         </NavLink>
         {isAdmin && (
           <NavLink to="/ps/cosign" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
