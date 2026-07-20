@@ -21,6 +21,71 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// ── AI prompts ────────────────────────────────────────────────────────────────
+// Both prompts are editable from the PS Settings tab (persisted in app_settings)
+// so the QA criteria can be tuned without a deploy. They use {{token}}
+// placeholders filled by renderPrompt below — deliberately NOT JS template
+// literals, so an operator-edited string is only ever substituted into, never
+// executed. An unknown token renders empty rather than throwing.
+
+const DEFAULT_COHERENCE_PROMPT = `You are a QA reviewer for peer support session documentation. Review this note and flag clear, defensible problems (not minor nitpicks).
+
+STATED TOTAL DURATION: {{duration}}
+
+SESSION NARRATIVE (what the note says happened, including any per-activity minute breakdown):
+---
+{{narrative}}
+---
+
+TREATMENT PLAN (the client's documented goals and interventions — this is the ANCHOR for judging clinical fit):
+---
+{{plan}}
+---
+
+DIAGNOSES (context only): {{dx}}
+
+The above sections contain the COMPLETE note content — nothing is truncated. Do not remark on the note being cut off.
+
+Evaluate THREE things and flag if ANY shows a clear problem:
+
+1. ACTIVITY-TIME ARITHMETIC: The narrative often breaks the session into timed chunks (e.g. "the first 30 minutes...", "the next 25 minutes..."). If it does, add those minutes up and compare to the STATED TOTAL DURATION. Flag a clear mismatch — the chunks summing to well under the total (padded/over-billed time) or well over it. Allow small rounding differences; only flag a material gap. If the narrative gives no per-activity minutes, skip this check.
+
+2. DURATION vs NARRATIVE DEPTH: Does the amount and depth of activity described plausibly fit the stated total duration? A short session (e.g. 30 min) crammed with many deep interventions is implausible; a long session (e.g. 2 hr) described in one or two thin sentences is also implausible.
+
+3. SESSION vs TREATMENT PLAN (anchor): Do the focus, activities, and interventions in the session align with the documented treatment plan? If the session describes work unrelated to any plan goal or intervention, flag it. Use the treatment plan as the anchor; the diagnosis is only supporting context.
+
+Respond ONLY with valid JSON, no other text:
+{"flag": true or false, "reason": "one specific sentence naming the concern if flagged (for an arithmetic mismatch, state the numbers — e.g. 'activities sum to 80 min but 2 hr billed'), null if coherent"}`;
+
+const DEFAULT_CLONE_PROMPT = `You are a documentation-integrity reviewer for peer support services. You are given TWO session notes. Decide whether one appears COPIED from the other (or both pasted from a shared template) rather than genuinely written for each specific session.
+
+Do NOT flag legitimate similarity. Peer support sessions legitimately recur: the same client, or different clients, may do the same activities (e.g. go for a walk), use the same interventions, and be documented in the peer's consistent writing style. Similar structure, similar activities, and a repetitive "Patient's Response/Content" section are NORMAL and are NOT evidence of copying on their own.
+
+DO flag as a copy when there is clear evidence the note was not individually written for this session, such as:
+- Long verbatim or near-verbatim passages describing what happened (especially the "Focus of the meeting" and activities narrative) that are essentially identical between the two notes.
+- A note that references the WRONG person — a different client's name, or mismatched gender/pronouns — a tell that another client's note was pasted.
+- Generic boilerplate with no concrete detail specific to this particular session.
+- Internal contradictions that indicate careless copying.
+
+This applies whether the two notes are for the SAME client (a prior session recycled) or DIFFERENT clients (one client's note reused for another).
+
+NOTE A — client: {{a_name}}, date: {{a_date}}:
+---
+{{a_content}}
+---
+NOTE B — client: {{b_name}}, date: {{b_date}}:
+---
+{{b_content}}
+---
+
+Respond ONLY with valid JSON, no other text:
+{"copy": true or false, "reason": "one specific sentence naming the concrete evidence (verbatim passage, wrong name/pronoun, etc.) if copy is true, else null"}`;
+
+function renderPrompt(template, vars) {
+  return String(template || '').replace(/\{\{(\w+)\}\}/g, (_m, key) =>
+    vars[key] === undefined || vars[key] === null ? '' : String(vars[key]));
+}
+
 // Bigram count map for a string (built once per note, reused across compares).
 function bigramMap(s) {
   const m = new Map();
@@ -42,13 +107,17 @@ function bigramSimFromMaps(ma, la, mb, lb) {
 }
 
 class InsyncCoSignEngine {
-  constructor({ username, password, anthropicKey, providerId, noSchoolStart, noSchoolEnd }) {
+  constructor({ username, password, anthropicKey, providerId, noSchoolStart, noSchoolEnd,
+                coherencePrompt, clonePrompt } = {}) {
     this.username      = username;
     this.password      = password;
     this.anthropicKey  = anthropicKey;
     this.providerId    = providerId || '2317';
     this.noSchoolStart = noSchoolStart || '';
     this.noSchoolEnd   = noSchoolEnd   || '';
+    // Operator-editable (PS Settings tab); fall back to the shipped defaults.
+    this.coherencePrompt = (coherencePrompt || '').trim() || DEFAULT_COHERENCE_PROMPT;
+    this.clonePrompt     = (clonePrompt     || '').trim() || DEFAULT_CLONE_PROMPT;
     this.jar           = new Map();
   }
 
@@ -548,29 +617,14 @@ class InsyncCoSignEngine {
     const anthropic = new Anthropic({ apiKey: this.anthropicKey });
     const clip = s => (s || '').slice(0, 6000);
 
-    const prompt = `You are a documentation-integrity reviewer for peer support services. You are given TWO session notes. Decide whether one appears COPIED from the other (or both pasted from a shared template) rather than genuinely written for each specific session.
-
-Do NOT flag legitimate similarity. Peer support sessions legitimately recur: the same client, or different clients, may do the same activities (e.g. go for a walk), use the same interventions, and be documented in the peer's consistent writing style. Similar structure, similar activities, and a repetitive "Patient's Response/Content" section are NORMAL and are NOT evidence of copying on their own.
-
-DO flag as a copy when there is clear evidence the note was not individually written for this session, such as:
-- Long verbatim or near-verbatim passages describing what happened (especially the "Focus of the meeting" and activities narrative) that are essentially identical between the two notes.
-- A note that references the WRONG person — a different client's name, or mismatched gender/pronouns — a tell that another client's note was pasted.
-- Generic boilerplate with no concrete detail specific to this particular session.
-- Internal contradictions that indicate careless copying.
-
-This applies whether the two notes are for the SAME client (a prior session recycled) or DIFFERENT clients (one client's note reused for another).
-
-NOTE A — client: ${a.patientName || 'unknown'}, date: ${a.visitDate || a.visitDatetime || 'unknown'}:
----
-${clip(a.sessionContent)}
----
-NOTE B — client: ${b.patientName || 'unknown'}, date: ${b.visitDate || b.visitDatetime || 'unknown'}:
----
-${clip(b.sessionContent)}
----
-
-Respond ONLY with valid JSON, no other text:
-{"copy": true or false, "reason": "one specific sentence naming the concrete evidence (verbatim passage, wrong name/pronoun, etc.) if copy is true, else null"}`;
+    const prompt = renderPrompt(this.clonePrompt, {
+      a_name:    a.patientName || 'unknown',
+      a_date:    a.visitDate || a.visitDatetime || 'unknown',
+      a_content: clip(a.sessionContent),
+      b_name:    b.patientName || 'unknown',
+      b_date:    b.visitDate || b.visitDatetime || 'unknown',
+      b_content: clip(b.sessionContent),
+    });
 
     try {
       const msg = await anthropic.messages.create({
@@ -593,34 +647,12 @@ Respond ONLY with valid JSON, no other text:
     const plan       = (note.treatmentPlan || '').slice(0, 8000);
     const dx         = (note.diagnosis || '').slice(0, 1500);
 
-    const prompt = `You are a QA reviewer for peer support session documentation. Review this note and flag clear, defensible problems (not minor nitpicks).
-
-STATED TOTAL DURATION: ${duration}
-
-SESSION NARRATIVE (what the note says happened, including any per-activity minute breakdown):
----
-${narrative}
----
-
-TREATMENT PLAN (the client's documented goals and interventions — this is the ANCHOR for judging clinical fit):
----
-${plan || '(not found in note)'}
----
-
-DIAGNOSES (context only): ${dx || '(not found)'}
-
-The above sections contain the COMPLETE note content — nothing is truncated. Do not remark on the note being cut off.
-
-Evaluate THREE things and flag if ANY shows a clear problem:
-
-1. ACTIVITY-TIME ARITHMETIC: The narrative often breaks the session into timed chunks (e.g. "the first 30 minutes...", "the next 25 minutes..."). If it does, add those minutes up and compare to the STATED TOTAL DURATION. Flag a clear mismatch — the chunks summing to well under the total (padded/over-billed time) or well over it. Allow small rounding differences; only flag a material gap. If the narrative gives no per-activity minutes, skip this check.
-
-2. DURATION vs NARRATIVE DEPTH: Does the amount and depth of activity described plausibly fit the stated total duration? A short session (e.g. 30 min) crammed with many deep interventions is implausible; a long session (e.g. 2 hr) described in one or two thin sentences is also implausible.
-
-3. SESSION vs TREATMENT PLAN (anchor): Do the focus, activities, and interventions in the session align with the documented treatment plan? If the session describes work unrelated to any plan goal or intervention, flag it. Use the treatment plan as the anchor; the diagnosis is only supporting context.
-
-Respond ONLY with valid JSON, no other text:
-{"flag": true or false, "reason": "one specific sentence naming the concern if flagged (for an arithmetic mismatch, state the numbers — e.g. 'activities sum to 80 min but 2 hr billed'), null if coherent"}`;
+    const prompt = renderPrompt(this.coherencePrompt, {
+      duration,
+      narrative,
+      plan: plan || '(not found in note)',
+      dx:   dx   || '(not found)',
+    });
 
     try {
       const msg = await anthropic.messages.create({
@@ -789,4 +821,4 @@ Respond ONLY with valid JSON, no other text:
   }
 }
 
-module.exports = { InsyncCoSignEngine };
+module.exports = { InsyncCoSignEngine, DEFAULT_COHERENCE_PROMPT, DEFAULT_CLONE_PROMPT };

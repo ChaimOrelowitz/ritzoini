@@ -533,7 +533,9 @@ function SettingsTab() {
   const [form, setForm] = useState({
     insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
+    prompt_coherence: '', prompt_clone: '',
   });
+  const [defaults, setDefaults] = useState({ prompt_coherence: '', prompt_clone: '' });
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
@@ -548,6 +550,12 @@ function SettingsTab() {
         no_school_start:   s.no_school_start   || '',
         no_school_end:     s.no_school_end     || '',
         provider_id:       s.provider_id       || '',
+        prompt_coherence:  s.prompt_coherence  || '',
+        prompt_clone:      s.prompt_clone      || '',
+      });
+      setDefaults({
+        prompt_coherence: s.default_prompt_coherence || '',
+        prompt_clone:     s.default_prompt_clone     || '',
       });
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
@@ -624,10 +632,91 @@ function SettingsTab() {
         </div>
       </section>
 
+      <PromptEditor
+        title="AI Prompt — Note QA Review"
+        help="Runs on every note. Edit the criteria the AI flags on."
+        tokens={['{{duration}}', '{{narrative}}', '{{plan}}', '{{dx}}']}
+        value={form.prompt_coherence}
+        onChange={v => setForm(f => ({ ...f, prompt_coherence: v }))}
+        defaultValue={defaults.prompt_coherence}
+        requiredKeys={['"flag"', '"reason"']}
+      />
+
+      <PromptEditor
+        title="AI Prompt — Duplicate / Copied-Note Judge"
+        help="Runs only on candidate pairs. Edit what counts as a copy vs. legitimate repetition."
+        tokens={['{{a_name}}', '{{a_date}}', '{{a_content}}', '{{b_name}}', '{{b_date}}', '{{b_content}}']}
+        value={form.prompt_clone}
+        onChange={v => setForm(f => ({ ...f, prompt_clone: v }))}
+        defaultValue={defaults.prompt_clone}
+        requiredKeys={['"copy"', '"reason"']}
+      />
+
       <button className="btn btn-gold" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
         {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Settings'}
       </button>
     </div>
+  );
+}
+
+// Editor for one AI prompt. Warns (without blocking) when an edit drops a data
+// placeholder or the JSON contract — both fail silently at scan time otherwise:
+// a missing token hides part of the note from the AI, and a broken JSON shape
+// makes the parse throw and the note come back "clean".
+function PromptEditor({ title, help, tokens, value, onChange, defaultValue, requiredKeys }) {
+  const isDefault    = !value.trim() || value.trim() === (defaultValue || '').trim();
+  const missingToken = tokens.filter(t => !value.includes(t));
+  const missingJson  = requiredKeys.filter(k => !value.includes(k));
+  const warn = value.trim() && (missingToken.length || missingJson.length);
+
+  return (
+    <section style={sectionStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <p style={{ ...sectionLabel, margin: 0 }}>{title}</p>
+        <button type="button" className="btn btn-outline btn-xs"
+          onClick={() => onChange(defaultValue || '')}
+          disabled={isDefault}
+          title="Restore the built-in prompt">
+          Reset to default
+        </button>
+      </div>
+      <p style={{ margin: '8px 0 10px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>{help}</p>
+
+      <textarea
+        className="form-input" rows={14}
+        value={value} onChange={e => onChange(e.target.value)}
+        placeholder={defaultValue}
+        spellCheck={false}
+        style={{ width: '100%', resize: 'vertical', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.76rem', lineHeight: 1.55 }}
+      />
+
+      <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
+        Placeholders — keep these, they inject the note's data:{' '}
+        {tokens.map((t, i) => (
+          <code key={t} style={{
+            background: value.includes(t) ? '#f1f5f9' : '#fef2f2',
+            color:      value.includes(t) ? 'var(--gray-600)' : '#dc2626',
+            border: '1px solid var(--gray-200)', borderRadius: 3, padding: '1px 5px',
+            marginRight: 4, display: 'inline-block', marginTop: 3,
+          }}>{t}{i < 0 ? ',' : ''}</code>
+        ))}
+      </div>
+
+      {warn ? (
+        <div style={{ marginTop: 10, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 'var(--radius)', fontSize: '0.76rem', color: '#dc2626' }}>
+          {missingToken.length > 0 && (
+            <div>⚠ Missing placeholder{missingToken.length > 1 ? 's' : ''}: {missingToken.join(', ')} — the AI won't see that part of the note.</div>
+          )}
+          {missingJson.length > 0 && (
+            <div>⚠ The closing JSON instruction must still ask for {missingJson.join(' and ')} — otherwise every note silently comes back clean.</div>
+          )}
+        </div>
+      ) : (
+        <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--gray-400)' }}>
+          {isDefault ? 'Using the built-in default.' : '✓ Custom prompt — placeholders and JSON contract look intact.'}
+        </div>
+      )}
+    </section>
   );
 }
 

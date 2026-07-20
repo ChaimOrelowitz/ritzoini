@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { InsyncCoSignEngine } = require('../utils/peerSupervisorEngine');
+const { InsyncCoSignEngine, DEFAULT_COHERENCE_PROMPT, DEFAULT_CLONE_PROMPT } = require('../utils/peerSupervisorEngine');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -11,7 +11,8 @@ const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils
 async function buildEngine() {
   const { data: rows } = await supabase.from('app_settings').select('key, value')
     .in('key', ['insync_username','insync_password','insync_provider_id',
-                'ps_no_school_start','ps_no_school_end','anthropic_api_key']);
+                'ps_no_school_start','ps_no_school_end','anthropic_api_key',
+                'ps_prompt_coherence','ps_prompt_clone']);
   const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
   return new InsyncCoSignEngine({
     username:      S.insync_username    || process.env.INSYNC_USERNAME      || '',
@@ -20,6 +21,8 @@ async function buildEngine() {
     providerId:    S.insync_provider_id || process.env.INSYNC_PROVIDER_ID   || '2317',
     noSchoolStart: S.ps_no_school_start || '',
     noSchoolEnd:   S.ps_no_school_end   || '',
+    coherencePrompt: S.ps_prompt_coherence || '',
+    clonePrompt:     S.ps_prompt_clone     || '',
   });
 }
 
@@ -123,7 +126,8 @@ router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
 // POST /api/ps/cosign/settings
 router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { no_school_start, no_school_end, provider_id, insync_username, insync_password, anthropic_api_key } = req.body;
+    const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
+            anthropic_api_key, prompt_coherence, prompt_clone } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
@@ -131,6 +135,10 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       insync_username,
       insync_password,
       anthropic_api_key,
+      // Empty string is meaningful: it clears the override and reverts to the
+      // shipped default (the engine falls back when the stored value is blank).
+      ps_prompt_coherence: prompt_coherence,
+      ps_prompt_clone:     prompt_clone,
     };
     for (const [key, value] of Object.entries(map))
       if (value !== undefined && value !== null)
@@ -145,7 +153,8 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
 router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   const { data } = await supabase.from('app_settings').select('key, value')
     .in('key', ['ps_no_school_start','ps_no_school_end','insync_provider_id',
-                'insync_username','insync_password','anthropic_api_key']);
+                'insync_username','insync_password','anthropic_api_key',
+                'ps_prompt_coherence','ps_prompt_clone']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
     no_school_start:   S.ps_no_school_start || '07/01',
@@ -154,6 +163,10 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
     insync_username:   S.insync_username     || '',
     insync_password:   S.insync_password     || '',
     anthropic_api_key: S.anthropic_api_key   || '',
+    prompt_coherence:  S.ps_prompt_coherence || DEFAULT_COHERENCE_PROMPT,
+    prompt_clone:      S.ps_prompt_clone     || DEFAULT_CLONE_PROMPT,
+    default_prompt_coherence: DEFAULT_COHERENCE_PROMPT,
+    default_prompt_clone:     DEFAULT_CLONE_PROMPT,
   });
 });
 
