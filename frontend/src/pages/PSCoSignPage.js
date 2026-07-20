@@ -58,6 +58,9 @@ const FIELD_LABELS = [
   'What activities took place, and for how long',
   'Peer Support Interventions', "Patient's Response/Content", 'Plan',
   'Visit Codes', 'Provider NPI',
+  // Injected by the backend parser at each treatment-plan problem so the name
+  // breaks onto its own line instead of trailing the intervention value.
+  'Problem',
   'Long Term Goal\\(s\\)(?:\\s*\\d+)?', 'Short Term Goal\\(s\\)(?:\\s*\\d+)?',
   'Intervention\\(s\\)(?:\\s*\\d+)?',
   'Name', 'DOB', 'Age', 'Address', 'Phone', 'MRN', 'E-mail', 'Visit Date',
@@ -213,7 +216,9 @@ function NoteBody({ text, highlightRanges }) {
     <div>
       {segs.map((seg, i) => {
         const hasValue = seg.value.trim().length > 0;
-        if (seg.divider && !hasValue) return null;   // drop empty banner headers
+        // Drop empty banner headers — except Treatment Plan, whose value is now
+        // empty by design (its problems follow as their own labelled sections).
+        if (seg.divider && !hasValue && seg.label !== 'Treatment Plan') return null;
         return (
           <div key={i} style={{
             marginBottom: seg.label ? 12 : 8,

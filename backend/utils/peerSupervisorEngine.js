@@ -384,7 +384,19 @@ class InsyncCoSignEngine {
   }
 
   _parseNote(html, row) {
-    let text = html
+    // Each treatment-plan problem is its own <li> — "<b>Name</b> (Last Review
+    // Date: …)" — with that problem's goals/interventions in a nested <ul>. That
+    // nesting is the only thing separating a problem name from the preceding
+    // "Intervention(s) N:" value, and stripping tags below flattens it away,
+    // gluing the two together ("Therapy Social Anxiety and …"). Label the problem
+    // here, while the <b> still delimits the name exactly — which also keeps names
+    // containing their own parentheses (e.g. "Nicotine Use (Vaping)") intact.
+    const marked = html.replace(
+      /<b>\s*([^<]+?)\s*<\/b>\s*(?=\(Last Review Date:)/gi,
+      (_m, name) => `<b>Problem: ${name}</b> `
+    );
+
+    let text = marked
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi,   ' ')
       .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
       .replace(/<[^>]+>/g, ' ')
