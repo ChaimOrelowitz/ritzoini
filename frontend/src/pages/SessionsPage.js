@@ -5,10 +5,18 @@ import { useAuth } from '../context/AuthContext';
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
+const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
 function fmtDate(dateStr) {
   if (!dateStr) return '—';
   const [y, m, d] = dateStr.split('-').map(Number);
   return `${MONTHS[m - 1]} ${d}, ${y}`;
+}
+
+function dayAbbr(dateStr) {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  return DAYS[new Date(y, m - 1, d).getDay()];
 }
 
 function fmt12(timeStr) {
@@ -88,7 +96,9 @@ function SessionRow({ session, onToggle }) {
       onMouseEnter={e => { e.currentTarget.style.background = tint || 'var(--gray-50)'; }}
       onMouseLeave={e => { e.currentTarget.style.background = tint || ''; }}
     >
-      <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--navy)', fontWeight: 500 }}>{fmtDate(dateStr)}</td>
+      <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--navy)', fontWeight: 500 }}>
+        {fmtDate(dateStr)} <span style={{ color: 'var(--gray-400)', fontWeight: 400 }}>({dayAbbr(dateStr)})</span>
+      </td>
       <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--gray-600)' }}>{fmt12(session.ecw_time || session.start_time || session.scheduled_time)}</td>
       <td style={{ padding: '10px 12px', color: 'var(--navy)', fontWeight: 500, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {session.group?.group_name || session.group?.internal_name || '—'}
@@ -147,6 +157,18 @@ export default function SessionsPage() {
   const [zohoOnly, setZohoOnly] = useState(true); // hide pre-Zoho sessions by default
   const [sort, setSort] = useState({ key: 'date', dir: 'desc' }); // default newest first
   const [toast, setToast] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+
+  async function syncReadyToLock() {
+    setSyncing(true);
+    try {
+      const r = await api.zohoLockBackfill(true); // apply: pull ready-to-lock + locked from Zoho
+      await load();
+      flash(`Synced with Zoho — ${r.wouldReady} ready to lock, ${r.wouldLock} locked`, 'success');
+    } catch (err) {
+      flash('Sync failed: ' + err.message, 'error');
+    } finally { setSyncing(false); }
+  }
 
   function toggleSort(key) {
     setSort(prev => prev.key === key
@@ -217,12 +239,21 @@ export default function SessionsPage() {
     <div style={{ padding: '28px 32px', maxWidth: 1160, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
         <h2 style={{ margin: 0, color: 'var(--navy)', fontWeight: 700 }}>Sessions</h2>
-        {isAdmin && supervisors.length > 0 && (
-          <select className="form-select" value={supervisorFilter} onChange={e => setSupervisorFilter(e.target.value)} style={{ width: 220 }}>
-            <option value="">All supervisors</option>
-            {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
-          </select>
-        )}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {isAdmin && (
+            <button className="btn btn-outline btn-sm" onClick={syncReadyToLock} disabled={syncing}
+              style={{ color: '#6941C6', whiteSpace: 'nowrap' }}
+              title="Pull Ready-to-Lock and Locked status from Zoho now">
+              {syncing ? 'Syncing…' : '↻ Sync Ready-to-Lock'}
+            </button>
+          )}
+          {isAdmin && supervisors.length > 0 && (
+            <select className="form-select" value={supervisorFilter} onChange={e => setSupervisorFilter(e.target.value)} style={{ width: 220 }}>
+              <option value="">All supervisors</option>
+              {supervisors.map(s => <option key={s.id} value={s.id}>{s.first_name} {s.last_name}</option>)}
+            </select>
+          )}
+        </div>
       </div>
 
       {/* Filter tiles */}
