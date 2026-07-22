@@ -54,8 +54,23 @@ function renderNotePdf({ segments, header }) {
   });
 }
 
+// "YYYY-MM-DD" → "MM/DD/YYYY"
+function fmtDate(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || '');
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso || '');
+}
+
+// "9:00 AM" → "9:00am" (human time, per QA spec)
+function fmtTime(t) {
+  return (t || '').replace(/\s+/g, '').toLowerCase();
+}
+
 function timeRange(note) {
-  return [note.startTime, note.endTime].filter(Boolean).join('–');
+  return [fmtTime(note.startTime), fmtTime(note.endTime)].filter(Boolean).join(' - ');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
 // Reopen QA email: PDF of the note + 4-line body. Never throws — returns a
@@ -64,7 +79,12 @@ function timeRange(note) {
 async function sendReopenNotification({ note, reason, settings }) {
   const recipient = (settings.ps_qa_email || '').trim();
   const client    = note.client || note.patientName || 'Unknown client';
-  const subject   = `Reopened note: ${client} — ${note.visitDate || ''}`.trim();
+  const peer      = note.peer || 'unknown';
+  const dateStr   = fmtDate(note.visitDate);
+  const timeStr   = timeRange(note);
+  const sessionDT = [dateStr, timeStr].filter(Boolean).join(' ');
+  // Subject: Reopened note: {Peer} {date} {human time of session}
+  const subject   = `Reopened note: ${[peer, sessionDT].filter(Boolean).join(' ')}`.trim();
 
   if (!recipient) {
     return logAndReturn({ recipient: '', eid: note.eid, client, subject, error: 'No QA recipient configured (ps_qa_email)' });
@@ -74,12 +94,17 @@ async function sendReopenNotification({ note, reason, settings }) {
   const replyTo = (settings.ps_reopen_reply_to || '').trim() || undefined;
   const cc       = (settings.ps_qa_cc || '').trim() || undefined;
 
-  const body = [
-    `Session date & time: ${[note.visitDate, timeRange(note)].filter(Boolean).join(' ')}`,
-    `Peer: ${note.peer || 'unknown'}`,
-    `Client: ${client}`,
-    `Reopen reason: ${reason || ''}`,
-  ].join('\n');
+  // Bold headings, blank line between each row (per QA spec).
+  const rows = [
+    ['Session Date & Time', sessionDT],
+    ['Peer', peer],
+    ['Client', client],
+    ['Reopen reason', reason || ''],
+  ];
+  const html = rows
+    .map(([h, v]) => `<p style="margin:0 0 14px"><strong>${escapeHtml(h)}:</strong> ${escapeHtml(v)}</p>`)
+    .join('');
+  const text = rows.map(([h, v]) => `${h}: ${v}`).join('\n\n');
 
   let pdf;
   try {
@@ -88,7 +113,7 @@ async function sendReopenNotification({ note, reason, settings }) {
       header: {
         title: `${client} — Encounter Note`,
         lines: [
-          [note.visitDate, timeRange(note)].filter(Boolean).join(' '),
+          sessionDT,
           note.peer && `Peer: ${note.peer}`,
         ].filter(Boolean),
       },
@@ -100,7 +125,8 @@ async function sendReopenNotification({ note, reason, settings }) {
   const safe = client.replace(/[^\w]+/g, '_').replace(/^_|_$/g, '') || 'note';
   try {
     const result = await resend.emails.send({
-      from, to: recipient, cc, reply_to: replyTo, subject, text: body,
+      // Resend v6 SDK reads `replyTo` (camelCase); `reply_to` is silently ignored.
+      from, to: recipient, cc, replyTo, subject, html, text,
       attachments: [{ filename: `reopened-note-${safe}.pdf`, content: pdf.toString('base64') }],
     });
     if (result.error) throw new Error(result.error.message || JSON.stringify(result.error));
