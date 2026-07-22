@@ -60,9 +60,13 @@ function fmtDate(iso) {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso || '');
 }
 
-// "9:00 AM" → "9:00am" (human time, per QA spec)
+// Extract just the clock time and normalize to "9:00am" (human time, per QA
+// spec). InSync's start/end strings can carry a leading date
+// ("07/17/2026 12:30 PM") — pull out only the time-of-day.
 function fmtTime(t) {
-  return (t || '').replace(/\s+/g, '').toLowerCase();
+  const m = /(\d{1,2}:\d{2})\s*([AP])\.?M\.?/i.exec(t || '');
+  if (m) return `${m[1]}${m[2].toLowerCase()}m`;
+  return (t || '').trim();
 }
 
 function timeRange(note) {
