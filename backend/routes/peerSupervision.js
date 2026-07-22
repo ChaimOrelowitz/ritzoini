@@ -3,6 +3,7 @@ const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { InsyncCoSignEngine, DEFAULT_COHERENCE_PROMPT, DEFAULT_CLONE_PROMPT } = require('../utils/peerSupervisorEngine');
+const { sendReopenNotification } = require('../utils/reopenNotify');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -97,14 +98,28 @@ router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
     const engine = await buildEngine();
     await engine.login();
 
+    // Email settings for the QA reopen notification (editable in Settings tab).
+    const { data: srows } = await supabase.from('app_settings').select('key, value')
+      .in('key', ['ps_qa_email', 'ps_qa_cc', 'ps_reopen_from', 'ps_reopen_reply_to']);
+    const emailSettings = Object.fromEntries((srows || []).map(r => [r.key, r.value]));
+
     const results = [];
     for (const n of notes) {
       if (!n.eid || !n.pid) { results.push({ eid: n.eid || null, ok: false, message: 'Missing encounter id' }); continue; }
+      let r;
       try {
-        results.push({ eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) });
+        r = { eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) };
       } catch (e) {
         results.push({ eid: n.eid, ok: false, message: e.message });
+        continue;
       }
+      // Reopen succeeded — email QA. Email failure NEVER rolls back the reopen.
+      if (r.ok) {
+        const em = await sendReopenNotification({ note: n, reason: n.reason || '', settings: emailSettings });
+        r.emailSent = em.emailSent;
+        r.emailError = em.emailError;
+      }
+      results.push(r);
     }
     res.json({ results });
   } catch (err) {
@@ -127,7 +142,8 @@ router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
 router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
-            anthropic_api_key, prompt_coherence, prompt_clone } = req.body;
+            anthropic_api_key, prompt_coherence, prompt_clone,
+            qa_email, qa_cc, reopen_from, reopen_reply_to } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
@@ -139,6 +155,11 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       // shipped default (the engine falls back when the stored value is blank).
       ps_prompt_coherence: prompt_coherence,
       ps_prompt_clone:     prompt_clone,
+      // Reopen QA email notification.
+      ps_qa_email:         qa_email,
+      ps_qa_cc:            qa_cc,
+      ps_reopen_from:      reopen_from,
+      ps_reopen_reply_to:  reopen_reply_to,
     };
     for (const [key, value] of Object.entries(map))
       if (value !== undefined && value !== null)
@@ -154,7 +175,8 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   const { data } = await supabase.from('app_settings').select('key, value')
     .in('key', ['ps_no_school_start','ps_no_school_end','insync_provider_id',
                 'insync_username','insync_password','anthropic_api_key',
-                'ps_prompt_coherence','ps_prompt_clone']);
+                'ps_prompt_coherence','ps_prompt_clone',
+                'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
     no_school_start:   S.ps_no_school_start || '07/01',
@@ -165,6 +187,10 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
     anthropic_api_key: S.anthropic_api_key   || '',
     prompt_coherence:  S.ps_prompt_coherence || DEFAULT_COHERENCE_PROMPT,
     prompt_clone:      S.ps_prompt_clone     || DEFAULT_CLONE_PROMPT,
+    qa_email:          S.ps_qa_email        || '',
+    qa_cc:             S.ps_qa_cc           || '',
+    reopen_from:       S.ps_reopen_from     || '',
+    reopen_reply_to:   S.ps_reopen_reply_to || '',
     default_prompt_coherence: DEFAULT_COHERENCE_PROMPT,
     default_prompt_clone:     DEFAULT_CLONE_PROMPT,
   });

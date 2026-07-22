@@ -395,7 +395,16 @@ function ReopenModal({ ctx, onClose, onDone }) {
   async function submit() {
     setBusy(true);
     try {
-      const payload = ctx.notes.map((n, i) => ({ eid: n.note.eid, pid: n.note.pid, reason: reasons[i] }));
+      const payload = ctx.notes.map((n, i) => ({
+        eid: n.note.eid, pid: n.note.pid, reason: reasons[i],
+        client:    n.note.patientName,
+        visitDate: n.note.visitDate,
+        startTime: n.note.startTimeStr,
+        endTime:   n.note.endTimeStr,
+        peer:      n.note.peerName,
+        // Same segments the Read view renders → identical PDF.
+        segments:  segmentNote(n.note.fullNoteText || ''),
+      }));
       const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload });
       const byEid = {}, okIds = [];
       (res || []).forEach(r => {
@@ -443,8 +452,13 @@ function ReopenModal({ ctx, onClose, onDone }) {
                   style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
                 />
                 {r && (
-                  <div style={{ marginTop: 6, fontSize: '0.78rem', fontWeight: 600, color: r.ok ? '#15803d' : '#dc2626' }}>
-                    {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
+                  <div style={{ marginTop: 6, fontSize: '0.78rem', fontWeight: 600 }}>
+                    <div style={{ color: r.ok ? '#15803d' : '#dc2626' }}>
+                      {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
+                    </div>
+                    {r.ok && (r.emailSent
+                      ? <div style={{ color: '#15803d', fontWeight: 500 }}>✉ QA notified by email</div>
+                      : <div style={{ color: '#b45309', fontWeight: 500 }}>⚠ Reopened, but QA email failed: {r.emailError || 'unknown error'}</div>)}
                   </div>
                 )}
               </div>
@@ -539,6 +553,7 @@ function SettingsTab() {
     insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_coherence: '', prompt_clone: '',
+    qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '',
   });
   const [defaults, setDefaults] = useState({ prompt_coherence: '', prompt_clone: '' });
   const [loading,  setLoading]  = useState(true);
@@ -557,6 +572,10 @@ function SettingsTab() {
         provider_id:       s.provider_id       || '',
         prompt_coherence:  s.prompt_coherence  || '',
         prompt_clone:      s.prompt_clone      || '',
+        qa_email:          s.qa_email          || '',
+        qa_cc:             s.qa_cc             || '',
+        reopen_from:       s.reopen_from       || '',
+        reopen_reply_to:   s.reopen_reply_to   || '',
       });
       setDefaults({
         prompt_coherence: s.default_prompt_coherence || '',
@@ -637,10 +656,36 @@ function SettingsTab() {
         </div>
       </section>
 
+      <section style={sectionStyle}>
+        <p style={sectionLabel}>Reopen QA Email</p>
+        <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+          When a note is reopened, email the reviewer a PDF of the note. Leave the recipient blank to disable.
+          The "From" address must be a domain you've verified in Resend — otherwise leave it blank (system default) and set Reply-to to your work email.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div>
+            <label style={lbl}>QA recipient (Avi)</label>
+            <input className="form-input" value={form.qa_email} onChange={set('qa_email')} placeholder="avi@example.com" style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={lbl}>CC (optional — e.g. yourself, for a paper trail)</label>
+            <input className="form-input" value={form.qa_cc} onChange={set('qa_cc')} placeholder="you@yourclinic.com" style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={lbl}>From (blank = system default; must be Resend-verified)</label>
+            <input className="form-input" value={form.reopen_from} onChange={set('reopen_from')} placeholder="you@yourclinic.com" style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={lbl}>Reply-to (where replies go)</label>
+            <input className="form-input" value={form.reopen_reply_to} onChange={set('reopen_reply_to')} placeholder="you@yourclinic.com" style={{ width: '100%' }} />
+          </div>
+        </div>
+      </section>
+
       <PromptEditor
         title="AI Prompt — Note QA Review"
         help="Runs on every note. Edit the criteria the AI flags on."
-        tokens={['{{duration}}', '{{narrative}}', '{{plan}}', '{{dx}}']}
+        tokens={['{{duration}}', '{{narrative}}', '{{plan}}', '{{dx}}', '{{machine_flags}}']}
         value={form.prompt_coherence}
         onChange={v => setForm(f => ({ ...f, prompt_coherence: v }))}
         defaultValue={defaults.prompt_coherence}
