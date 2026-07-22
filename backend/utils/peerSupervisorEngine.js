@@ -452,7 +452,9 @@ class InsyncCoSignEngine {
     const field = lbl => {
       const escaped = escapeRe(lbl.replace(/:$/, '').trim());
       const others  = stopLabels.filter(s => s.toLowerCase() !== lbl.toLowerCase()).map(escapeRe);
-      const re = new RegExp(escaped + String.raw`\s*[:\-]\s*(.*?)\s*(?:${others.join('|')}|$)`, 'i');
+      // \b around the stop-labels so short ones (Age/POS/DOB) can't match
+      // mid-word — e.g. "Age" inside "Language", which truncated Encounter Type.
+      const re = new RegExp(escaped + String.raw`\s*[:\-]\s*(.*?)\s*(?:\b(?:${others.join('|')})\b|$)`, 'i');
       const m  = re.exec(text);
       return m ? m[1].trim() : '';
     };
@@ -570,6 +572,7 @@ class InsyncCoSignEngine {
     const flags = [];
     const dur  = note.durationMinutes;
     const type = String(note.encounterType || '').toLowerCase();
+    console.log(`[PS enc-type] eid=${note.eid} dur=${dur} raw=${JSON.stringify(note.encounterType)}`);
 
     // ── Duration limit by encounter type (keyword match, keywords at END) ──
     const hasVideo = type.includes('video') || type.includes('visual');
