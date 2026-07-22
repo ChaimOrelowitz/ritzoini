@@ -4,6 +4,7 @@ const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 const { InsyncCoSignEngine, DEFAULT_COHERENCE_PROMPT, DEFAULT_CLONE_PROMPT } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
+const { ingestQueue, judgeNote, serializeNote, contentHash } = require('../utils/psIngest');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -81,6 +82,13 @@ router.post('/cosign/sign', requireAuth, requireAdmin, async (req, res) => {
       await supabase.from('ps_scan_runs').update({ signed_count: (run?.signed_count || 0) + signed + delta }).eq('id', runId);
     }
 
+    // Flip the persistent queue: the notes we just signed leave 'pending'.
+    const eids = notes.map(n => n.eid).filter(Boolean);
+    if (eids.length)
+      await supabase.from('ps_notes')
+        .update({ status: 'signed', actioned_at: new Date().toISOString() })
+        .in('eid', eids).eq('status', 'pending');
+
     res.json({ signed, failed });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -118,6 +126,10 @@ router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
         const em = await sendReopenNotification({ note: n, reason: n.reason || '', settings: emailSettings });
         r.emailSent = em.emailSent;
         r.emailError = em.emailError;
+        // Persistent queue: this note is now waiting on the peer.
+        await supabase.from('ps_notes')
+          .update({ status: 'reopened', reopen_reason: n.reason || '', actioned_at: new Date().toISOString() })
+          .eq('eid', n.eid).eq('status', 'pending');
       }
       results.push(r);
     }
@@ -125,6 +137,121 @@ router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ── Persistent queue (ps_notes) ─────────────────────────────────────────────────
+
+// Shape a stored ps_notes row into the note object the frontend components
+// expect (same fields the old live scan produced), so NoteBody / CompareModal /
+// ReopenModal / sign all work unchanged.
+function psNoteView(row) {
+  const nd = row.note_data || {};
+  const f  = row.ai_flags  || {};
+  const flags = [...(f.machine || [])];
+  if (f.clone) flags.push(`Likely copied note: ${f.clone.reason}`);
+  return {
+    id: row.id, eid: row.eid, version: row.version,
+    status: row.status, verdict: row.ai_verdict,
+    patientName: row.patient_name, peerName: row.peer_name,
+    visitDatetime: row.visit_datetime, visitDate: row.visit_date, mrn: row.mrn,
+    startTimeStr: row.start_time, endTimeStr: row.end_time, totalTime: row.total_time,
+    pid: row.pid, cosignId: nd.cosignId, cosignReqId: nd.cosignReqId,
+    fullNoteText: nd.fullNoteText || '',
+    flags, aiFlag: f.coherence || null,
+    clonePartnerEid: f.clone?.partnerEid || null,
+    clonePct: f.clone?.pct || null,
+    reopenReason: row.reopen_reason || null,
+    ingestedAt: row.ingested_at, actionedAt: row.actioned_at,
+  };
+}
+
+// GET /api/ps/cosign/notes — the durable queue/archive.
+// Params: status (default 'pending'; comma-list or 'all'), verdict, q (text
+// search on patient/peer name).
+router.get('/cosign/notes', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { status = 'pending', verdict, q } = req.query;
+    let query = supabase.from('ps_notes').select('*');
+    if (status && status !== 'all') {
+      const arr = String(status).split(',').map(s => s.trim()).filter(Boolean);
+      query = arr.length > 1 ? query.in('status', arr) : query.eq('status', arr[0]);
+    }
+    if (verdict) query = query.eq('ai_verdict', verdict);
+    if (q) {
+      const safe = String(q).replace(/[,()%]/g, ' ').trim();
+      if (safe) query = query.or(`patient_name.ilike.%${safe}%,peer_name.ilike.%${safe}%`);
+    }
+    const { data, error } = await query.order('visit_date', { ascending: false }).limit(500);
+    if (error) throw error;
+    res.json((data || []).map(psNoteView));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/ps/cosign/notes/:eid/versions — every version of one note, oldest
+// first, for the side-by-side old-vs-new view of a revised reopened note.
+router.get('/cosign/notes/:eid/versions', requireAuth, requireAdmin, async (req, res) => {
+  const { data, error } = await supabase.from('ps_notes').select('*')
+    .eq('eid', req.params.eid).order('version', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json((data || []).map(psNoteView));
+});
+
+// GET /api/ps/cosign/pull — SSE: incremental ingest (login → download → dedup →
+// judge new/revised → persist). Read-only against InSync (no sign/reopen). Auth
+// via ?token= because EventSource can't set headers.
+router.get('/cosign/pull', async (req, res) => {
+  const token = req.query.token;
+  if (!token) return res.status(401).json({ error: 'Missing token' });
+  const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+  if (authErr || !user) return res.status(401).json({ error: 'Invalid token' });
+  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
+  if (profile?.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+
+  try {
+    const engine = await buildEngine();
+    const stats = await ingestQueue(engine, { onProgress: (msg, pct) => send('progress', { msg, pct }) });
+    send('done', { stats });
+  } catch (err) {
+    send('error', { message: err.message });
+  } finally {
+    res.end();
+  }
+});
+
+// POST /api/ps/cosign/rejudge — re-run the AI on ONE already-stored note (new
+// prompt / fresh verdict) with NO InSync round-trip. Body: { id }.
+router.post('/cosign/rejudge', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ error: 'id required' });
+    const { data: row } = await supabase.from('ps_notes').select('*').eq('id', id).maybeSingle();
+    if (!row) return res.status(404).json({ error: 'Note not found' });
+
+    const engine = await buildEngine();
+    const note = { ...(row.note_data || {}), eid: row.eid };
+    note.visitDateObj = engine._parseDate(note.visitDatetime || row.visit_datetime);
+
+    // Clone pool = current pending notes, minus this one (per spec).
+    const { data: pend } = await supabase.from('ps_notes')
+      .select('eid, note_data').eq('status', 'pending').neq('id', id);
+    const corpus = (pend || []).map(r => ({
+      eid: r.eid, patientName: r.note_data?.patientName || '',
+      sessionContent: r.note_data?.sessionContent || '', visitDate: r.note_data?.visitDate || '',
+    }));
+
+    const judged = await judgeNote(engine, note, corpus);
+    await supabase.from('ps_notes')
+      .update({ ai_verdict: judged.verdict, ai_flags: judged.flags, judged_at: new Date().toISOString() })
+      .eq('id', id);
+    const { data: updated } = await supabase.from('ps_notes').select('*').eq('id', id).maybeSingle();
+    res.json(psNoteView(updated));
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // GET /api/ps/cosign/history — last 50 scan runs

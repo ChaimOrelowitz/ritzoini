@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { api } from '../utils/api';
 import supabase from '../supabaseClient';
 
@@ -10,12 +10,6 @@ function fmtDt(dt) {
   if (!dt) return '—';
   const d = new Date(dt);
   return isNaN(d) ? dt : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso + 'T12:00:00');
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function Chip({ color, children }) {
@@ -480,72 +474,6 @@ function ReopenModal({ ctx, onClose, onDone }) {
   );
 }
 
-// ── HistoryAccordion ──────────────────────────────────────────────────────────
-
-function HistoryAccordion({ history, onCompare }) {
-  const [open, setOpen] = useState(false);
-  const [expanded, setExpanded] = useState(null);
-
-  if (!history.length) return null;
-
-  return (
-    <div style={{ marginTop: 32 }}>
-      <button onClick={() => setOpen(o => !o)} style={{
-        background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: 10,
-        fontSize: '0.78rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em',
-        color: 'var(--gray-400)', display: 'flex', alignItems: 'center', gap: 6,
-      }}>
-        {open ? '▾' : '▸'} Run History ({history.length})
-      </button>
-      {open && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {history.map(run => (
-            <div key={run.id} style={{ border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', background: 'white', overflow: 'hidden' }}>
-              <button onClick={() => setExpanded(expanded === run.id ? null : run.id)} style={{
-                width: '100%', background: 'none', border: 'none', cursor: 'pointer',
-                padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 16, textAlign: 'left',
-              }}>
-                <span style={{ fontSize: '0.82rem', color: 'var(--gray-500)', minWidth: 160 }}>
-                  {fmtDt(run.created_at)}
-                </span>
-                <span style={{ fontSize: '0.82rem', color: 'var(--gray-700)' }}>
-                  {run.total} scanned · <span style={{ color: '#dc2626' }}>{run.flagged_count} flagged</span> · {run.clean_count} clean · {run.signed_count} signed
-                </span>
-                <span style={{ marginLeft: 'auto', color: 'var(--gray-400)', fontSize: '0.8rem' }}>{expanded === run.id ? '▲' : '▼'}</span>
-              </button>
-              {expanded === run.id && run.flagged_notes?.length > 0 && (
-                <div style={{ padding: '0 16px 14px', borderTop: '1px solid var(--gray-100)' }}>
-                  <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '10px 0 6px' }}>
-                    Flagged Notes
-                  </p>
-                  {run.flagged_notes.map((n, i) => {
-                    const partner = n.clonePartnerEid
-                      ? run.flagged_notes.find(x => x.eid === n.clonePartnerEid)
-                      : null;
-                    return (
-                      <div key={i} style={{ fontSize: '0.8rem', color: 'var(--gray-700)', padding: '4px 0', borderBottom: '1px solid var(--gray-100)', display: 'flex', gap: 12, alignItems: 'center' }}>
-                        <span style={{ fontWeight: 600, minWidth: 160 }}>{n.patientName}</span>
-                        <span style={{ color: 'var(--gray-500)' }}>{n.peerName}</span>
-                        <span style={{ color: 'var(--gray-400)' }}>{fmtDt(n.visitDatetime)}</span>
-                        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                          {n.flags?.map((f, j) => <Chip key={j} color={flagChipColor(f)}>{f}</Chip>)}
-                          {partner && (
-                            <button className="btn btn-outline btn-xs" onClick={() => onCompare({ a: n, b: partner })}>Compare</button>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── SettingsTab ───────────────────────────────────────────────────────────────
 
 function SettingsTab() {
@@ -772,267 +700,349 @@ function PromptEditor({ title, help, tokens, value, onChange, defaultValue, requ
 
 const sectionStyle = { marginBottom: 24, padding: 18, background: '#f8fafc', borderRadius: 'var(--radius)', border: '1px solid var(--gray-100)' };
 const sectionLabel = { margin: '0 0 12px', fontSize: '0.72rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--gray-500)' };
+// ── VersionsModal ─────────────────────────────────────────────────────────────
 
-// ── RunReviewTab ──────────────────────────────────────────────────────────────
+// Side-by-side of every stored version of one note (oldest → newest). The point
+// of reopening is to check the peer actually addressed the feedback, so the old
+// and revised versions sit next to each other.
+function VersionPane({ note }) {
+  const statusColor = { pending: 'blue', reopened: 'orange', signed: 'gray', superseded: 'gray' }[note.status] || 'gray';
+  return (
+    <div style={{ flex: '1 1 320px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>Version {note.version}</span>
+        <Chip color={statusColor}>{note.status}</Chip>
+        <Chip color={note.verdict === 'clean' ? 'gray' : 'red'}>{note.verdict}</Chip>
+      </div>
+      {note.reopenReason && (
+        <div style={{ padding: '8px 16px', background: '#fff7ed', borderBottom: '1px solid var(--gray-100)', fontSize: '0.76rem', color: '#9a3412' }}>
+          <strong>Reopen reason:</strong> {note.reopenReason}
+        </div>
+      )}
+      <div style={{ padding: '14px 16px', maxHeight: '58vh', overflowY: 'auto' }}>
+        <NoteBody text={note.fullNoteText} />
+      </div>
+    </div>
+  );
+}
 
-function RunReviewTab() {
-  const [scanning,    setScanning]    = useState(false);
-  const [progress,    setProgress]    = useState(null);   // { msg, pct }
-  const [scanResult,  setScanResult]  = useState(null);   // { flagged, clean, runId }
-  const [selected,    setSelected]    = useState(new Set());
-  const [signingIds,  setSigningIds]  = useState(new Set());
-  const [signedIds,   setSignedIds]   = useState(new Set());
-  const [reopenedIds, setReopenedIds] = useState(new Set());
+function VersionsModal({ versions, onClose }) {
+  if (!versions) return null;
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000,
+      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '40px 16px', overflowY: 'auto',
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 1200, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>
+            {versions[0]?.patientName} — {versions.length} version{versions.length > 1 ? 's' : ''}
+          </h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+        </div>
+        <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+          {versions.map(v => <VersionPane key={v.id} note={v} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── QueueTab ──────────────────────────────────────────────────────────────────
+
+const VIEWS = [['queue', 'Queue'], ['reopened', 'Waiting on Peer'], ['archive', 'Archive']];
+
+function StatTile({ label, val, color }) {
+  return (
+    <div style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 130, textAlign: 'center' }}>
+      <div style={{ fontSize: '1.5rem', fontWeight: 800, color }}>{val}</div>
+      <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function QueueTab() {
+  const [view,     setView]     = useState('queue');   // queue | reopened | archive
+  const [notes,    setNotes]    = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [pulling,  setPulling]  = useState(false);
+  const [progress, setProgress] = useState(null);      // { msg, pct }
+  const [search,   setSearch]   = useState('');
+  const [query,    setQuery]    = useState('');         // committed search term
+  const [selected, setSelected] = useState(new Set());
+  const [busyIds,  setBusyIds]  = useState(new Set());
+  const [showClean,   setShowClean]   = useState(false);
+  const [rejudgingId, setRejudgingId] = useState(null);
   const [noteModal,    setNoteModal]    = useState(null);
   const [compareModal, setCompareModal] = useState(null);   // { a, b }
-  const [reopenCtx,    setReopenCtx]    = useState(null);   // { title, notes: [{note, partner}] }
-  const [history,     setHistory]     = useState([]);
-  const [histLoading, setHistLoading] = useState(true);
+  const [reopenCtx,    setReopenCtx]    = useState(null);
+  const [versionsModal, setVersionsModal] = useState(null); // [versions]
   const esRef = useRef(null);
 
-  useEffect(() => {
-    api.get('/ps/cosign/history').then(h => setHistory(Array.isArray(h) ? h : [])).catch(() => {}).finally(() => setHistLoading(false));
-    return () => { if (esRef.current) esRef.current.close(); };
-  }, []);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      let path;
+      if (view === 'reopened')    path = '/ps/cosign/notes?status=reopened';
+      else if (view === 'archive') path = `/ps/cosign/notes?status=signed,superseded${query ? `&q=${encodeURIComponent(query)}` : ''}`;
+      else                        path = '/ps/cosign/notes?status=pending';
+      const data = await api.get(path);
+      setNotes(Array.isArray(data) ? data : []);
+      setSelected(new Set());
+    } catch (ex) { alert(ex.message); }
+    finally { setLoading(false); }
+  }, [view, query]);
 
-  async function startScan() {
-    if (scanning) return;
-    setScanning(true);
+  useEffect(() => { load(); }, [load]);
+  useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
+
+  async function startPull() {
+    if (pulling) return;
+    setPulling(true);
     setProgress({ msg: 'Connecting…', pct: 0 });
-    setScanResult(null);
-    setSelected(new Set());
-    setSignedIds(new Set());
-
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
-    if (!token) { alert('Not logged in'); setScanning(false); return; }
+    if (!token) { alert('Not logged in'); setPulling(false); return; }
 
-    const es = new EventSource(`${API}/api/ps/cosign/scan?token=${encodeURIComponent(token)}`);
+    const es = new EventSource(`${API}/api/ps/cosign/pull?token=${encodeURIComponent(token)}`);
     esRef.current = es;
-
     es.onmessage = e => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.type === 'progress') {
-          setProgress({ msg: msg.msg, pct: msg.pct });
-        } else if (msg.type === 'done') {
-          setScanResult({ flagged: msg.flagged || [], clean: msg.clean || [], runId: msg.runId });
-          setScanning(false);
-          setProgress(null);
-          setHistory(h => [{ id: msg.runId, created_at: new Date().toISOString(), total: (msg.flagged?.length || 0) + (msg.clean?.length || 0), flagged_count: msg.flagged?.length || 0, clean_count: msg.clean?.length || 0, signed_count: 0, flagged_notes: msg.flagged || [] }, ...h]);
-          es.close();
+        if (msg.type === 'progress') setProgress({ msg: msg.msg, pct: msg.pct });
+        else if (msg.type === 'done') {
+          const s = msg.stats || {};
+          setPulling(false); setProgress(null); es.close();
+          load();
+          alert(`Pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had.`);
         } else if (msg.type === 'error') {
-          alert('Scan error: ' + msg.message);
-          setScanning(false);
-          setProgress(null);
-          es.close();
+          alert('Pull error: ' + msg.message);
+          setPulling(false); setProgress(null); es.close();
         }
       } catch {}
     };
+    es.onerror = () => { alert('Connection lost during pull.'); setPulling(false); setProgress(null); es.close(); };
+  }
 
-    es.onerror = () => {
-      if (!scanResult) {
-        alert('Connection lost during scan.');
-        setScanning(false);
-        setProgress(null);
-      }
-      es.close();
-    };
+  async function signNotes(list, label) {
+    if (!list.length) return;
+    const ids = new Set(list.map(n => n.eid));
+    setBusyIds(s => new Set([...s, ...ids]));
+    try {
+      const slim = list.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId }));
+      const { signed, failed } = await api.post('/ps/cosign/sign', { notes: slim });
+      alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.`);
+      await load();
+    } catch (ex) { alert('Sign error: ' + ex.message); }
+    finally { setBusyIds(s => { const n = new Set(s); ids.forEach(i => n.delete(i)); return n; }); }
+  }
+
+  async function rejudge(note) {
+    setRejudgingId(note.id);
+    try { await api.post('/ps/cosign/rejudge', { id: note.id }); await load(); }
+    catch (ex) { alert('Re-judge error: ' + ex.message); }
+    finally { setRejudgingId(null); }
+  }
+
+  async function openVersions(eid) {
+    try { setVersionsModal(await api.get(`/ps/cosign/notes/${eid}/versions`)); }
+    catch (ex) { alert(ex.message); }
   }
 
   function toggleSelect(id) {
-    setSelected(s => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
+    setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
-  const isDone = id => signedIds.has(id) || reopenedIds.has(id);
+  const clean   = notes.filter(n => n.verdict === 'clean');
+  const flagged = notes.filter(n => n.verdict === 'flagged');
+  const partnerOf = note => note.clonePartnerEid ? notes.find(x => x.eid === note.clonePartnerEid) : null;
+  const selectedFlagged = flagged.filter(n => selected.has(n.eid));
 
+  function signClean() {
+    if (!clean.length) return;
+    if (!window.confirm(`Sign all ${clean.length} clean notes? This co-signs them in InSync.`)) return;
+    signNotes(clean, 'Bulk sign clean');
+  }
   function toggleAll() {
-    if (!scanResult) return;
-    const unsignedFlagged = scanResult.flagged.filter(n => !isDone(n.eid));
-    if (selected.size === unsignedFlagged.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(unsignedFlagged.map(n => n.eid)));
-    }
+    setSelected(selected.size === flagged.length ? new Set() : new Set(flagged.map(n => n.eid)));
   }
 
-  async function signNotes(notes, label) {
-    if (!notes.length) return;
-    const ids = new Set(notes.map(n => n.eid));
-    setSigningIds(s => new Set([...s, ...ids]));
-    try {
-      // Send only the fields bulkSign needs — full note objects (with note text)
-      // overflow the server's JSON body limit on large batches (HTTP 413).
-      const slim = notes.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId }));
-      const { signed, failed } = await api.post('/ps/cosign/sign', { notes: slim, runId: scanResult?.runId });
-      setSignedIds(s => new Set([...s, ...ids]));
-      setSelected(sel => { const n = new Set(sel); ids.forEach(id => n.delete(id)); return n; });
-      alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.`);
-    } catch (ex) { alert('Sign error: ' + ex.message); }
-    finally { setSigningIds(s => { const n = new Set(s); ids.forEach(id => n.delete(id)); return n; }); }
+  // One note row, with the action buttons appropriate to the current view.
+  function NoteRow({ note, checkbox }) {
+    const busy    = busyIds.has(note.eid);
+    const partner = partnerOf(note);
+    return (
+      <div style={{
+        background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)',
+        padding: '12px 16px', display: 'flex', alignItems: 'flex-start', gap: 12,
+      }}>
+        {checkbox && (
+          <input type="checkbox" checked={selected.has(note.eid)} onChange={() => toggleSelect(note.eid)}
+            style={{ width: 15, height: 15, marginTop: 3, flexShrink: 0 }} />
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</span>
+            {note.version > 1 && <Chip color="gray">v{note.version}</Chip>}
+            {view === 'archive' && <Chip color={note.status === 'signed' ? 'gray' : 'blue'}>{note.status}</Chip>}
+          </div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
+            {note.peerName} · {fmtDt(note.visitDatetime)}
+          </div>
+          {(note.flags?.length > 0 || note.aiFlag) && (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+              {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
+            </div>
+          )}
+          {note.reopenReason && view === 'reopened' && (
+            <div style={{ fontSize: '0.78rem', color: '#9a3412', marginTop: 4 }}><strong>Reopen reason:</strong> {note.reopenReason}</div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 260 }}>
+          {partner && <button className="btn btn-outline btn-xs" onClick={() => setCompareModal({ a: note, b: partner })}>Compare</button>}
+          {note.version > 1 && <button className="btn btn-outline btn-xs" onClick={() => openVersions(note.eid)}>Versions</button>}
+          <button className="btn btn-outline btn-xs" onClick={() => setNoteModal(note)}>Read</button>
+          {view === 'queue' && note.verdict === 'flagged' && (
+            <button className="btn btn-outline btn-xs" onClick={() => rejudge(note)} disabled={rejudgingId === note.id}>
+              {rejudgingId === note.id ? '…' : 'Re-judge'}
+            </button>
+          )}
+          {view === 'queue' && (
+            <button className="btn btn-outline btn-xs"
+              onClick={() => setReopenCtx({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner }] })}>
+              Reopen
+            </button>
+          )}
+          {view === 'queue' && (
+            <button className="btn btn-gold btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={busy}>
+              {busy ? '…' : 'Sign'}
+            </button>
+          )}
+        </div>
+      </div>
+    );
   }
-
-  async function signClean() {
-    if (!scanResult?.clean?.length) return;
-    if (!window.confirm(`Sign all ${scanResult.clean.length} clean notes?`)) return;
-    await signNotes(scanResult.clean, 'Sign All Clean');
-  }
-
-  const flaggedUnsigned = scanResult ? scanResult.flagged.filter(n => !isDone(n.eid)) : [];
-  const selectedNotes   = scanResult ? scanResult.flagged.filter(n => selected.has(n.eid) && !isDone(n.eid)) : [];
-  const cleanUnsigned   = scanResult ? scanResult.clean.filter(n => !isDone(n.eid)) : [];
 
   return (
     <div>
-      {/* Run button + progress */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button className="btn btn-gold" onClick={startScan} disabled={scanning} style={{ minWidth: 120 }}>
-          {scanning ? 'Scanning…' : 'Run Now'}
-        </button>
-        {scanning && progress && (
-          <div style={{ flex: 1, minWidth: 200 }}>
-            <div style={{ fontSize: '0.78rem', color: 'var(--gray-600)', marginBottom: 5 }}>{progress.msg}</div>
-            <ProgressBar pct={progress.pct} />
-          </div>
-        )}
-      </div>
-
-      {/* Stats */}
-      {scanResult && (
-        <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
-          {[
-            { label: 'Total',   val: scanResult.flagged.length + scanResult.clean.length, color: 'var(--navy)' },
-            { label: 'Flagged', val: scanResult.flagged.length, color: '#dc2626' },
-            { label: 'Clean',   val: scanResult.clean.length,   color: '#16a34a' },
-            { label: 'Signed',  val: signedIds.size,            color: '#64748b' },
-          ].map(({ label, val, color }) => (
-            <div key={label} style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 110, textAlign: 'center' }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 800, color }}>{val}</div>
-              <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>{label}</div>
-            </div>
+      {/* View tabs + pull */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {VIEWS.map(([key, label]) => (
+            <button key={key} onClick={() => setView(key)} style={{
+              background: view === key ? 'var(--navy)' : 'white',
+              color: view === key ? 'white' : 'var(--gray-600)',
+              border: '1px solid var(--gray-200)', borderRadius: 999, cursor: 'pointer',
+              padding: '6px 16px', fontSize: '0.8rem', fontWeight: 600,
+            }}>{label}</button>
           ))}
         </div>
-      )}
-
-      {/* Flagged notes list */}
-      {scanResult && scanResult.flagged.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <h4 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>
-                Flagged Notes ({flaggedUnsigned.length} remaining)
-              </h4>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', color: 'var(--gray-600)', cursor: 'pointer' }}>
-                <input type="checkbox"
-                  checked={flaggedUnsigned.length > 0 && selected.size === flaggedUnsigned.length}
-                  onChange={toggleAll}
-                  style={{ width: 14, height: 14 }} />
-                All
-              </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, justifyContent: 'flex-end', minWidth: 200 }}>
+          {pulling && progress && (
+            <div style={{ flex: 1, maxWidth: 280 }}>
+              <div style={{ fontSize: '0.74rem', color: 'var(--gray-600)', marginBottom: 4 }}>{progress.msg}</div>
+              <ProgressBar pct={progress.pct} />
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              {selectedNotes.length > 0 && (
-                <button className="btn btn-outline btn-sm"
-                  onClick={() => signNotes(selectedNotes, `Sign Selected (${selectedNotes.length})`)}
-                  disabled={signingIds.size > 0}>
-                  Sign Selected ({selectedNotes.length})
-                </button>
-              )}
-              {cleanUnsigned.length > 0 && (
-                <button className="btn btn-gold btn-sm" onClick={signClean} disabled={signingIds.size > 0}>
-                  Sign All Clean ({cleanUnsigned.length})
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {scanResult.flagged.map(note => {
-              const id       = note.eid;
-              const signed   = signedIds.has(id);
-              const reopened = reopenedIds.has(id);
-              const signing  = signingIds.has(id);
-              const done     = signed || reopened;
-              const partner  = note.clonePartnerEid
-                ? scanResult.flagged.find(x => x.eid === note.clonePartnerEid)
-                : null;
-              return (
-                <div key={id} style={{
-                  background: 'white', border: `1px solid ${signed ? '#bbf7d0' : reopened ? '#fed7aa' : 'var(--gray-200)'}`,
-                  borderRadius: 'var(--radius)', padding: '12px 16px',
-                  opacity: done ? 0.55 : 1,
-                  display: 'flex', alignItems: 'flex-start', gap: 12,
-                }}>
-                  <input type="checkbox"
-                    checked={selected.has(id) && !done}
-                    disabled={done}
-                    onChange={() => toggleSelect(id)}
-                    style={{ width: 15, height: 15, marginTop: 3, flexShrink: 0 }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</span>
-                      {signed   && <Chip color="gray">Signed ✓</Chip>}
-                      {reopened && <Chip color="orange">Reopened ↩</Chip>}
-                    </div>
-                    <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
-                      {note.peerName} · {fmtDt(note.visitDatetime)}
-                    </div>
-                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {note.flags?.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-                      {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    {partner && (
-                      <button className="btn btn-outline btn-xs" onClick={() => setCompareModal({ a: note, b: partner })}>Compare</button>
-                    )}
-                    <button className="btn btn-outline btn-xs" onClick={() => setNoteModal(note)}>Read</button>
-                    {!done && (
-                      <button className="btn btn-outline btn-xs"
-                        onClick={() => setReopenCtx({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner }] })}>
-                        Reopen
-                      </button>
-                    )}
-                    {!done && (
-                      <button className="btn btn-outline btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={signing}>
-                        {signing ? '…' : 'Sign'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          )}
+          <button className="btn btn-gold btn-sm" onClick={startPull} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+            {pulling ? 'Pulling…' : '⟳ Pull new notes'}
+          </button>
         </div>
-      )}
+      </div>
 
-      {scanResult && scanResult.flagged.length === 0 && scanResult.clean.length > 0 && (
-        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 'var(--radius)', padding: '14px 18px', marginBottom: 24 }}>
-          <p style={{ margin: 0, fontWeight: 600, color: '#15803d', fontSize: '0.88rem' }}>
-            All {scanResult.clean.length} notes are clean. No flags found.
-          </p>
-          {cleanUnsigned.length > 0 && (
-            <button className="btn btn-gold btn-sm" onClick={signClean} disabled={signingIds.size > 0} style={{ marginTop: 10 }}>
-              Sign All ({cleanUnsigned.length})
-            </button>
+      {loading ? (
+        <div style={{ padding: 40, color: 'var(--gray-400)', textAlign: 'center' }}>Loading…</div>
+      ) : view === 'queue' ? (
+        <div>
+          <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+            <StatTile label="Clean · ready to sign" val={clean.length} color="#16a34a" />
+            <StatTile label="Flagged · needs review" val={flagged.length} color="#dc2626" />
+          </div>
+
+          {notes.length === 0 && (
+            <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
+              Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync.
+            </div>
+          )}
+
+          {/* Clean stack */}
+          {clean.length > 0 && (
+            <div style={{ marginBottom: 24, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 'var(--radius)', padding: '14px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <button onClick={() => setShowClean(s => !s)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 700, color: '#15803d', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {showClean ? '▾' : '▸'} Clean stack — ready to sign ({clean.length})
+                </button>
+                <button className="btn btn-gold btn-sm" onClick={signClean} disabled={busyIds.size > 0}>
+                  Bulk sign all ({clean.length})
+                </button>
+              </div>
+              {showClean && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+                  {clean.map(note => <NoteRow key={note.id} note={note} />)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Flagged queue */}
+          {flagged.length > 0 && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <h4 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>Needs review ({flagged.length})</h4>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: '0.78rem', color: 'var(--gray-600)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={flagged.length > 0 && selected.size === flagged.length} onChange={toggleAll} style={{ width: 14, height: 14 }} />
+                    All
+                  </label>
+                </div>
+                {selectedFlagged.length > 0 && (
+                  <button className="btn btn-outline btn-sm" onClick={() => signNotes(selectedFlagged, `Sign selected (${selectedFlagged.length})`)} disabled={busyIds.size > 0}>
+                    Sign selected ({selectedFlagged.length})
+                  </button>
+                )}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {flagged.map(note => <NoteRow key={note.id} note={note} checkbox />)}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : view === 'reopened' ? (
+        <div>
+          {notes.length === 0 ? (
+            <div style={{ padding: 30, color: 'var(--gray-400)', textAlign: 'center', fontSize: '0.88rem' }}>Nothing waiting on a peer.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {notes.map(note => <NoteRow key={note.id} note={note} />)}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          <form onSubmit={e => { e.preventDefault(); setQuery(search.trim()); }} style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <input className="form-input" value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Search archive by client or peer name…" style={{ flex: 1, maxWidth: 360 }} />
+            <button className="btn btn-outline btn-sm" type="submit">Search</button>
+            {query && <button className="btn btn-outline btn-sm" type="button" onClick={() => { setSearch(''); setQuery(''); }}>Clear</button>}
+          </form>
+          {notes.length === 0 ? (
+            <div style={{ padding: 30, color: 'var(--gray-400)', textAlign: 'center', fontSize: '0.88rem' }}>
+              {query ? 'No matches.' : 'No signed notes yet.'}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {notes.map(note => <NoteRow key={note.id} note={note} />)}
+            </div>
           )}
         </div>
       )}
 
-      {/* History */}
-      {!histLoading && <HistoryAccordion history={history} onCompare={setCompareModal} />}
-
       <NoteModal note={noteModal} onClose={() => setNoteModal(null)} />
       <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} onReopen={ctx => { setCompareModal(null); setReopenCtx(ctx); }} />
-      <ReopenModal
-        ctx={reopenCtx}
-        onClose={() => setReopenCtx(null)}
-        onDone={ids => setReopenedIds(s => new Set([...s, ...ids]))}
-      />
+      <VersionsModal versions={versionsModal} onClose={() => setVersionsModal(null)} />
+      <ReopenModal ctx={reopenCtx} onClose={() => setReopenCtx(null)} onDone={() => { setReopenCtx(null); load(); }} />
     </div>
   );
 }
@@ -1040,15 +1050,15 @@ function RunReviewTab() {
 // ── PSCoSignPage ──────────────────────────────────────────────────────────────
 
 export default function PSCoSignPage() {
-  const [tab, setTab] = useState('run');
+  const [tab, setTab] = useState('queue');
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 900, margin: '0 auto' }}>
+    <div style={{ padding: '24px 32px', maxWidth: 1000, margin: '0 auto' }}>
       <h2 style={{ margin: '0 0 20px', fontSize: '1.15rem', fontWeight: 700, color: 'var(--navy)' }}>Co-Sign Review</h2>
 
       {/* Sub-tabs */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 28, borderBottom: '2px solid var(--gray-100)' }}>
-        {[['run', 'Run & Review'], ['settings', 'Settings']].map(([key, label]) => (
+        {[['queue', 'Queue'], ['settings', 'Settings']].map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
             padding: '8px 20px', fontSize: '0.85rem', fontWeight: tab === key ? 700 : 400,
@@ -1059,7 +1069,7 @@ export default function PSCoSignPage() {
         ))}
       </div>
 
-      {tab === 'settings' ? <SettingsTab /> : <RunReviewTab />}
+      {tab === 'settings' ? <SettingsTab /> : <QueueTab />}
     </div>
   );
 }
