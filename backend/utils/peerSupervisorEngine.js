@@ -4,7 +4,15 @@ const BASE       = 'https://thedscenter.insynchcs.com';
 const CHROME_UA  = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const SCHOOL_START      = 8  * 60;   // 08:00
 const SCHOOL_END        = 15 * 60;   // 15:00
-const MAX_SESSION_MINS  = 180;
+// Duration limits by encounter type (classified by keyword, see checkNote).
+const AUDIO_LIMIT_MINS    = 60;   // telehealth audio-only
+const VIDEO_LIMIT_MINS    = 120;  // telehealth with video
+const INPERSON_SOFT_MINS  = 150;  // in-person preferred 2.5-hour max
+const INPERSON_HARD_MINS  = 180;  // in-person 3-hour ceiling
+const MINOR_EXTENDED_MINS = 150;  // <18 + over this = high priority
+// Default no-school window (month/day) when none is configured in settings.
+const DEFAULT_NO_SCHOOL_START = '07/01';
+const DEFAULT_NO_SCHOOL_END   = '08/31';
 // Bigram similarity is only a candidate net now — cast wide, the AI judge
 // decides. CANDIDATE_THRESHOLD is intentionally loose; MAX_CANDIDATE_PAIRS
 // bounds the number of AI judge calls per scan.
@@ -113,8 +121,8 @@ class InsyncCoSignEngine {
     this.password      = password;
     this.anthropicKey  = anthropicKey;
     this.providerId    = providerId || '2317';
-    this.noSchoolStart = noSchoolStart || '';
-    this.noSchoolEnd   = noSchoolEnd   || '';
+    this.noSchoolStart = (noSchoolStart || '').trim() || DEFAULT_NO_SCHOOL_START;
+    this.noSchoolEnd   = (noSchoolEnd   || '').trim() || DEFAULT_NO_SCHOOL_END;
     // Operator-editable (PS Settings tab); fall back to the shipped defaults.
     this.coherencePrompt = (coherencePrompt || '').trim() || DEFAULT_COHERENCE_PROMPT;
     this.clonePrompt     = (clonePrompt     || '').trim() || DEFAULT_CLONE_PROMPT;
@@ -453,6 +461,10 @@ class InsyncCoSignEngine {
     const startStr  = field('Start Time:');
     const endStr    = field('End Time:');
     const mrn       = field('MRN');
+    // Full Encounter Type string to the next field label. The classification
+    // keywords (audio/video/in-person) live at the END, so capture all of it —
+    // field() stops at other stopLabels (POS/Visit Date/…), never at a dash.
+    const encounterType = field('Encounter Type');
 
     let dur = null;
     let tm = /(\d+)\s*hr[s]?\s*(?:(\d+)\s*min[s]?)?/i.exec(totalTime);
@@ -467,6 +479,7 @@ class InsyncCoSignEngine {
     return {
       ...row,
       mrn,
+      encounterType,
       totalTime, startTimeStr: startStr, endTimeStr: endStr,
       durationMinutes: dur,
       startMins:    this._timeMins(startStr),
@@ -555,10 +568,37 @@ class InsyncCoSignEngine {
 
   checkNote(note) {
     const flags = [];
-    if (note.durationMinutes && note.durationMinutes > MAX_SESSION_MINS)
-      flags.push(`Session over 3 hours (${note.totalTime})`);
+    const dur  = note.durationMinutes;
+    const type = String(note.encounterType || '').toLowerCase();
 
-    if (note.age !== null && note.age !== undefined && note.age < 18 && note.visitDateObj) {
+    // ── Duration limit by encounter type (keyword match, keywords at END) ──
+    const hasVideo = type.includes('video') || type.includes('visual');
+    const hasAudio = type.includes('audio'); // audio-only = audio and NOT video/visual
+    const inPerson = type.includes('in-person') || type.includes('in person') || type.includes('in the clinic');
+
+    if (hasVideo) {
+      if (dur && dur > VIDEO_LIMIT_MINS)
+        flags.push(`Telehealth video session over ${VIDEO_LIMIT_MINS} min (${note.totalTime})`);
+    } else if (hasAudio) {
+      if (dur && dur > AUDIO_LIMIT_MINS)
+        flags.push(`Telehealth audio-only session over ${AUDIO_LIMIT_MINS} min (${note.totalTime})`);
+    } else if (inPerson) {
+      if (dur === INPERSON_HARD_MINS)
+        flags.push('3-hour session — permitted only in severe circumstances');
+      else if (dur && dur > INPERSON_SOFT_MINS)
+        flags.push('Session exceeds the preferred 2.5-hour maximum — verify justification');
+    } else {
+      // Blank or unclassifiable encounter type.
+      flags.push('Encounter type not recognized — verify duration limit manually');
+    }
+
+    // ── Minor + extended session (high priority) ──
+    const isMinor = note.age !== null && note.age !== undefined && note.age < 18;
+    if (isMinor && dur && dur > MINOR_EXTENDED_MINS)
+      flags.push('HIGH PRIORITY: Extended session with a minor — requires justification');
+
+    // ── Minor during school hours ──
+    if (isMinor && note.visitDateObj) {
       const dow = note.visitDateObj.getDay(); // 0=Sun, 6=Sat; 1-5=Mon-Fri
       if (dow >= 1 && dow <= 5 && !this._isNoSchool(note.visitDateObj)
           && note.startMins !== null && note.endMins !== null
@@ -651,7 +691,7 @@ class InsyncCoSignEngine {
 
   // ── AI review ───────────────────────────────────────────────────────────────
 
-  async aiReview(note) {
+  async aiReview(note, machineFlags = []) {
     if (!this.anthropicKey || !note.noteText) return null;
     const anthropic  = new Anthropic({ apiKey: this.anthropicKey });
     const duration   = note.totalTime || 'unknown';
@@ -664,6 +704,7 @@ class InsyncCoSignEngine {
       narrative,
       plan: plan || '(not found in note)',
       dx:   dx   || '(not found)',
+      machine_flags: (machineFlags && machineFlags.length) ? machineFlags.join(', ') : 'none',
     });
 
     try {
@@ -800,14 +841,17 @@ class InsyncCoSignEngine {
 
     for (let i = 0; i < n; i++) {
       const note    = notes[i];
-      const flags   = this.checkNote(note);            // deterministic: time / minor
+      const machineFlags = this.checkNote(note);       // deterministic: duration / minor
+      const flags   = [...machineFlags];
       const partner = clonePartners[note.eid];
       if (cloneFlags[note.eid]) flags.push(cloneFlags[note.eid]);   // AI clone verdict
 
       let aiFlag = null;
       if (this.anthropicKey) {
         report(`AI QA review ${i + 1} of ${n}...`, 64 + Math.floor((i / n) * 34));
-        aiFlag = await this.aiReview(note);            // coherence QA — every note
+        // Every note gets content review; {{machine_flags}} carries the machine
+        // checks only (not the clone verdict) so the AI won't re-litigate timing.
+        aiFlag = await this.aiReview(note, machineFlags);
         await sleep(80);
       }
 
