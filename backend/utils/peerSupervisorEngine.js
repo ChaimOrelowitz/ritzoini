@@ -94,6 +94,17 @@ function renderPrompt(template, vars) {
     vars[key] === undefined || vars[key] === null ? '' : String(vars[key]));
 }
 
+// Normalize a note's per-session narrative for bigram comparison: lowercase,
+// collapse whitespace, and strip the client's own name parts (so two notes
+// aren't matched just for sharing a patient name). Shared by the batch
+// cloneCandidates() and the incremental findClone().
+function normContent(sessionContent, patientName) {
+  let norm = (sessionContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  for (const part of (patientName || '').toLowerCase().replace(',', ' ').split(' '))
+    if (part.length > 2) norm = norm.split(part).join('');
+  return norm;
+}
+
 // Bigram count map for a string (built once per note, reused across compares).
 function bigramMap(s) {
   const m = new Map();
@@ -634,12 +645,7 @@ class InsyncCoSignEngine {
   // in at most one pair (greedy by score) to bound the number of AI calls, and
   // the total is capped. Same-client AND cross-client pairs are both eligible.
   cloneCandidates(notes) {
-    const prepared = notes.map(n => {
-      let norm = (n.sessionContent || '').toLowerCase().replace(/\s+/g, ' ').trim();
-      for (const part of (n.patientName || '').toLowerCase().replace(',', ' ').split(' '))
-        if (part.length > 2) norm = norm.split(part).join('');
-      return norm;
-    });
+    const prepared = notes.map(n => normContent(n.sessionContent, n.patientName));
     // Precompute each note's bigram map once (instead of rebuilding per compare).
     const maps = prepared.map(s => s.length >= 120 ? bigramMap(s) : null);
 
@@ -780,6 +786,61 @@ class InsyncCoSignEngine {
     if (j.ReopenEncounterRestrictionMessage)
       return { ok: false, blocked: true, message: j.ReopenEncounterRestrictionMessage };
     return { ok: true, message: 'Reopened for revision' };
+  }
+
+  // ── Incremental ingest seams ──────────────────────────────────────────────────
+
+  // Download only: fetch the co-sign queue rows and load each note's content.
+  // NO judging, NO field stripping — the ingest orchestrator (utils/psIngest.js)
+  // decides what's new/revised and judges just those. Caller must login() first.
+  async fetchNotes(onProgress) {
+    const report = (m, p) => { if (onProgress) onProgress(m, p); };
+    const rows = await this.fetchAllPages(report);
+    const total = rows.length;
+    const notes = [], cantLoad = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (i % 3 === 0) report(`Loading note ${i + 1} of ${total}...`,
+        Math.min(20 + Math.floor((i / Math.max(total, 1)) * 55), 78));
+      const note = await this.loadNote(rows[i]);
+      if (note) notes.push(note);
+      else cantLoad.push({
+        ...rows[i],
+        visitDate: rows[i].visitDatetime ? rows[i].visitDatetime.split(' ')[0] : '',
+      });
+    }
+    return { notes, cantLoad };
+  }
+
+  // Incremental clone check: is `note` a copy of anything in `corpus` (the
+  // current pending pool — status='pending' only, per spec)? Bigram net first,
+  // then the AI judge on the strongest candidates. Returns the matched partner
+  // { partnerEid, pct, reason } or null. Corpus items: { eid, patientName,
+  // sessionContent, visitDate }.
+  async findClone(note, corpus) {
+    if (!this.anthropicKey) return null;
+    const aNorm = normContent(note.sessionContent, note.patientName);
+    if (aNorm.length < 120) return null;
+    const aMap = bigramMap(aNorm);
+
+    const cands = [];
+    for (const c of corpus) {
+      if (!c || c.eid === note.eid) continue;
+      const bNorm = normContent(c.sessionContent, c.patientName);
+      if (bNorm.length < 120) continue;
+      const ratio = bigramSimFromMaps(aMap, aNorm.length, bigramMap(bNorm), bNorm.length);
+      if (ratio >= CANDIDATE_THRESHOLD) cands.push({ c, pct: Math.round(ratio * 100) });
+    }
+    cands.sort((x, y) => y.pct - x.pct);
+
+    for (const cand of cands.slice(0, MAX_CANDIDATE_PAIRS)) {
+      const verdict = await this.aiCloneJudge(note, cand.c);
+      if (verdict.copy) return {
+        partnerEid: cand.c.eid, pct: cand.pct,
+        reason: verdict.reason || 'Appears copied — not individualized to this session',
+      };
+      await sleep(80);
+    }
+    return null;
   }
 
   // ── Full scan ───────────────────────────────────────────────────────────────
