@@ -28,13 +28,18 @@ function contentHash(note) {
 
 // Pure dedup decision, given the latest stored version for an eid (or null) and
 // the incoming note's content hash. Exported for unit testing.
-//   'new'     — never seen this eid → insert v1
-//   'revised' — reopened-and-resigned, or content changed → insert v+1, supersede
-//   'skip'    — already have this exact content, nothing to do
+//   'new'       — never seen this eid → insert v1
+//   'revised'   — reopened-and-resigned, or content changed → insert v+1, supersede
+//   'reconcile' — we marked it signed, but it's back in InSync's pending queue
+//                 (unchanged) → it was never really signed → flip to pending.
+//                 Direction-A reconciliation: catches optimistic sign-flips that
+//                 InSync actually rejected, without needing per-note sign results.
+//   'skip'      — already have this exact content, nothing to do
 function decideAction(existing, hash) {
   if (!existing) return 'new';
-  if (existing.status === 'reopened') return 'revised';   // peer resigned it
-  if (existing.content_hash !== hash) return 'revised';   // content changed
+  if (existing.status === 'reopened') return 'revised';    // peer resigned it
+  if (existing.content_hash !== hash) return 'revised';    // content changed
+  if (existing.status === 'signed') return 'reconcile';    // in queue but we think signed
   return 'skip';
 }
 
@@ -122,7 +127,7 @@ async function ingestQueue(engine, { onProgress } = {}) {
   }));
 
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
-                  flagged: 0, clean: 0, cantLoad: 0 };
+                  reconciled: 0, flagged: 0, clean: 0, cantLoad: 0 };
 
   for (let i = 0; i < notes.length; i++) {
     const note = notes[i];
@@ -136,6 +141,20 @@ async function ingestQueue(engine, { onProgress } = {}) {
 
     const action = decideAction(existing, hash);
     if (action === 'skip') { stats.skipped++; continue; }
+
+    // Direction-A reconciliation: it's back in the pending queue unchanged, so
+    // our 'signed' was wrong. Flip it back to pending, keep its prior verdict
+    // (content didn't change — no need to re-judge), and return it to the pool.
+    if (action === 'reconcile') {
+      await supabase.from('ps_notes')
+        .update({ status: 'pending', actioned_at: null }).eq('id', existing.id);
+      stats.reconciled++;
+      corpus.push({
+        eid: note.eid, patientName: note.patientName,
+        sessionContent: note.sessionContent, visitDate: note.visitDate,
+      });
+      continue;
+    }
 
     const judged = await judgeNote(engine, note, corpus);
 
