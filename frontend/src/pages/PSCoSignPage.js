@@ -52,9 +52,8 @@ const FIELD_LABELS = [
   'What activities took place, and for how long',
   'Peer Support Interventions', "Patient's Response/Content", 'Plan',
   'Visit Codes', 'Provider NPI',
-  // Injected by the backend parser at each treatment-plan problem so the name
-  // breaks onto its own line instead of trailing the intervention value.
-  'Problem',
+  // NB: 'Problem' (the treatment-plan header the backend injects) is handled
+  // separately in segmentNote — it's too common a narrative word to match bare.
   'Long Term Goal\\(s\\)(?:\\s*\\d+)?', 'Short Term Goal\\(s\\)(?:\\s*\\d+)?',
   'Intervention\\(s\\)(?:\\s*\\d+)?',
   'Name', 'DOB', 'Age', 'Address', 'Phone', 'MRN', 'E-mail', 'Visit Date',
@@ -75,6 +74,15 @@ function segmentNote(text) {
   const fieldRe = new RegExp('\\b(' + FIELD_LABELS.join('|') + ')\\s*[:?\\-]\\s*', 'gi');
   while ((m = fieldRe.exec(text)) !== null)
     marks.push({ label: m[1].trim(), labelStart: m.index, valueStart: m.index + m[0].length, divider: false });
+
+  // 'Problem' is the treatment-plan header the backend injects, but it's also a
+  // common narrative word. Only treat it as a header when it's trailed by the
+  // "(Last Review Date" marker a real TP problem always carries (bounded so a
+  // far-off match can't reach back) — so "the problem: he kept…" in a narrative
+  // isn't promoted to a section head.
+  const problemRe = /\bProblem\s*[:?\-]\s*(?=.{0,100}?\(Last Review Date)/gi;
+  while ((m = problemRe.exec(text)) !== null)
+    marks.push({ label: 'Problem', labelStart: m.index, valueStart: m.index + m[0].length, divider: false });
 
   const divRe = new RegExp('(?:^|\\s)(' + DIVIDER_LABELS.map(escapeRe).join('|') + ')(?=\\s|$)', 'g');
   while ((m = divRe.exec(text)) !== null) {
@@ -327,7 +335,7 @@ function ComparePane({ note, highlightRanges }) {
   );
 }
 
-function CompareModal({ pair, onClose, onReopen }) {
+function CompareModal({ pair, onClose, onReopen, onSign }) {
   const ranges = pair ? scopedCommonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
   if (!pair) return null;
   const { a, b } = pair;
@@ -354,20 +362,36 @@ function CompareModal({ pair, onClose, onReopen }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
         </div>
         <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          <ComparePane note={a} highlightRanges={ranges?.a} />
-          <ComparePane note={b} highlightRanges={ranges?.b} />
+          {[{ note: a, rg: ranges?.a, other: b }, { note: b, rg: ranges?.b, other: a }].map(({ note, rg, other }) => (
+            <div key={note.eid} style={{ flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <ComparePane note={note} highlightRanges={rg} />
+              {(onReopen || onSign) && (
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                  {onReopen && (
+                    <button className="btn btn-outline btn-sm"
+                      onClick={() => onReopen({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner: other }] })}>
+                      Reopen
+                    </button>
+                  )}
+                  {onSign && (
+                    <button className="btn btn-gold btn-sm" onClick={() => onSign([note])}>Sign</button>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
-        {onReopen && (
-          <div style={{ padding: '0 20px 18px', display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
-            <button className="btn btn-outline btn-sm" onClick={() => onReopen({ title: `Reopen ${a.patientName}'s Note`, notes: [{ note: a, partner: b }] })}>
-              Reopen {a.patientName}
-            </button>
-            <button className="btn btn-outline btn-sm" onClick={() => onReopen({ title: `Reopen ${b.patientName}'s Note`, notes: [{ note: b, partner: a }] })}>
-              Reopen {b.patientName}
-            </button>
-            <button className="btn btn-gold btn-sm" onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
-              Reopen Both
-            </button>
+        {(onReopen || onSign) && (
+          <div style={{ padding: '0 20px 18px', display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+            {onReopen && (
+              <button className="btn btn-outline btn-sm"
+                onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
+                Reopen Both
+              </button>
+            )}
+            {onSign && (
+              <button className="btn btn-gold btn-sm" onClick={() => onSign([a, b])}>Sign Both</button>
+            )}
           </div>
         )}
       </div>
@@ -1072,7 +1096,11 @@ function QueueTab() {
             </>
           );
         })()} />
-      <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} onReopen={ctx => { setCompareModal(null); setReopenCtx(ctx); }} />
+      <CompareModal
+        pair={compareModal}
+        onClose={() => setCompareModal(null)}
+        onReopen={view === 'queue' ? (ctx => { setCompareModal(null); setReopenCtx(ctx); }) : undefined}
+        onSign={view === 'queue' ? (list => { setCompareModal(null); signNotes(list, 'Sign'); }) : undefined} />
       <VersionsModal versions={versionsModal} onClose={() => setVersionsModal(null)} />
       <ReopenModal ctx={reopenCtx} onClose={() => setReopenCtx(null)} onDone={() => { setReopenCtx(null); load(); }} />
     </div>
