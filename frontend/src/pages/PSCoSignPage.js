@@ -449,7 +449,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
       background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
       padding: '40px 16px', overflowY: 'auto',
     }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 620, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 1040, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
         <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{ctx.title}</h3>
           <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
@@ -462,28 +462,43 @@ function ReopenModal({ ctx, onClose, onDone }) {
           {ctx.notes.map((n, i) => {
             const r = results?.[n.note.eid];
             return (
-              <div key={n.note.eid || i}>
-                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)', marginBottom: 2 }}>{n.note.patientName}</div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)', marginBottom: 6 }}>
-                  {n.note.peerName} · {fmtDt(n.note.visitDatetime)}{n.note.mrn ? ` · MRN ${n.note.mrn}` : ''}
-                </div>
-                <textarea
-                  className="form-input" rows={3} value={reasons[i] || ''}
-                  onChange={e => setReasons(rs => rs.map((v, j) => j === i ? e.target.value : v))}
-                  disabled={busy || (r && r.ok)}
-                  placeholder="Reason for reopening (required)"
-                  style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
-                />
-                {r && (
-                  <div style={{ marginTop: 6, fontSize: '0.78rem', fontWeight: 600 }}>
-                    <div style={{ color: r.ok ? '#15803d' : '#dc2626' }}>
-                      {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
+              <div key={n.note.eid || i} style={{
+                display: 'flex', gap: 16, flexWrap: 'wrap',
+                paddingTop: i > 0 ? 18 : 0, borderTop: i > 0 ? '1px solid var(--gray-100)' : 'none',
+              }}>
+                {/* Left: the note itself, to reference while writing the reason */}
+                <div style={{ flex: '1 1 340px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)' }}>{n.note.patientName}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)', marginTop: 2 }}>
+                      {n.note.peerName} · {fmtDt(n.note.visitDatetime)}{n.note.mrn ? ` · MRN ${n.note.mrn}` : ''}
                     </div>
-                    {r.ok && (r.emailSent
-                      ? <div style={{ color: '#15803d', fontWeight: 500 }}>✉ QA notified by email</div>
-                      : <div style={{ color: '#b45309', fontWeight: 500 }}>⚠ Reopened, but QA email failed: {r.emailError || 'unknown error'}</div>)}
                   </div>
-                )}
+                  <div style={{ padding: '12px 14px', maxHeight: '52vh', overflowY: 'auto' }}>
+                    <NoteBody text={n.note.fullNoteText} />
+                  </div>
+                </div>
+                {/* Right: the reopen reason */}
+                <div style={{ flex: '1 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+                  <label style={lbl}>Reason for reopening</label>
+                  <textarea
+                    className="form-input" value={reasons[i] || ''}
+                    onChange={e => setReasons(rs => rs.map((v, j) => j === i ? e.target.value : v))}
+                    disabled={busy || (r && r.ok)}
+                    placeholder="Reason for reopening (required)"
+                    style={{ width: '100%', flex: 1, minHeight: 180, resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
+                  />
+                  {r && (
+                    <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 600 }}>
+                      <div style={{ color: r.ok ? '#15803d' : '#dc2626' }}>
+                        {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
+                      </div>
+                      {r.ok && (r.emailSent
+                        ? <div style={{ color: '#15803d', fontWeight: 500 }}>✉ QA notified by email</div>
+                        : <div style={{ color: '#b45309', fontWeight: 500 }}>⚠ Reopened, but QA email failed: {r.emailError || 'unknown error'}</div>)}
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -791,6 +806,44 @@ function StatTile({ label, val, color }) {
   );
 }
 
+// "MM/DD/YYYY" (as InSync gives visit_date) → a local Date, or null.
+function parseVisit(s) {
+  const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(s || '');
+  return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null;
+}
+
+// A compact multi-select dropdown: a button that opens a checkbox popover.
+// `options` are strings; `selected`/`onChange` carry a Set.
+function MultiFilter({ label, options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const toggle = opt => { const n = new Set(selected); n.has(opt) ? n.delete(opt) : n.add(opt); onChange(n); };
+  return (
+    <div style={{ position: 'relative' }}>
+      <button className="btn btn-outline btn-sm" onClick={() => setOpen(o => !o)} style={{ whiteSpace: 'nowrap' }}>
+        {label}{selected.size ? ` (${selected.size})` : ''} ▾
+      </button>
+      {open && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 50 }} />
+          <div style={{
+            position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 51,
+            background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)',
+            boxShadow: '0 10px 30px rgba(0,0,0,0.15)', minWidth: 200, maxHeight: 300, overflowY: 'auto', padding: 6,
+          }}>
+            {options.length === 0 && <div style={{ padding: 8, fontSize: '0.8rem', color: 'var(--gray-400)' }}>None</div>}
+            {options.map(opt => (
+              <label key={opt} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '5px 6px', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--gray-700)' }}>
+                <input type="checkbox" checked={selected.has(opt)} onChange={() => toggle(opt)} style={{ width: 14, height: 14, flexShrink: 0 }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{opt}</span>
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function QueueTab() {
   const [view,     setView]     = useState('queue');   // queue | reopened | archive
   const [notes,    setNotes]    = useState([]);
@@ -807,7 +860,14 @@ function QueueTab() {
   const [compareModal, setCompareModal] = useState(null);   // { a, b }
   const [reopenCtx,    setReopenCtx]    = useState(null);
   const [versionsModal, setVersionsModal] = useState(null); // [versions]
+  const [fClient, setFClient] = useState(new Set());
+  const [fPeer,   setFPeer]   = useState(new Set());
+  const [fLen,    setFLen]    = useState(new Set());
+  const [dFrom,   setDFrom]   = useState('');
+  const [dTo,     setDTo]     = useState('');
   const esRef = useRef(null);
+
+  const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -825,6 +885,8 @@ function QueueTab() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
+  // Filter options are drawn from the current view's notes, so reset on switch.
+  useEffect(() => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); }, [view]);
 
   async function startPull() {
     if (pulling) return;
@@ -883,10 +945,47 @@ function QueueTab() {
     setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
-  const clean   = notes.filter(n => n.verdict === 'clean');
-  const flagged = notes.filter(n => n.verdict === 'flagged');
+  // Filter options come from what's actually loaded, sorted.
+  const uniq = sel => [...new Set(notes.map(sel).filter(Boolean))].sort();
+  const clientOpts = uniq(n => n.patientName);
+  const peerOpts   = uniq(n => n.peerName);
+  const lenOpts    = uniq(n => n.totalTime);
+  const hasFilter  = fClient.size || fPeer.size || fLen.size || dFrom || dTo;
+
+  const fromD = dFrom ? new Date(dFrom + 'T00:00:00') : null;
+  const toD   = dTo   ? new Date(dTo   + 'T23:59:59') : null;
+  const filtered = notes.filter(n => {
+    if (fClient.size && !fClient.has(n.patientName)) return false;
+    if (fPeer.size   && !fPeer.has(n.peerName))      return false;
+    if (fLen.size    && !fLen.has(n.totalTime))      return false;
+    if (fromD || toD) {
+      const d = parseVisit(n.visitDate);
+      if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
+    }
+    return true;
+  });
+
+  const clean   = filtered.filter(n => n.verdict === 'clean');
+  const flagged = filtered.filter(n => n.verdict === 'flagged');
+  // Clone partner is resolved against the FULL set, so a filtered-out partner
+  // is still reachable from Compare.
   const partnerOf = note => note.clonePartnerEid ? notes.find(x => x.eid === note.clonePartnerEid) : null;
   const selectedFlagged = flagged.filter(n => selected.has(n.eid));
+
+  const filterBar = (
+    <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+      <MultiFilter label="Client"  options={clientOpts} selected={fClient} onChange={setFClient} />
+      <MultiFilter label="Peer"    options={peerOpts}   selected={fPeer}   onChange={setFPeer} />
+      <MultiFilter label="Length"  options={lenOpts}    selected={fLen}    onChange={setFLen} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>Date</span>
+        <input type="date" className="form-input" value={dFrom} onChange={e => setDFrom(e.target.value)} style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
+        <span style={{ color: 'var(--gray-400)' }}>–</span>
+        <input type="date" className="form-input" value={dTo} onChange={e => setDTo(e.target.value)} style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
+      </div>
+      {hasFilter ? <button className="btn btn-outline btn-sm" onClick={clearFilters}>Clear filters</button> : null}
+    </div>
+  );
 
   function signClean() {
     if (!clean.length) return;
@@ -985,6 +1084,7 @@ function QueueTab() {
         <div style={{ padding: 40, color: 'var(--gray-400)', textAlign: 'center' }}>Loading…</div>
       ) : view === 'queue' ? (
         <div>
+          {filterBar}
           <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
             <StatTile label="Clean · ready to sign" val={clean.length} color="#16a34a" />
             <StatTile label="Flagged · needs review" val={flagged.length} color="#dc2626" />
@@ -993,6 +1093,11 @@ function QueueTab() {
           {notes.length === 0 && (
             <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
               Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync.
+            </div>
+          )}
+          {notes.length > 0 && filtered.length === 0 && (
+            <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
+              No notes match the filters. <button className="btn btn-outline btn-xs" onClick={clearFilters} style={{ marginLeft: 6 }}>Clear filters</button>
             </div>
           )}
 
@@ -1040,11 +1145,14 @@ function QueueTab() {
         </div>
       ) : view === 'reopened' ? (
         <div>
-          {notes.length === 0 ? (
-            <div style={{ padding: 30, color: 'var(--gray-400)', textAlign: 'center', fontSize: '0.88rem' }}>Nothing waiting on a peer.</div>
+          {filterBar}
+          {filtered.length === 0 ? (
+            <div style={{ padding: 30, color: 'var(--gray-400)', textAlign: 'center', fontSize: '0.88rem' }}>
+              {notes.length === 0 ? 'Nothing waiting on a peer.' : 'No notes match the filters.'}
+            </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {notes.map(note => <NoteRow key={note.id} note={note} />)}
+              {filtered.map(note => <NoteRow key={note.id} note={note} />)}
             </div>
           )}
         </div>
@@ -1056,13 +1164,14 @@ function QueueTab() {
             <button className="btn btn-outline btn-sm" type="submit">Search</button>
             {query && <button className="btn btn-outline btn-sm" type="button" onClick={() => { setSearch(''); setQuery(''); }}>Clear</button>}
           </form>
-          {notes.length === 0 ? (
+          {filterBar}
+          {filtered.length === 0 ? (
             <div style={{ padding: 30, color: 'var(--gray-400)', textAlign: 'center', fontSize: '0.88rem' }}>
-              {query ? 'No matches.' : 'No signed notes yet.'}
+              {notes.length === 0 ? (query ? 'No matches.' : 'No signed notes yet.') : 'No notes match the filters.'}
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {notes.map(note => <NoteRow key={note.id} note={note} />)}
+              {filtered.map(note => <NoteRow key={note.id} note={note} />)}
             </div>
           )}
         </div>
