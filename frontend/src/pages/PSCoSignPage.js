@@ -269,7 +269,7 @@ const lbl = { display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var
 
 // ── NoteModal ─────────────────────────────────────────────────────────────────
 
-function NoteModal({ note, onClose }) {
+function NoteModal({ note, onClose, actions }) {
   if (!note) return null;
   return (
     <div style={{
@@ -299,6 +299,11 @@ function NoteModal({ note, onClose }) {
         <div style={{ padding: '20px 24px', maxHeight: '60vh', overflowY: 'auto' }}>
           <NoteBody text={note.fullNoteText} />
         </div>
+        {actions && (
+          <div style={{ padding: '14px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1039,7 +1044,34 @@ function QueueTab() {
         </div>
       )}
 
-      <NoteModal note={noteModal} onClose={() => setNoteModal(null)} />
+      <NoteModal
+        note={noteModal}
+        onClose={() => setNoteModal(null)}
+        actions={noteModal && (() => {
+          const n = noteModal;
+          const partner = partnerOf(n);
+          const busy = busyIds.has(n.eid);
+          return (
+            <>
+              {partner && (
+                <button className="btn btn-outline btn-sm" onClick={() => { setNoteModal(null); setCompareModal({ a: n, b: partner }); }}>Compare</button>
+              )}
+              {view === 'queue' && n.verdict === 'flagged' && (
+                <button className="btn btn-outline btn-sm" onClick={() => { rejudge(n); setNoteModal(null); }} disabled={rejudgingId === n.id}>
+                  {rejudgingId === n.id ? '…' : 'Re-judge'}
+                </button>
+              )}
+              {view === 'queue' && (
+                <button className="btn btn-outline btn-sm" onClick={() => { setNoteModal(null); setReopenCtx({ title: `Reopen ${n.patientName}'s Note`, notes: [{ note: n, partner }] }); }}>Reopen</button>
+              )}
+              {view === 'queue' && (
+                <button className="btn btn-gold btn-sm" onClick={() => { setNoteModal(null); signNotes([n], 'Sign'); }} disabled={busy}>
+                  {busy ? '…' : 'Sign'}
+                </button>
+              )}
+            </>
+          );
+        })()} />
       <CompareModal pair={compareModal} onClose={() => setCompareModal(null)} onReopen={ctx => { setCompareModal(null); setReopenCtx(ctx); }} />
       <VersionsModal versions={versionsModal} onClose={() => setVersionsModal(null)} />
       <ReopenModal ctx={reopenCtx} onClose={() => setReopenCtx(null)} onDone={() => { setReopenCtx(null); load(); }} />
