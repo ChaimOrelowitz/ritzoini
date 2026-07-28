@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
+import { useAuth } from '../context/AuthContext';
 
 const fmt = iso => {
   if (!iso) return '—';
@@ -47,6 +48,8 @@ function Tag({ children, bg, fg }) {
 }
 
 export default function PeerManagementPage() {
+  const { profile } = useAuth();
+  const payrollOnly = profile?.ps_payroll_only === true;
   const [tab,        setTab]        = useState('peers');
   const [caseload,   setCaseload]   = useState([]);
   const [history,    setHistory]    = useState([]);
@@ -58,6 +61,14 @@ export default function PeerManagementPage() {
   const [syncing,    setSyncing]    = useState(false);
 
   const load = useCallback(async () => {
+    // Payroll-only accounts can reach exactly one endpoint — don't fire the
+    // caseload/supervision calls that would 403 for them.
+    if (payrollOnly) {
+      const p = await api.get('/ps/payroll/periods').catch(() => []);
+      setPeriods(Array.isArray(p) ? p : []);
+      setLoading(false);
+      return;
+    }
     const [c, h, k, p, r, s] = await Promise.all([
       api.get('/ps/caseload').catch(() => []),
       api.get('/ps/caseload/history').catch(() => []),
@@ -73,9 +84,10 @@ export default function PeerManagementPage() {
     setRuns(Array.isArray(r) ? r : []);
     setSupervision(s && s.schedule ? s : { schedule: [], sessions: [] });
     setLoading(false);
-  }, []);
+  }, [payrollOnly]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { if (payrollOnly) setTab('payroll'); }, [payrollOnly]);
 
   async function syncNow() {
     setSyncing(true);
@@ -94,7 +106,9 @@ export default function PeerManagementPage() {
 
   if (loading) return <div style={{ padding: 32, color: 'var(--gray-400)' }}>Loading…</div>;
 
-  const TABS = [
+  const TABS = payrollOnly ? [
+    ['payroll',  `Payroll Report (${periods.length})`],
+  ] : [
     ['peers',    `Peers (${caseload.length})`],
     ['dates',    `Start / End Dates (${history.length})`],
     ['payroll',  `Payroll Report (${periods.length})`],
@@ -104,21 +118,27 @@ export default function PeerManagementPage() {
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1080, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-        <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: 'var(--navy)' }}>Peer Management</h2>
-        <button className="btn btn-gold btn-sm" onClick={syncNow} disabled={syncing}>
-          {syncing ? 'Syncing…' : 'Sync from Airtable'}
-        </button>
+        <h2 style={{ margin: 0, fontSize: '1.15rem', fontWeight: 700, color: 'var(--navy)' }}>
+          {payrollOnly ? 'Payroll Report' : 'Peer Management'}
+        </h2>
+        {!payrollOnly && (
+          <button className="btn btn-gold btn-sm" onClick={syncNow} disabled={syncing}>
+            {syncing ? 'Syncing…' : 'Sync from Airtable'}
+          </button>
+        )}
       </div>
 
-      <p style={{ margin: '0 0 16px', fontSize: '0.76rem', color: 'var(--gray-400)' }}>
-        {caseload.length} peers on caseload
-        {lastRun && ` · last checked ${new Date(lastRun.ran_at).toLocaleString()}`}
-        {lastRun && !lastRun.ok && (
-          <span style={{ color: '#991b1b', fontWeight: 700 }}> · last sync failed: {lastRun.error}</span>
-        )}
-      </p>
+      {!payrollOnly && (
+        <p style={{ margin: '0 0 16px', fontSize: '0.76rem', color: 'var(--gray-400)' }}>
+          {caseload.length} peers on caseload
+          {lastRun && ` · last checked ${new Date(lastRun.ran_at).toLocaleString()}`}
+          {lastRun && !lastRun.ok && (
+            <span style={{ color: '#991b1b', fontWeight: 700 }}> · last sync failed: {lastRun.error}</span>
+          )}
+        </p>
+      )}
 
-      <div style={{ display: 'flex', gap: 4, marginBottom: 18, borderBottom: '1px solid var(--gray-200)' }}>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 18, marginTop: payrollOnly ? 18 : 0, borderBottom: '1px solid var(--gray-200)' }}>
         {TABS.map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
@@ -132,7 +152,7 @@ export default function PeerManagementPage() {
 
       {tab === 'peers'    && <PeersTab rows={caseload} />}
       {tab === 'dates'    && <DatesTab history={history} knownPeers={knownPeers} reload={load} />}
-      {tab === 'payroll'  && <PayrollTab periods={periods} reload={load} />}
+      {tab === 'payroll'  && <PayrollTab periods={periods} reload={load} readOnly={payrollOnly} />}
       {tab === 'sessions' && <SessionsTab schedule={supervision.schedule} sessions={supervision.sessions} />}
     </div>
   );
@@ -369,7 +389,7 @@ function DatesTab({ history, knownPeers, reload }) {
 
 // ── Payroll ───────────────────────────────────────────────────────
 
-function PayrollTab({ periods, reload }) {
+function PayrollTab({ periods, reload, readOnly = false }) {
   const [open, setOpen] = useState(periods.find(p => !p.open)?.start || periods[0]?.start || null);
 
   if (!periods.length) return <Empty>No pay periods yet — add an assignment first.</Empty>;
@@ -377,20 +397,19 @@ function PayrollTab({ periods, reload }) {
   return (
     <>
       <p style={{ margin: '0 0 12px', fontSize: '0.78rem', color: 'var(--gray-400)' }}>
-        26 pay periods a year, 14 days each. Finalizing freezes the numbers so later date edits
-        can’t change a report you already sent.
+        26 pay periods a year, 14 days each.{!readOnly && ' Finalizing freezes the numbers so later date edits can’t change a report you already sent.'}
       </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {periods.map(p => (
           <PeriodCard key={p.start} p={p} expanded={open === p.start}
-            onToggle={() => setOpen(open === p.start ? null : p.start)} reload={reload} />
+            onToggle={() => setOpen(open === p.start ? null : p.start)} reload={reload} readOnly={readOnly} />
         ))}
       </div>
     </>
   );
 }
 
-function PeriodCard({ p, expanded, onToggle, reload }) {
+function PeriodCard({ p, expanded, onToggle, reload, readOnly = false }) {
   const [rep,  setRep]  = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -530,7 +549,7 @@ function PeriodCard({ p, expanded, onToggle, reload }) {
                 <button className="btn btn-outline btn-xs" onClick={() => download('csv')}>Download CSV</button>
                 <button className="btn btn-outline btn-xs" onClick={copyEmail}>Copy email text</button>
 
-                {!rep.finalized
+                {!readOnly && (!rep.finalized
                   ? <button className="btn btn-gold btn-xs" onClick={() => finalize(false)} disabled={busy}>
                       Finalize period
                     </button>
@@ -541,9 +560,9 @@ function PeriodCard({ p, expanded, onToggle, reload }) {
                       <button className="btn btn-danger btn-xs" onClick={unfinalize} disabled={busy}>
                         Un-finalize
                       </button>
-                    </>}
+                    </>)}
 
-                {rep.finalized && (
+                {!readOnly && rep.finalized && (
                   <>
                     <div style={{ width: 1, height: 20, background: 'var(--gray-200)' }} />
                     <label style={chk}>

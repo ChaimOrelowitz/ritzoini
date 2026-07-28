@@ -21,6 +21,21 @@ async function requireAuth(req, res, next) {
     .single();
 
   req.user = { ...user, ...profile };
+
+  // Payroll-only accounts can reach exactly one thing: reading their payroll
+  // reports. Every protected route funnels through here, so this is the single
+  // chokepoint that keeps them out of the rest of the API (read-only — the
+  // finalize/edit/delete payroll routes are POST/PATCH/DELETE and blocked too).
+  if (profile?.ps_payroll_only) {
+    const path = req.originalUrl.split('?')[0];
+    const allowed =
+      (req.method === 'GET' && path.startsWith('/api/ps/payroll')) ||
+      (req.method === 'GET' && path === '/api/users/me');
+    if (!allowed) {
+      return res.status(403).json({ error: 'This account can only view payroll reports.' });
+    }
+  }
+
   next();
 }
 

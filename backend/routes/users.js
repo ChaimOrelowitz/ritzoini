@@ -7,7 +7,7 @@ router.get('/me', requireAuth, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, email, phone, role, email_enabled')
+      .select('id, first_name, last_name, email, phone, role, email_enabled, ps_payroll_only')
       .eq('id', req.user.id)
       .single();
     if (error) throw error;
@@ -40,7 +40,7 @@ router.get('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, first_name, last_name, email, phone, role, email_enabled, created_at')
+      .select('id, first_name, last_name, email, phone, role, email_enabled, ps_payroll_only, created_at')
       .order('last_name');
     if (error) throw error;
     res.json(data);
@@ -88,7 +88,7 @@ router.post('/:id/reset-password', requireAuth, requireAdmin, async (req, res) =
 
 router.patch('/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const allowed = ['first_name', 'last_name', 'phone', 'role', 'email_enabled'];
+    const allowed = ['first_name', 'last_name', 'phone', 'role', 'email_enabled', 'ps_payroll_only'];
     const updates = Object.fromEntries(
       Object.entries(req.body).filter(([k]) => allowed.includes(k))
     );

@@ -7,6 +7,7 @@ function EditUserModal({ user, onClose, onSaved }) {
     last_name: user.last_name || '',
     phone: user.phone || '',
     role: user.role || 'supervisor',
+    ps_payroll_only: user.ps_payroll_only === true,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -62,6 +63,21 @@ function EditUserModal({ user, onClose, onSaved }) {
             </div>
             <div style={{ background: '#fef3c7', borderRadius: 'var(--radius)', padding: '10px 14px', fontSize: '0.8rem', color: '#92400e' }}>
               ⚠️ Admins can see all groups, invite users, and manage the entire platform.
+            </div>
+            <div className="form-group" style={{ marginTop: 14 }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.ps_payroll_only}
+                  onChange={e => set('ps_payroll_only', e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span style={{ fontSize: '0.82rem', color: 'var(--gray-600)' }}>
+                  <strong>Payroll report only</strong> — restrict this account to viewing the
+                  Peer Management → Payroll Report screen. Everything else in the app is hidden and
+                  blocked. Overrides the role above.
+                </span>
+              </label>
             </div>
           </div>
           <div className="modal-footer">
@@ -232,6 +248,11 @@ export default function AdminUsersPage() {
                       <span className={`badge badge-${user.role === 'admin' ? 'locked' : 'active'}`}>
                         {user.role}
                       </span>
+                      {user.ps_payroll_only && (
+                        <span className="badge badge-scheduled" style={{ marginLeft: 6 }} title="Restricted to the Payroll Report screen">
+                          payroll only
+                        </span>
+                      )}
                     </td>
                     <td>
                       <button

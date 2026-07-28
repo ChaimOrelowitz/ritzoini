@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Outlet, NavLink, useNavigate } from 'react-router-dom';
+import { Outlet, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
 const SECTIONS = [
@@ -15,8 +15,15 @@ function getInitialSection() {
 export default function Layout() {
   const { profile, signOut } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [section, setSection] = useState(getInitialSection);
+
+  // Payroll-only accounts live entirely on /ps. Any other path bounces back.
+  const payrollOnly = profile?.ps_payroll_only === true;
+  if (payrollOnly && location.pathname !== '/ps') {
+    return <Navigate to="/ps" replace />;
+  }
 
   async function handleSignOut() {
     await signOut();
@@ -130,7 +137,11 @@ export default function Layout() {
         </div>
 
         <nav className="sidebar-nav" onClick={closeNav}>
-          {navLinks[section]}
+          {payrollOnly ? (
+            <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              <span className="nav-icon">💰</span> Payroll Report
+            </NavLink>
+          ) : navLinks[section]}
         </nav>
 
         <div className="sidebar-footer">
@@ -146,7 +157,8 @@ export default function Layout() {
       </aside>
 
       <main className="main-content">
-        {/* Section switcher */}
+        {/* Section switcher — hidden for payroll-only accounts */}
+        {!payrollOnly && (
         <div style={{
           display: 'flex', justifyContent: 'center', gap: 28,
           padding: '12px 0 10px',
@@ -172,6 +184,7 @@ export default function Layout() {
             </button>
           ))}
         </div>
+        )}
 
         <Outlet />
       </main>
