@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { api } from '../utils/api';
 import supabase from '../supabaseClient';
 
@@ -265,6 +265,168 @@ function defaultReopenReason(note, partner) {
   return flags.length ? flags.join('; ') : '';
 }
 
+// ── At-a-glance clinical context ──────────────────────────────────────────────
+
+// Age, diagnoses and treatment-plan problems, pulled straight off the note text
+// (the demographics line, the Diagnosis section, and the "Problem:" headers the
+// backend injects into the treatment plan). These three are what the supervisor
+// wants visible without scrolling while reading or comparing a note.
+function noteFacts(note) {
+  const text = note?.fullNoteText || '';
+
+  const ageM = /\bAge\s*[:\-]\s*(\d+)/i.exec(text);
+  const age  = note?.age ?? (ageM ? Number(ageM[1]) : null);
+
+  // "Diagnosis F90.2 - ADHD, combined type F34.1 - Dysthymic disorder" — split
+  // on the next ICD code, since nothing else delimits one label from the next.
+  const dxSection = note?.diagnosis
+    || (/\bDiagnosis\s+([A-Z]\d{2}(?:\.\d+)?\s*-[\s\S]*?)(?=Plan \/ Visit Codes|Treatment Plan|Electronically Signed|$)/.exec(text)?.[1] || '');
+  const dxs = [];
+  const dxRe = /([A-Z]\d{2}(?:\.\d+)?)\s*-\s*(.*?)(?=\s[A-Z]\d{2}(?:\.\d+)?\s*-\s|$)/g;
+  let m;
+  while ((m = dxRe.exec(dxSection.trim())) !== null) {
+    const label = m[2].trim();
+    if (label) dxs.push({ code: m[1], label });
+  }
+
+  // Problem names only — the goals/interventions under each are in the body.
+  // The trailing "(mental health disorder - adult)" qualifier is noise here;
+  // strip only that known form so names like "Nicotine Use (Vaping)" survive.
+  const problems = [];
+  const pRe = /\bProblem:\s*(.+?)\s*\(Last Review Date/gi;
+  while ((m = pRe.exec(text)) !== null) {
+    const name = m[1].replace(/\s*\((?:mental health|substance use|behavioral health)[^)]*\)\s*$/i, '').trim();
+    if (name && !problems.includes(name)) problems.push(name);
+  }
+
+  return { age, dxs, problems };
+}
+
+const factLbl  = { fontSize: '0.62rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--gray-400)', paddingTop: 3 };
+const factDash = { fontSize: '0.78rem', color: 'var(--gray-400)' };
+
+function NoteFacts({ note }) {
+  const { age, dxs, problems } = useMemo(() => noteFacts(note), [note]);
+  if (age == null && !dxs.length && !problems.length) return null;
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr)', gap: '5px 10px', marginTop: 8, alignItems: 'start' }}>
+      <div style={factLbl}>Age</div>
+      <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--gray-700)' }}>{age != null ? age : '—'}</div>
+      <div style={factLbl}>Dx</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        {dxs.length
+          ? dxs.map((d, i) => <Chip key={`${d.code}-${i}`} color="blue">{d.code} · {d.label}</Chip>)
+          : <span style={factDash}>—</span>}
+      </div>
+      <div style={factLbl}>Problems</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+        {problems.length
+          ? problems.map((p, i) => <Chip key={`${p}-${i}`} color="orange">{p}</Chip>)
+          : <span style={factDash}>—</span>}
+      </div>
+    </div>
+  );
+}
+
+// ── Draggable / resizable modal shell ─────────────────────────────────────────
+
+// Read and Compare are the two modals that get lived in, so they're movable (by
+// the header) and resizable (right edge / bottom edge / corner grip). Position
+// and size persist per modal key, so a size you drag to is the size you get next
+// time you open it.
+const MODAL_MIN_W = 420, MODAL_MIN_H = 260, MODAL_PAD = 8;
+
+const clampN = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+function initialBox(key, defW, defH) {
+  let saved = null;
+  try { saved = JSON.parse(window.localStorage.getItem(key) || 'null'); } catch { /* ignore */ }
+  if (!saved || typeof saved.w !== 'number') saved = null;
+  const w = clampN(saved?.w ?? defW, MODAL_MIN_W, window.innerWidth  - MODAL_PAD * 2);
+  const h = clampN(saved?.h ?? defH, MODAL_MIN_H, window.innerHeight - MODAL_PAD * 2);
+  // Re-clamp a stored position too — the window may have shrunk since.
+  return {
+    w, h,
+    x: clampN(saved?.x ?? (window.innerWidth - w) / 2, MODAL_PAD, Math.max(MODAL_PAD, window.innerWidth  - w - MODAL_PAD)),
+    y: clampN(saved?.y ?? 32,                          MODAL_PAD, Math.max(MODAL_PAD, window.innerHeight - h - MODAL_PAD)),
+  };
+}
+
+// `bodyScroll` false hands scrolling to the children (Compare scrolls each pane
+// independently); true gives the shell one scroll region (Read).
+function DraggableModal({ storageKey, defaultWidth, defaultHeight, header, footer, children, onClose, bodyScroll = true }) {
+  const [box, setBox] = useState(() => initialBox(storageKey, defaultWidth, defaultHeight));
+  const boxRef = useRef(box);
+  const setAndTrack = next => { boxRef.current = next; setBox(next); };
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const startDrag = mode => e => {
+    // Let the close button (and anything else interactive in the header) work.
+    if (e.button !== 0 || e.target.closest('button, a, input, textarea, select')) return;
+    e.preventDefault();
+    const start = { x: e.clientX, y: e.clientY, box: boxRef.current };
+
+    const onMove = ev => {
+      const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
+      const b  = start.box;
+      if (mode === 'move') {
+        // Keep at least a sliver on screen in every direction so it can't be
+        // dragged somewhere unreachable.
+        setAndTrack({ ...b,
+          x: clampN(b.x + dx, MODAL_PAD - b.w + 140, window.innerWidth - 140),
+          y: clampN(b.y + dy, MODAL_PAD, window.innerHeight - 60) });
+      } else {
+        setAndTrack({ ...b,
+          w: mode === 's' ? b.w : clampN(b.w + dx, MODAL_MIN_W, window.innerWidth  - b.x - MODAL_PAD),
+          h: mode === 'e' ? b.h : clampN(b.h + dy, MODAL_MIN_H, window.innerHeight - b.y - MODAL_PAD) });
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      try { window.localStorage.setItem(storageKey, JSON.stringify(boxRef.current)); } catch { /* ignore */ }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(0,0,0,0.5)' }}
+      onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        position: 'absolute', left: box.x, top: box.y, width: box.w, height: box.h,
+        background: 'white', borderRadius: 'var(--radius)', boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div onPointerDown={startDrag('move')} style={{ flexShrink: 0, cursor: 'move', userSelect: 'none' }}>
+          {header}
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: bodyScroll ? 'auto' : 'hidden' }}>
+          {children}
+        </div>
+        {footer}
+        <div onPointerDown={startDrag('e')}  style={{ position: 'absolute', top: 0, right: 0, width: 7, height: '100%', cursor: 'ew-resize' }} />
+        <div onPointerDown={startDrag('s')}  style={{ position: 'absolute', left: 0, bottom: 0, width: '100%', height: 7, cursor: 'ns-resize' }} />
+        <div onPointerDown={startDrag('se')} title="Drag to resize" style={{
+          position: 'absolute', right: 0, bottom: 0, width: 18, height: 18, cursor: 'nwse-resize',
+          background: 'linear-gradient(135deg, transparent 45%, var(--gray-200) 45%, var(--gray-200) 55%, transparent 55%, transparent 70%, var(--gray-200) 70%, var(--gray-200) 80%, transparent 80%)',
+        }} />
+      </div>
+    </div>
+  );
+}
+
+function ModalClose({ onClose }) {
+  return (
+    <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+  );
+}
+
 function ProgressBar({ pct }) {
   return (
     <div style={{ background: '#e2e8f0', borderRadius: 999, height: 8, overflow: 'hidden', width: '100%' }}>
@@ -279,41 +441,39 @@ const lbl = { display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var
 
 function NoteModal({ note, onClose, actions }) {
   if (!note) return null;
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-      padding: '40px 16px', overflowY: 'auto',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{
-        background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 760,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
-      }}>
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{note.patientName}</h3>
-            <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-              {note.peerName} · {fmtDt(note.visitDatetime)}
-            </p>
-          </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+  const header = (
+    <>
+      <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{note.patientName}</h3>
+          <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+            {note.peerName} · {fmtDt(note.visitDatetime)}
+          </p>
+          <NoteFacts note={note} />
         </div>
-        {note.flags?.length > 0 && (
-          <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-            {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
-          </div>
-        )}
-        <div style={{ padding: '20px 24px', maxHeight: '60vh', overflowY: 'auto' }}>
-          <NoteBody text={note.fullNoteText} />
-        </div>
-        {actions && (
-          <div style={{ padding: '14px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-            {actions}
-          </div>
-        )}
+        <ModalClose onClose={onClose} />
       </div>
-    </div>
+      {note.flags?.length > 0 && (
+        <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+          {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
+        </div>
+      )}
+    </>
+  );
+  return (
+    <DraggableModal
+      storageKey="ps.modal.read" defaultWidth={760} defaultHeight={Math.round(window.innerHeight * 0.86)}
+      onClose={onClose} header={header}
+      footer={actions && (
+        <div style={{ flexShrink: 0, padding: '14px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          {actions}
+        </div>
+      )}>
+      <div style={{ padding: '20px 24px' }}>
+        <NoteBody text={note.fullNoteText} />
+      </div>
+    </DraggableModal>
   );
 }
 
@@ -321,14 +481,15 @@ function NoteModal({ note, onClose, actions }) {
 
 function ComparePane({ note, highlightRanges }) {
   return (
-    <div style={{ flex: '1 1 320px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
+    <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', flexDirection: 'column', border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+      <div style={{ flexShrink: 0, padding: '12px 16px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
         <div style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</div>
         <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', marginTop: 2 }}>
           {note.peerName} · {fmtDt(note.visitDatetime)}
         </div>
+        <NoteFacts note={note} />
       </div>
-      <div style={{ padding: '14px 16px', maxHeight: '58vh', overflowY: 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '14px 16px' }}>
         <NoteBody text={note.fullNoteText} highlightRanges={highlightRanges} />
       </div>
     </div>
@@ -340,62 +501,59 @@ function CompareModal({ pair, onClose, onReopen, onSign }) {
   if (!pair) return null;
   const { a, b } = pair;
   const pct = a.clonePct || b.clonePct;
-  return (
-    <div style={{
-      position: 'fixed', inset: 0, zIndex: 1000,
-      background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
-      padding: '40px 16px', overflowY: 'auto',
-    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{
-        background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 1200,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
-      }}>
-        <div style={{ padding: '20px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Cloned Notes</h3>
-            {pct && <Chip color="orange">{pct}% match</Chip>}
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
-              <span style={{ display: 'inline-block', width: 12, height: 12, background: '#fee2e2', borderRadius: 2, border: '1px solid #fecaca' }} />
-              matching text
-            </span>
-          </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
-        </div>
-        <div style={{ padding: '16px 20px', display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-          {[{ note: a, rg: ranges?.a, other: b }, { note: b, rg: ranges?.b, other: a }].map(({ note, rg, other }) => (
-            <div key={note.eid} style={{ flex: '1 1 320px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <ComparePane note={note} highlightRanges={rg} />
-              {(onReopen || onSign) && (
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
-                  {onReopen && (
-                    <button className="btn btn-outline btn-sm"
-                      onClick={() => onReopen({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner: other }] })}>
-                      Reopen
-                    </button>
-                  )}
-                  {onSign && (
-                    <button className="btn btn-gold btn-sm" onClick={() => onSign([note])}>Sign</button>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-        {(onReopen || onSign) && (
-          <div style={{ padding: '0 20px 18px', display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
-            {onReopen && (
-              <button className="btn btn-outline btn-sm"
-                onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
-                Reopen Both
-              </button>
-            )}
-            {onSign && (
-              <button className="btn btn-gold btn-sm" onClick={() => onSign([a, b])}>Sign Both</button>
-            )}
-          </div>
-        )}
+  const header = (
+    <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Cloned Notes</h3>
+        {pct && <Chip color="orange">{pct}% match</Chip>}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
+          <span style={{ display: 'inline-block', width: 12, height: 12, background: '#fee2e2', borderRadius: 2, border: '1px solid #fecaca' }} />
+          matching text
+        </span>
       </div>
+      <ModalClose onClose={onClose} />
     </div>
+  );
+  return (
+    <DraggableModal
+      storageKey="ps.modal.compare" bodyScroll={false}
+      defaultWidth={Math.min(1200, window.innerWidth - MODAL_PAD * 2)}
+      defaultHeight={Math.round(window.innerHeight * 0.9)}
+      onClose={onClose} header={header}
+      footer={(onReopen || onSign) && (
+        <div style={{ flexShrink: 0, padding: '0 20px 16px', display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {onReopen && (
+            <button className="btn btn-outline btn-sm"
+              onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
+              Reopen Both
+            </button>
+          )}
+          {onSign && (
+            <button className="btn btn-gold btn-sm" onClick={() => onSign([a, b])}>Sign Both</button>
+          )}
+        </div>
+      )}>
+      <div style={{ height: '100%', boxSizing: 'border-box', padding: '16px 20px', display: 'flex', gap: 14, minHeight: 0 }}>
+        {[{ note: a, rg: ranges?.a, other: b }, { note: b, rg: ranges?.b, other: a }].map(({ note, rg, other }) => (
+          <div key={note.eid} style={{ flex: '1 1 0', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <ComparePane note={note} highlightRanges={rg} />
+            {(onReopen || onSign) && (
+              <div style={{ flexShrink: 0, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+                {onReopen && (
+                  <button className="btn btn-outline btn-sm"
+                    onClick={() => onReopen({ title: `Reopen ${note.patientName}'s Note`, notes: [{ note, partner: other }] })}>
+                    Reopen
+                  </button>
+                )}
+                {onSign && (
+                  <button className="btn btn-gold btn-sm" onClick={() => onSign([note])}>Sign</button>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </DraggableModal>
   );
 }
 
