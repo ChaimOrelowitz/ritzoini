@@ -1,0 +1,1423 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2822
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 Implement the following plan for the Peer Support co-sign review system.\
+\
+Do not redesign unrelated parts of the application. Preserve existing routes, database structure, queue behavior, signing behavior, authentication, and InSync ingestion unless this plan explicitly changes them.\
+\
+# PS CO-SIGN REVIEW V2\
+\
+## Primary objective\
+\
+Replace the current expensive review pipeline with:\
+\
+1. Mechanical duplicate awareness\
+2. Existing mechanical time and required-field checks\
+3. Exactly one AI documentation review per note version\
+4. Human review of all mechanical and AI findings together\
+\
+Duplicate detection must use zero AI calls.\
+\
+A possible duplicate must not prevent the note from continuing through the AI review. A note may simultaneously have:\
+\
+- A possible-duplicate flag\
+- A time or mechanical warning\
+- An AI diagnosis/goal-alignment issue\
+- An off-site-rationale issue\
+- A peer correction\
+- A supervisor-review issue\
+\
+The purpose is to show the human reviewer every issue during the same review cycle.\
+\
+--------------------------------------------------\
+NON-NEGOTIABLE ARCHITECTURE\
+--------------------------------------------------\
+\
+For every new or revised note:\
+\
+1. Run mechanical checks.\
+2. Run mechanical duplicate comparison.\
+3. Run one AI review.\
+4. Store all results separately.\
+5. Present them together to the human reviewer.\
+\
+Do not stop the AI review because a possible duplicate was found.\
+\
+Do not send comparison notes to the AI.\
+\
+Do not use AI to judge duplication.\
+\
+Do not make multiple AI calls for different clinical issues.\
+\
+The off-site analysis, diagnosis alignment, goal alignment, intervention review, client-response review, and reopen-message generation must occur within the same AI call.\
+\
+An unchanged note that has already been successfully reviewed must not generate another AI call during a later pull.\
+\
+A revised note is a new note version and receives one new AI review.\
+\
+Manual \'93Rejudge\'94 generates exactly one new AI call.\
+\
+--------------------------------------------------\
+AI CALL COUNTS\
+--------------------------------------------------\
+\
+Expected call behavior:\
+\
+- New note: one AI call\
+- Revised note: one AI call for the revised version\
+- Unchanged note pulled again: zero AI calls\
+- Manual rejudge: one AI call\
+- Duplicate detection: zero AI calls\
+- Mechanical time checks: zero AI calls\
+\
+Instrument this during testing.\
+\
+The total automatic AI call count for a pull should equal the number of new or materially changed note-review fingerprints.\
+\
+--------------------------------------------------\
+STEP 1 \'97 MECHANICAL DUPLICATE AWARENESS\
+--------------------------------------------------\
+\
+Relevant files:\
+\
+- backend/utils/peerSupervisorEngine.js\
+- backend/utils/psIngest.js\
+\
+Remove the AI duplicate judge completely.\
+\
+Delete or stop using:\
+\
+- aiCloneJudge\
+- cloneCandidates\
+- DEFAULT_CLONE_PROMPT\
+- MAX_CANDIDATE_PAIRS\
+- ps_prompt_clone in active settings\
+- Any Claude call made solely to compare two notes\
+\
+The old database setting may remain unused. No database cleanup is required.\
+\
+## Sections to compare\
+\
+Split the note into these sections:\
+\
+1. Focus of the meeting:\
+2. What activities took place, and for how long?\
+3. Peer Support Interventions:\
+4. Patient's Response/Content:\
+5. Plan:\
+\
+Compare corresponding sections only:\
+\
+- Focus against Focus\
+- Activities against Activities\
+- Intervention against Intervention\
+- Response against Response\
+- Plan against Plan\
+\
+Do not compare one section type against another.\
+\
+Add or adapt:\
+\
+- SECTION_LABELS\
+- splitSections(noteText)\
+\
+Reuse the existing section-slicing helper where practical.\
+\
+Bound each section at the next recognized section label.\
+\
+Bound the Plan section at the existing session-content terminators, including:\
+\
+- Fxx.x treatment-plan markers\
+- Visit Codes\
+- Treatment Plan\
+- Electronically Signed\
+- Provider NPI\
+- Other existing session-content terminators already used by the engine\
+\
+## Similarity mechanics\
+\
+Reuse the existing mechanical functions:\
+\
+- normContent\
+- bigramMap\
+- bigramSimFromMaps\
+\
+Precompute each corpus note\'92s section text and bigram maps once per pull.\
+\
+Do not recompute the corpus maps for every comparison.\
+\
+Skip a section when either side contains fewer than 120 normalized characters.\
+\
+## Duplicate-awareness threshold\
+\
+A note should be flagged as a possible duplicate when either condition is met:\
+\
+A. At least one substantive section is 90% or more similar.\
+\
+Substantive sections are:\
+\
+- Focus of the meeting\
+- What activities took place, and for how long?\
+- Peer Support Interventions\
+- Patient's Response/Content\
+\
+OR:\
+\
+B. At least two sections are 80% or more similar.\
+\
+The Plan section may support a duplicate flag but must never trigger a duplicate flag by itself.\
+\
+Routine headings and standard boilerplate must not independently trigger a possible duplicate.\
+\
+Return all sections with similarity of at least 80%, even when only one qualifying section triggered the flag.\
+\
+## Duplicate result shape\
+\
+Keep the existing `clone` key for backward compatibility, but its result is now entirely mechanical.\
+\
+Use:\
+\
+\{\
+  "partnerEid": "...",\
+  "pct": 94,\
+  "reason": "Possible duplicate: Peer Support Interventions is 94% similar to MRN 000123 from 07/14/2026.",\
+  "sections": [\
+    \{\
+      "label": "Peer Support Interventions",\
+      "pct": 94\
+    \},\
+    \{\
+      "label": "Patient's Response/Content",\
+      "pct": 86\
+    \}\
+  ],\
+  "status": "POSSIBLE_DUPLICATE"\
+\}\
+\
+Use the phrase \'93Possible duplicate,\'94 not \'93Duplicate,\'94 because the human reviewer makes the final determination.\
+\
+## Comparison pool\
+\
+For this implementation, preserve the current comparison-pool behavior unless changing it is necessary to make the code function:\
+\
+- Existing pending notes\
+- Notes progressively added during the current ingest batch\
+\
+Do not add a new historical-note retrieval project in this change.\
+\
+Signed, reopened, and superseded notes should retain their current inclusion or exclusion behavior.\
+\
+Update:\
+\
+- findClone \uc0\u8594  findDupe, or retain the old method name internally if changing it would unnecessarily disrupt callers\
+- fullScan\
+- ingestQueue\
+- rejudge paths\
+- partner-flagging logic\
+\
+There must be no Claude request anywhere in the duplicate-detection path.\
+\
+--------------------------------------------------\
+STEP 2 \'97 PRESERVE MECHANICAL NOTE CHECKS\
+--------------------------------------------------\
+\
+Keep the existing deterministic checks for:\
+\
+- Meeting-type duration requirements\
+- Missing required objective fields\
+- Invalid or conflicting dates\
+- Other current machine rules\
+\
+Do not ask the AI to determine permitted duration.\
+\
+The allowed duration for each meeting type remains a programmatic rule.\
+\
+Mechanical failures and warnings stay in:\
+\
+\{\
+  "machine": [...]\
+\}\
+\
+Mechanical checks should continue even when a possible duplicate exists.\
+\
+The AI review should also continue even when a mechanical failure exists.\
+\
+--------------------------------------------------\
+STEP 3 \'97 ONE AI REVIEW PER NOTE VERSION\
+--------------------------------------------------\
+\
+Relevant files:\
+\
+- backend/utils/peerSupervisorEngine.js\
+- backend/utils/psIngest.js\
+- backend/routes/peerSupervision.js\
+\
+Replace the generic coherence-only review with a complete Peer Note QA review.\
+\
+The AI must review:\
+\
+1. Session narrative\
+2. Peer intervention\
+3. Client response\
+4. Selected treatment-plan problem\
+5. LTG\
+6. STG\
+7. Objective\
+8. Diagnosis\
+9. Progress statement\
+10. Service location and delivery method\
+11. Off-site rationale when applicable\
+12. Whether the correction belongs to the peer or a supervisor\
+13. The exact reopen message when a peer correction is needed\
+\
+The AI must not review duplicate comparison text.\
+\
+## One stable system prompt\
+\
+Create two operator-editable prompt modules:\
+\
+1. `ps_prompt_core_review`\
+   Label in Settings:\
+   AI Prompt \'97 Core Peer Note QA\
+\
+2. `ps_prompt_offsite`\
+   Label in Settings:\
+   AI Prompt \'97 Off-Site Review Addendum\
+\
+Compose both prompts, plus the JSON output contract, into one static system prompt.\
+\
+Use the same combined system prompt for every note.\
+\
+The off-site prompt itself must contain the effective-date rule, so pre-cutoff notes return NOT_APPLICABLE.\
+\
+This provides one byte-identical system prefix across notes and allows prompt caching.\
+\
+Stop actively using:\
+\
+- ps_prompt_clone\
+- The old generic coherence prompt as the primary review source\
+\
+Existing unused settings may remain in the database.\
+\
+Seed the two new prompts from the rules in this plan.\
+\
+## Prompt caching\
+\
+The system prompt must contain only static instructions.\
+\
+Do not interpolate note-specific values into the system prompt.\
+\
+Put `cache_control: \{ type: "ephemeral" \}` on the final static system block according to the existing Anthropic request implementation.\
+\
+The per-note data belongs only in the user message.\
+\
+The cached prefix should include:\
+\
+- Core review instructions\
+- Off-site review instructions\
+- Decision hierarchy\
+- JSON output schema\
+- Rules against inventing documentation\
+\
+Log cache usage during verification.\
+\
+The second and later calls with the same configured prompts should report non-zero cache-read input tokens.\
+\
+## Model settings\
+\
+Keep the currently configured model:\
+\
+- claude-sonnet-4-6\
+\
+Use:\
+\
+- max_tokens: 1500\
+- Deterministic or lowest practical temperature supported by the current client configuration\
+\
+Do not make an automatic second AI call to repair malformed JSON.\
+\
+One automatic review means one AI request.\
+\
+--------------------------------------------------\
+STEP 4 \'97 NOTE REVIEW FINGERPRINT\
+--------------------------------------------------\
+\
+Implement an AI-review fingerprint so an unchanged note is not reviewed again during later pulls.\
+\
+Create a stable SHA-256 hash from the material that affects the review, including:\
+\
+- Full note text or the extracted note sections\
+- Visit date\
+- Encounter type\
+- Delivery method\
+- Place of service\
+- Stated duration\
+- Diagnosis list\
+- Treatment-plan problem\
+- LTG\
+- STG\
+- Objective\
+- Progress statement\
+- Treatment-plan date\
+- Core prompt hash\
+- Off-site prompt hash\
+- Review-schema version\
+- Configured model name\
+\
+Do not include volatile values such as:\
+\
+- Pull timestamp\
+- Queue position\
+- Current time\
+- Database update timestamp unrelated to content\
+\
+Store the fingerprint with the AI review.\
+\
+Before making an AI request:\
+\
+- If the fingerprint matches a prior successful review, reuse the stored review.\
+- If the fingerprint changed, make one new AI call.\
+- If the previous review ended in AI_REVIEW_ERROR, allow a new review on the next explicit rejudge. Do not continuously retry on every page load.\
+\
+Suggested review version:\
+\
+ps_review_v2\
+\
+--------------------------------------------------\
+STEP 5 \'97 PER-NOTE AI PAYLOAD\
+--------------------------------------------------\
+\
+Send a structured JSON payload in the user message.\
+\
+Include all available fields without inventing missing data:\
+\
+\{\
+  "review_version": "ps_review_v2",\
+  "visit_date": "YYYY-MM-DD",\
+  "encounter_type": "",\
+  "billing_or_rate_type": "",\
+  "delivery_method": "",\
+  "place_of_service": "",\
+  "stated_duration": "",\
+  "note_sections": \{\
+    "focus": "",\
+    "activities_and_duration": "",\
+    "peer_interventions": "",\
+    "patient_response": "",\
+    "plan": ""\
+  \},\
+  "other_session_narrative": "",\
+  "progress_statement": "",\
+  "diagnoses": [],\
+  "treatment_plan": \{\
+    "problem": "",\
+    "ltg": "",\
+    "stg": "",\
+    "objective": "",\
+    "plan_date": "",\
+    "review_date": ""\
+  \}\
+\}\
+\
+Use null or an empty string for genuinely unavailable data.\
+\
+Do not send:\
+\
+- Another client\'92s note\
+- Duplicate-partner note text\
+- A hundred candidate comparisons\
+- Duplicate bigram data\
+\
+Duplicate review remains separate and mechanical.\
+\
+--------------------------------------------------\
+STEP 6 \'97 CORE AI REVIEW RULES\
+--------------------------------------------------\
+\
+Seed `DEFAULT_CORE_REVIEW_PROMPT` with these rules.\
+\
+The AI is the documentation and clinical-alignment reviewer for Peer Support notes.\
+\
+It must evaluate only what is documented.\
+\
+It must not invent:\
+\
+- Symptoms\
+- Diagnoses\
+- Interventions\
+- Client responses\
+- Treatment-plan relationships\
+- Off-site reasons\
+- Locations\
+- Progress\
+- Clinical facts\
+\
+It must not tell the peer to add language merely to make the note billable.\
+\
+Any requested correction must reflect what actually occurred.\
+\
+## Narrative-to-goal review\
+\
+The session narrative, intervention, client response, selected problem, LTG, STG, and objective do not need identical wording.\
+\
+There must, however, be a reasonable and understandable relationship among:\
+\
+- What happened during the service\
+- What the peer did\
+- How the client responded\
+- What treatment-plan problem or goal was addressed\
+\
+A session may address only one symptom, function, behavior, skill, or recovery need.\
+\
+It does not have to address every diagnosis or every goal.\
+\
+Return REOPEN_TO_PEER when:\
+\
+- The narrative addresses a different issue from the selected problem or goal\
+- The wrong goal or objective appears to have been selected\
+- The intervention does not relate to the selected goal\
+- The client response does not respond to the documented intervention\
+- The progress statement is unsupported\
+- The documentation is too vague to identify the relationship\
+- The peer can correct the issue based on what actually occurred\
+\
+## Diagnosis-to-problem review\
+\
+The treatment-plan problem does not need to have the same name as the diagnosis.\
+\
+A diagnosis may create many symptoms and functional problems.\
+\
+Examples:\
+\
+- Anxiety may interfere with concentration, organization, social functioning, school performance, or task completion.\
+- Major depressive disorder may involve reduced concentration, low motivation, social isolation, poor self-care, or difficulty completing responsibilities.\
+\
+These functional problems may be treated when the note reasonably explains or demonstrates their relationship to the documented diagnosis.\
+\
+Do not require the words in the diagnosis, problem, goal, and narrative to be identical.\
+\
+## Unsupported diagnostic language\
+\
+A peer may document:\
+\
+- Client-reported symptoms\
+- Observed behaviors\
+- Functional difficulties\
+- Distractibility\
+- Trouble focusing\
+- Organization difficulty\
+- Task-completion difficulty\
+- Recovery barriers\
+- Coping strategies\
+- Peer interventions\
+- Client response\
+\
+A peer must not introduce a diagnosis that is not documented.\
+\
+Example:\
+\
+Documented diagnosis:\
+- Anxiety disorder\
+- Major depressive disorder\
+\
+Peer note:\
+- \'93Worked on the client\'92s ADHD.\'94\
+\
+If ADHD is not among the documented diagnoses, return REOPEN_TO_PEER.\
+\
+The reopen message must explain that ADHD should not be presented as the client\'92s diagnosis.\
+\
+Ask the peer to describe the actual functional difficulty addressed, such as:\
+\
+- Trouble focusing\
+- Distractibility\
+- Organization\
+- Task completion\
+\
+The peer may connect the difficulty to anxiety or depression only when that relationship reflects what was actually discussed or observed.\
+\
+Do not tell the peer to invent that relationship.\
+\
+## Treatment-plan-level mismatch\
+\
+If the treatment plan itself lists ADHD as the problem, builds the LTGs or STGs around ADHD, and ADHD is not documented as a diagnosis, return SUPERVISOR_REVIEW.\
+\
+The peer must not be asked to repair:\
+\
+- A diagnosis\
+- A treatment-plan problem\
+- An LTG\
+- An STG\
+- A clinical record inconsistency requiring clinical judgment\
+\
+Distinguish:\
+\
+A. Peer used unsupported diagnostic wording:\
+REOPEN_TO_PEER\
+\
+B. Treatment plan itself is inconsistent with the diagnoses:\
+SUPERVISOR_REVIEW\
+\
+C. Functional symptom is plausibly connected to the documented diagnosis:\
+May PASS when supported by the note\
+\
+D. Wrong goal was selected:\
+REOPEN_TO_PEER\
+\
+## Intervention review\
+\
+The intervention must state what the peer actually did.\
+\
+The following are insufficient by themselves:\
+\
+- Provided support\
+- Discussed concerns\
+- Encouraged the client\
+- Worked on goals\
+- Met with the client\
+\
+The note should contain meaningful detail such as:\
+\
+- Modeling\
+- Skill practice\
+- Recovery-oriented problem solving\
+- Sharing relevant lived experience\
+- Role-play\
+- Identifying barriers\
+- Developing a plan\
+- Communication practice\
+- Coping-strategy review\
+- Self-advocacy support\
+- Resource connection\
+\
+Do not require one of these exact words when the documented action is otherwise clear.\
+\
+## Client-response review\
+\
+The note must describe how the client:\
+\
+- Participated\
+- Responded\
+- Reacted\
+- Practiced\
+- Understood\
+- Benefited\
+- Struggled\
+- Made progress\
+- Declined or resisted\
+\
+A generic response that could be copied into every note should be flagged.\
+\
+## Ownership of corrections\
+\
+Return REOPEN_TO_PEER when the peer can correct the note based on what actually happened.\
+\
+Return SUPERVISOR_REVIEW when correction would require:\
+\
+- Changing the diagnosis\
+- Changing the treatment plan\
+- Making a new clinical determination\
+- Resolving contradictory clinical records\
+- Deciding whether an undocumented disorder exists\
+- Adding recurring off-site authorization to the treatment plan\
+\
+Return DO_NOT_BILL when the documented facts establish that the claimed service did not occur or cannot support the claimed delivery/billing method.\
+\
+--------------------------------------------------\
+STEP 7 \'97 OFF-SITE RULES\
+--------------------------------------------------\
+\
+Use the following constant:\
+\
+OFFSITE_RATIONALE_FROM = '2026-07-28'\
+\
+July 27, 2026 was the implementation day.\
+\
+The new note-level rationale review begins with dates of service on July 28, 2026.\
+\
+Do not require the new rationale solely because a note is dated July 27, 2026 or earlier.\
+\
+## Apply off-site logic to all post-cutoff AI reviews\
+\
+Every note already receives one AI review.\
+\
+For notes dated July 28, 2026 or later, the AI must classify the documented service type and determine whether off-site requirements apply.\
+\
+A properly documented on-site or telehealth service should return NOT_APPLICABLE for off-site rationale.\
+\
+This allows the review to catch a service identified as off-site when the narrative actually describes telehealth.\
+\
+## Service types\
+\
+Classify as:\
+\
+- OFFSITE\
+- TELEHEALTH\
+- ONSITE\
+- POSSIBLE_SATELLITE\
+- UNABLE_TO_DETERMINE\
+\
+Definitions:\
+\
+OFFSITE:\
+The peer physically traveled to and met the client face-to-face at the client\'92s home, school, or community location.\
+\
+TELEHEALTH:\
+The service occurred by phone or video.\
+\
+ONSITE:\
+The client and peer met at the clinic or an approved agency location.\
+\
+POSSIBLE_SATELLITE:\
+The agency appears to provide recurring scheduled services at the same outside location for multiple clients.\
+\
+UNABLE_TO_DETERMINE:\
+The note does not clearly establish how or where the service occurred.\
+\
+## Required elements for an off-site note dated July 28, 2026 or later\
+\
+The note must document:\
+\
+1. Type of location\
+2. Individualized reason this specific client needed the service outside the clinic\
+3. Intervention provided\
+4. Client response\
+5. Connection to the treatment-plan problem, goal, or objective\
+\
+The individualized rationale must answer:\
+\
+\'93Why did this person\'97not merely clients in general\'97need this service outside the clinic today?\'94\
+\
+Insufficient reasons include:\
+\
+- Peer services are community based\
+- The client prefers it\
+- It was convenient\
+- Scheduling convenience\
+- Transportation convenience alone\
+- The peer usually sees clients outside the clinic\
+- Another clinician provides home visits\
+- Program policy\
+- Supervisor instruction\
+- All clients with this diagnosis are seen off-site\
+\
+Potentially acceptable reasons may include, when actually documented:\
+\
+- A symptom creating a current barrier to clinic attendance\
+- A recent hospital, ER, or CPEP transition\
+- A treatment goal requiring work in the natural environment\
+- A functional or medical limitation\
+- A specific home, school, vocational, or community skill that needed in-context practice\
+\
+Do not assume that one of these circumstances existed.\
+\
+## Off-site decision rules\
+\
+Return PASS for off-site review when all required elements are sufficiently documented.\
+\
+Return REOPEN_TO_PEER when:\
+\
+- The service was off-site\
+- The date is July 28, 2026 or later\
+- The individualized rationale is missing or too general\
+- The peer can add the actual rationale based on what occurred\
+\
+Return NOT_APPLICABLE when:\
+\
+- The date is before July 28, 2026\
+- The service was properly documented as on-site\
+- The service was properly documented and coded as telehealth\
+\
+Return DO_NOT_BILL when:\
+\
+- A service identified or billed as off-site occurred only by phone or video\
+- The client was a no-show\
+- No face-to-face service occurred\
+- Only travel occurred\
+- The claimed off-site service is contradicted by the note\
+\
+Return SUPERVISOR_REVIEW when:\
+\
+- Ongoing off-site service appears unsupported by the treatment plan\
+- The setting may be a satellite site\
+- The record is contradictory\
+- The proper service classification cannot be determined\
+- Correcting the issue requires treatment-plan or clinical review\
+\
+--------------------------------------------------\
+STEP 8 \'97 AI DECISION HIERARCHY\
+--------------------------------------------------\
+\
+The AI should identify every issue, not only the first issue.\
+\
+Use this overall-decision precedence:\
+\
+1. DO_NOT_BILL\
+2. SUPERVISOR_REVIEW\
+3. REOPEN_TO_PEER\
+4. PASS\
+\
+Example:\
+\
+If a note contains both:\
+\
+- A vague intervention that the peer can correct\
+- A treatment-plan diagnosis mismatch requiring supervisor review\
+\
+The overall AI decision is SUPERVISOR_REVIEW.\
+\
+The issues array must still include both concerns.\
+\
+A possible duplicate does not participate in this AI decision hierarchy because duplication is a separate mechanical/human-review track.\
+\
+--------------------------------------------------\
+STEP 9 \'97 STRICT JSON OUTPUT\
+--------------------------------------------------\
+\
+Require one JSON object only.\
+\
+Do not request:\
+\
+- A prose report followed by JSON\
+- Markdown\
+- A separator\
+- A second coherence fragment\
+- Regex-parsed headings\
+\
+Use this schema:\
+\
+\{\
+  "review_version": "ps_review_v2",\
+  "decision": "PASS | REOPEN_TO_PEER | SUPERVISOR_REVIEW | DO_NOT_BILL",\
+  "confidence": "HIGH | MODERATE | LOW",\
+\
+  "offsite_review": \{\
+    "applicable": true,\
+    "service_type": "OFFSITE | TELEHEALTH | ONSITE | POSSIBLE_SATELLITE | UNABLE_TO_DETERMINE",\
+    "status": "PASS | FAIL | NOT_APPLICABLE | SUPERVISOR_REVIEW",\
+    "rationale_status": "PRESENT_SUFFICIENT | PRESENT_TOO_GENERAL | MISSING | UNSUPPORTED | NOT_APPLICABLE",\
+    "location_status": "SUFFICIENT | MISSING | UNCLEAR | NOT_APPLICABLE",\
+    "goal_connection_status": "SUFFICIENT | MISSING | UNCLEAR | NOT_APPLICABLE",\
+    "explanation": ""\
+  \},\
+\
+  "narrative_goal_alignment": \{\
+    "status": "ALIGNED | PARTIALLY_ALIGNED | NOT_ALIGNED | UNABLE_TO_DETERMINE",\
+    "explanation": ""\
+  \},\
+\
+  "diagnosis_problem_alignment": \{\
+    "status": "ALIGNED | PLAUSIBLY_RELATED | UNSUPPORTED_DIAGNOSTIC_LANGUAGE | TREATMENT_PLAN_MISMATCH | UNABLE_TO_DETERMINE",\
+    "explanation": ""\
+  \},\
+\
+  "intervention_response_review": \{\
+    "intervention_status": "SUFFICIENT | NEEDS_REVISION | UNABLE_TO_DETERMINE",\
+    "response_status": "SUFFICIENT | NEEDS_REVISION | UNABLE_TO_DETERMINE",\
+    "explanation": ""\
+  \},\
+\
+  "issues": [\
+    \{\
+      "code": "",\
+      "severity": "WARNING | REOPEN | SUPERVISOR | NONBILLABLE",\
+      "owner": "PEER | SUPERVISOR | BILLING | HUMAN_REVIEW",\
+      "source": "OFFSITE | NARRATIVE | GOAL | DIAGNOSIS | INTERVENTION | RESPONSE | TREATMENT_PLAN | SERVICE_TYPE",\
+      "explanation": "",\
+      "evidence_from_note": ""\
+    \}\
+  ],\
+\
+  "reopen_message_to_peer": "",\
+  "supervisor_message": "",\
+  "review_summary": ""\
+\}\
+\
+## Output requirements\
+\
+When decision is PASS:\
+\
+- reopen_message_to_peer must be empty\
+- supervisor_message must be empty\
+- review_summary should briefly explain why the note aligns\
+\
+When decision is REOPEN_TO_PEER:\
+\
+- Produce one consolidated reopen message\
+- Address the peer directly\
+- Identify every peer-correctable issue\
+- Explain what must be clarified\
+- Tell the peer to document only what actually occurred\
+- Do not tell the peer to change a diagnosis or treatment plan\
+- Do not ask the peer to invent a connection\
+\
+When decision is SUPERVISOR_REVIEW:\
+\
+- Explain the record-level or treatment-plan-level concern\
+- Do not instruct the peer to repair the treatment plan\
+- The reopen message may address separate peer-correctable issues, but the supervisor message must clearly identify the issue requiring clinical review\
+\
+When decision is DO_NOT_BILL:\
+\
+- State the documented contradiction or nonbillable condition clearly\
+- Do not suggest wording that would conceal what occurred\
+\
+--------------------------------------------------\
+STEP 10 \'97 EXAMPLE REOPEN MESSAGES\
+--------------------------------------------------\
+\
+The prompt should contain examples similar to these.\
+\
+## Unsupported ADHD wording\
+\
+\'93The note identifies ADHD as the condition addressed, but ADHD is not listed among the client\'92s documented diagnoses. Please do not describe ADHD as the client\'92s diagnosis. Based on what actually occurred, describe the specific difficulty addressed, such as trouble focusing, distractibility, organization, or task completion, and explain its relationship to the documented diagnosis and selected goal only if that relationship was actually discussed or observed. If the treatment-plan problem itself is incorrect, it must be reviewed by a supervisor.\'94\
+\
+## Wrong goal selected\
+\
+\'93The narrative describes work on social isolation, but the selected goal concerns employment skills. Please select the goal that was actually addressed during this session, or correct the narrative if the wrong session information was entered.\'94\
+\
+## Vague intervention\
+\
+\'93The intervention states only that support was provided. Please describe what you actually did during the session and how the client responded. Examples may include modeling, skill practice, problem solving, sharing relevant lived experience, role-play, or developing a plan, but include only what actually occurred.\'94\
+\
+## Missing off-site rationale\
+\
+\'93Because this off-site service occurred on or after July 28, 2026, the note must explain why this specific client needed the service outside the clinic on this date. Please document the actual clinical or functional reason, the type of location, and how meeting there supported the selected treatment-plan goal. Do not use a general statement that peer services are community based.\'94\
+\
+Do not include a duplicate reopen message in the AI prompt because duplicate adjudication is human-controlled.\
+\
+--------------------------------------------------\
+STEP 11 \'97 JSON PARSING AND FAILURE HANDLING\
+--------------------------------------------------\
+\
+Parse the AI response as JSON.\
+\
+It is acceptable to defensively remove an outer Markdown code fence before parsing.\
+\
+Validate:\
+\
+- Required top-level fields\
+- Allowed decision enums\
+- Required nested objects\
+- Issues is an array\
+- Message fields are strings\
+\
+Do not use regex to extract the primary review.\
+\
+Do not treat malformed output as unflagged.\
+\
+On malformed or schema-invalid output, store:\
+\
+\{\
+  "decision": "AI_REVIEW_ERROR",\
+  "error": "AI response could not be parsed or validated.",\
+  "raw_response": "...",\
+  "review_version": "ps_review_v2"\
+\}\
+\
+AI_REVIEW_ERROR must:\
+\
+- Keep the note in the review queue\
+- Display a visible error chip\
+- Prevent silent approval\
+- Allow manual rejudge\
+- Not trigger an automatic second AI request\
+\
+--------------------------------------------------\
+STEP 12 \'97 STORAGE\
+--------------------------------------------------\
+\
+No SQL migration should be required because ps_notes.ai_flags is JSON.\
+\
+Use a structure similar to:\
+\
+\{\
+  "machine": [...],\
+\
+  "clone": \{\
+    "partnerEid": "...",\
+    "pct": 94,\
+    "reason": "...",\
+    "sections": [...],\
+    "status": "POSSIBLE_DUPLICATE"\
+  \},\
+\
+  "coherence": "Backward-compatible short summary or null",\
+\
+  "offsite": \{\
+    "applicable": true,\
+    "serviceType": "OFFSITE",\
+    "status": "FAIL",\
+    "rationaleStatus": "MISSING"\
+  \},\
+\
+  "review": \{\
+    "review_version": "ps_review_v2",\
+    "fingerprint": "...",\
+    "model": "claude-sonnet-4-6",\
+    "reviewed_at": "...",\
+    "prompt_hashes": \{\
+      "core": "...",\
+      "offsite": "..."\
+    \},\
+    "decision": "REOPEN_TO_PEER",\
+    "confidence": "HIGH",\
+    "offsite_review": \{\},\
+    "narrative_goal_alignment": \{\},\
+    "diagnosis_problem_alignment": \{\},\
+    "intervention_response_review": \{\},\
+    "issues": [],\
+    "reopen_message_to_peer": "...",\
+    "supervisor_message": "",\
+    "review_summary": "",\
+    "raw_response": ""\
+  \}\
+\}\
+\
+Preserve `clone`, `coherence`, and `offsite` where needed for current UI compatibility.\
+\
+The full source of truth should be `ai_flags.review`.\
+\
+`coherence` may be derived from `review_summary` for older components until the frontend is fully updated.\
+\
+--------------------------------------------------\
+STEP 13 \'97 OVERALL NOTE STATUS\
+--------------------------------------------------\
+\
+Mechanical and AI outcomes remain separate.\
+\
+A note can have:\
+\
+- clone.status = POSSIBLE_DUPLICATE\
+- review.decision = PASS\
+\
+That note must remain visible for human duplicate comparison even though the AI passed it.\
+\
+A note can also have:\
+\
+- clone.status = POSSIBLE_DUPLICATE\
+- review.decision = REOPEN_TO_PEER\
+\
+Both findings must be shown.\
+\
+Suggested composite queue logic:\
+\
+Needs human attention when any of these are true:\
+\
+- Mechanical failure\
+- Possible duplicate\
+- AI decision is not PASS\
+- AI_REVIEW_ERROR\
+- Existing manual flag\
+\
+Do not convert a possible duplicate directly into an AI failure.\
+\
+Do not automatically reopen a note solely because the mechanical system found a possible duplicate. The human reviewer should compare the notes and determine whether it represents inappropriate copying.\
+\
+--------------------------------------------------\
+STEP 14 \'97 REOPEN-MESSAGE COMPOSITION\
+--------------------------------------------------\
+\
+Create a backend helper such as:\
+\
+composeSuggestedReopenMessage(\{\
+  machineFlags,\
+  aiReview,\
+  confirmedDuplicate\
+\})\
+\
+The suggested message shown to the human reviewer may contain:\
+\
+1. Deterministic mechanical correction text\
+2. AI-generated peer correction text\
+3. A deterministic duplicate message only after the human confirms that the similarity is a true duplicate problem\
+\
+The human must be able to edit the message before reopening.\
+\
+## Mechanical message examples\
+\
+Duration:\
+\
+\'93The documented duration does not meet the permitted time requirement for this meeting type. Please correct the recorded duration only if it was entered incorrectly. Do not change the time unless the corrected time reflects the service that actually occurred.\'94\
+\
+Confirmed duplicate:\
+\
+\'93This note substantially matches the note from [date]. Please revise it to reflect what specifically occurred during this service, including the date-specific intervention, client response, and progress. Do not simply reword the earlier note.\'94\
+\
+Do not include the duplicate correction automatically before the human confirms the duplicate concern.\
+\
+--------------------------------------------------\
+STEP 15 \'97 ROUTES AND SETTINGS\
+--------------------------------------------------\
+\
+Update backend/routes/peerSupervision.js.\
+\
+## Settings\
+\
+Add to:\
+\
+- loadSettings\
+- GET /cosign/settings\
+- POST /cosign/settings\
+- Engine constructor\
+\
+New keys:\
+\
+- ps_prompt_core_review\
+- ps_prompt_offsite\
+\
+Return defaults:\
+\
+- default_prompt_core_review\
+- default_prompt_offsite\
+\
+Stop presenting the old duplicate-judge prompt as an active setting.\
+\
+Do not make the cutoff date operator-editable in this implementation.\
+\
+Keep:\
+\
+OFFSITE_RATIONALE_FROM = '2026-07-28'\
+\
+as a module constant.\
+\
+## Rejudge route\
+\
+POST /ps/cosign/notes/:id/rejudge should:\
+\
+1. Reload the current note data\
+2. Re-run mechanical checks if that is current behavior\
+3. Re-run mechanical duplicate detection with zero AI comparison calls\
+4. Make exactly one AI call\
+5. Store the new review and fingerprint\
+6. Return the combined note-view model\
+\
+Manual rejudge intentionally bypasses the fingerprint reuse check because the operator explicitly requested a new review.\
+\
+--------------------------------------------------\
+STEP 16 \'97 FRONTEND\
+--------------------------------------------------\
+\
+Relevant file:\
+\
+- frontend/src/pages/PSCoSignPage.js\
+\
+Rebuild:\
+\
+- frontend/build/\
+\
+## Queue-row chips\
+\
+Display separate chips for:\
+\
+- Possible duplicate\
+- Mechanical/time issue\
+- AI PASS\
+- REOPEN TO PEER\
+- SUPERVISOR REVIEW\
+- DO NOT BILL\
+- AI REVIEW ERROR\
+- Off-site issue when applicable\
+\
+Do not combine \'93Possible duplicate\'94 into the AI verdict chip.\
+\
+## Read modal\
+\
+Show:\
+\
+1. Existing note content\
+2. Mechanical flags\
+3. AI verdict\
+4. AI review summary\
+5. Diagnosis/problem alignment\
+6. Narrative/goal alignment\
+7. Intervention/client-response review\
+8. Off-site review\
+9. Issues list\
+10. Suggested reopen message\
+11. Supervisor message\
+12. Collapsible raw AI response for debugging, restricted appropriately if current permissions require it\
+\
+## Duplicate compare modal\
+\
+Show:\
+\
+- Current note\
+- Partner note\
+- MRN or permitted identifier\
+- Date of service\
+- Overall highest percentage\
+- Every matched section\
+- Percentage for each matched section\
+- Side-by-side text for each matched section\
+\
+Provide a human action such as:\
+\
+- Confirm duplicate concern\
+- Dismiss duplicate concern\
+\
+Do not let the mechanical score silently determine the outcome.\
+\
+## Settings tab\
+\
+Replace:\
+\
+\'93Duplicate / Copied-Note Judge\'94\
+\
+with:\
+\
+\'93AI Prompt \'97 Core Peer Note QA\'94\
+\
+Add:\
+\
+\'93AI Prompt \'97 Off-Site Review Addendum\'94\
+\
+Reuse PromptEditor where practical.\
+\
+Explain that duplicate awareness is mechanical and has no AI prompt.\
+\
+--------------------------------------------------\
+STEP 17 \'97 FILES EXPECTED TO CHANGE\
+--------------------------------------------------\
+\
+backend/utils/peerSupervisorEngine.js\
+\
+- Section splitter\
+- Precomputed section bigrams\
+- Mechanical findDupe\
+- Removal of AI clone judge\
+- Core QA default prompt\
+- Off-site default prompt\
+- Stable combined system prompt\
+- Cached one-call AI review\
+- Strict JSON parsing\
+- Fingerprint logic\
+- Review-result normalization\
+\
+backend/utils/psIngest.js\
+\
+- Mechanical duplicate check\
+- One AI review per changed fingerprint\
+- Store new ai_flags structure\
+- Preserve duplicate plus AI findings together\
+- No early return after a duplicate finding\
+\
+backend/routes/peerSupervision.js\
+\
+- New settings keys\
+- Defaults\
+- psNoteView fields\
+- Rejudge behavior\
+- Suggested reopen-message fields\
+- AI review error exposure\
+\
+frontend/src/pages/PSCoSignPage.js\
+\
+- Separate chips\
+- Full AI review display\
+- Off-site display\
+- Duplicate section comparison\
+- Suggested reopen message\
+- Supervisor message\
+- Settings prompt changes\
+\
+frontend/build/\
+\
+- Rebuilt production frontend\
+\
+No ps_notes.sql migration is expected.\
+\
+--------------------------------------------------\
+STEP 18 \'97 VERIFICATION\
+--------------------------------------------------\
+\
+## A. Section extraction\
+\
+Run splitSections over all stored notes.\
+\
+Verify:\
+\
+- All five sections extract nonempty content for at least 95% of notes where those headings are present\
+- Print misses with encounter ID and detected headings\
+- Inspect alternative heading punctuation and spacing\
+- Do not silently treat the entire note as one section\
+\
+## B. Mechanical duplicate awareness\
+\
+Run findDupe across the current pending pool.\
+\
+Verify:\
+\
+- Zero AI requests are generated\
+- Known prior duplicate pairs are still surfaced\
+- Plan-only similarity does not create a flag\
+- A substantive section at 90% creates a flag\
+- Two sections at 80% create a flag\
+- One section at 80% but below 90% does not create a flag\
+- Sections under 120 normalized characters are skipped\
+- Returned matched sections and percentages are accurate\
+\
+Print newly flagged pairs for human inspection.\
+\
+## C. Duplicate plus AI review\
+\
+Use a note with a known duplicate match and a separate documentation problem.\
+\
+Verify that the stored result contains both:\
+\
+- clone.status = POSSIBLE_DUPLICATE\
+- review.decision = REOPEN_TO_PEER or another appropriate AI result\
+\
+Verify that the duplicate flag does not prevent the AI call.\
+\
+## D. Date cutoff\
+\
+Test:\
+\
+- 2026-07-27 off-site note without the new rationale:\
+  Do not reopen solely for the new cutoff rule\
+\
+- 2026-07-28 off-site note without rationale:\
+  REOPEN_TO_PEER\
+\
+- 2026-07-28 off-site note with individualized rationale:\
+  PASS when all other elements are sufficient\
+\
+- 2026-07-28 properly coded on-site note:\
+  offsite_review.status = NOT_APPLICABLE\
+\
+- 2026-07-28 properly coded telehealth note:\
+  offsite_review.status = NOT_APPLICABLE\
+\
+- Telehealth note represented as off-site:\
+  DO_NOT_BILL\
+\
+## E. Diagnosis and problem alignment\
+\
+Test:\
+\
+1. Anxiety diagnosis with anxiety-related concentration difficulty:\
+   PLAUSIBLY_RELATED or ALIGNED\
+\
+2. Anxiety diagnosis with peer wording \'93client\'92s ADHD,\'94 without ADHD diagnosis:\
+   REOPEN_TO_PEER\
+\
+3. Treatment plan itself structured around ADHD without ADHD diagnosis:\
+   SUPERVISOR_REVIEW\
+\
+4. Depression-related isolation session with an employment goal selected:\
+   REOPEN_TO_PEER\
+\
+5. Functional concentration language without unsupported diagnosis:\
+   May PASS when otherwise aligned\
+\
+## F. Intervention and response\
+\
+Test:\
+\
+- \'93Provided support\'94 only:\
+  REOPEN_TO_PEER\
+\
+- Specific peer intervention plus specific response:\
+  PASS when otherwise aligned\
+\
+## G. Parse failure\
+\
+Feed a malformed mock AI response.\
+\
+Verify:\
+\
+- AI_REVIEW_ERROR is stored\
+- The note remains in the queue\
+- It is not treated as PASS\
+- No automatic second request occurs\
+- Manual rejudge remains available\
+\
+## H. Fingerprint reuse\
+\
+Pull the same unchanged note twice.\
+\
+Verify:\
+\
+- First pull creates one AI call\
+- Second pull creates zero AI calls\
+\
+Change one meaningful note field.\
+\
+Verify:\
+\
+- One new AI call occurs\
+\
+Change only a volatile timestamp.\
+\
+Verify:\
+\
+- No new AI call occurs\
+\
+## I. Caching\
+\
+Log:\
+\
+- cache_creation_input_tokens\
+- cache_read_input_tokens\
+- normal input tokens\
+- output tokens\
+\
+Verify that second and later calls using the same prompts show cache-read tokens.\
+\
+If every call shows zero cache-read tokens, identify the volatile content leaking into the system prompt.\
+\
+## J. Call count\
+\
+Instrument a counter per pull.\
+\
+Verify:\
+\
+AI automatic calls =\
+number of new or changed review fingerprints\
+\
+Duplicate AI calls =\
+zero\
+\
+## K. End-to-end\
+\
+1. Restart backend\
+2. Run a real queue pull\
+3. Confirm wall-clock improvement\
+4. Open a normal passing note\
+5. Open an off-site failure\
+6. Open a diagnosis mismatch\
+7. Open a treatment-plan mismatch\
+8. Open a duplicate candidate\
+9. Confirm one note can display duplicate and AI findings simultaneously\
+10. Rebuild frontend with:\
+\
+CI=true npm run build\
+\
+Commit source and rebuilt frontend.\
+\
+--------------------------------------------------\
+DEFINITION OF DONE\
+--------------------------------------------------\
+\
+This work is complete only when:\
+\
+- Duplicate detection makes zero AI calls\
+- Every new or revised note receives no more than one automatic AI call\
+- Unchanged notes are not repeatedly reviewed\
+- Possible duplicates do not stop the AI review\
+- Off-site rules begin with dates of service on July 28, 2026\
+- Proper on-site and telehealth notes return off-site NOT_APPLICABLE\
+- Telehealth represented as off-site is caught\
+- Narrative, intervention, response, goals, problems, and diagnoses are reviewed separately\
+- Unsupported diagnostic wording is returned to the peer\
+- Treatment-plan-level mismatches go to a supervisor\
+- The AI produces a usable reopen message\
+- Malformed AI output never silently passes\
+- Mechanical, duplicate, and AI findings remain independently visible\
+- The human reviewer sees all relevant issues before deciding whether to sign or reopen the note\
+- Production frontend is rebuilt}

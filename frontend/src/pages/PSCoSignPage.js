@@ -29,7 +29,50 @@ function Chip({ color, children }) {
   );
 }
 
+// ── AI review + duplicate chips ───────────────────────────────────────────────
+
+// Colour and label per AI decision. Deliberately separate from the duplicate
+// chip: duplication is a mechanical finding a human adjudicates, and must never
+// be folded into the AI's verdict.
+const AI_DECISION_CHIP = {
+  PASS:              { color: 'gray',   label: 'AI: pass' },
+  REOPEN_TO_PEER:    { color: 'orange', label: 'Reopen to peer' },
+  SUPERVISOR_REVIEW: { color: 'red',    label: 'Supervisor review' },
+  DO_NOT_BILL:       { color: 'red',    label: 'Do not bill' },
+  AI_REVIEW_ERROR:   { color: 'red',    label: 'AI review error' },
+};
+
+function AiDecisionChip({ decision }) {
+  const c = AI_DECISION_CHIP[decision];
+  if (!c) return null;
+  return <Chip color={c.color}>{c.label}</Chip>;
+}
+
+// The mechanical duplicate chip. Shows the human's adjudication once made.
+function DupeChip({ note }) {
+  if (!note.dupeStatus) return null;
+  if (note.dupeDecision === 'dismissed') return <Chip color="gray">Duplicate dismissed</Chip>;
+  const top = note.cloneSections?.[0];
+  return (
+    <Chip color={note.dupeDecision === 'confirmed' ? 'red' : 'orange'}>
+      {note.dupeDecision === 'confirmed' ? 'Confirmed duplicate' : 'Possible duplicate'}
+      {top ? ` — ${top.label} ${top.pct}%` : (note.clonePct ? ` — ${note.clonePct}%` : '')}
+    </Chip>
+  );
+}
+
+// Off-site chip, only when the review actually engaged the off-site rules.
+function OffsiteChip({ offsite }) {
+  if (!offsite || offsite.applicable === false) return null;
+  if (!offsite.status || offsite.status === 'PASS' || offsite.status === 'NOT_APPLICABLE') return null;
+  const label = offsite.rationaleStatus && offsite.rationaleStatus !== 'NOT_APPLICABLE'
+    ? `Off-site: rationale ${offsite.rationaleStatus.replace(/_/g, ' ').toLowerCase()}`
+    : 'Off-site issue';
+  return <Chip color="orange">{label}</Chip>;
+}
+
 function flagChipColor(flag) {
+  if (flag && /possible duplicate/i.test(flag)) return 'orange';
   if (!flag) return 'gray';
   const f = flag.toLowerCase();
   if (f.includes('clone') || f.includes('duplicate') || f.includes('copied')) return 'orange';
@@ -337,6 +380,150 @@ function NoteFacts({ note }) {
   );
 }
 
+// ── AI review panel ───────────────────────────────────────────────────────────
+
+const revLbl = { fontSize: '0.64rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--gray-400)', marginBottom: 3 };
+
+function ReviewRow({ label, status, explanation }) {
+  if (!status) return null;
+  const bad = /NOT_ALIGNED|NEEDS_REVISION|UNSUPPORTED|MISMATCH|FAIL|MISSING|TOO_GENERAL/.test(status);
+  const unknown = /UNABLE_TO_DETERMINE|UNCLEAR/.test(status);
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={revLbl}>{label}</div>
+      <Chip color={bad ? 'orange' : unknown ? 'gray' : 'blue'}>{status.replace(/_/g, ' ')}</Chip>
+      {explanation && (
+        <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', lineHeight: 1.55, marginTop: 4 }}>{explanation}</div>
+      )}
+    </div>
+  );
+}
+
+function MessageBlock({ title, body, tone }) {
+  if (!body) return null;
+  const c = tone === 'supervisor'
+    ? { bg: '#fef2f2', border: '#fecaca', text: '#991b1b' }
+    : { bg: '#fff7ed', border: '#fed7aa', text: '#9a3412' };
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', background: c.bg, border: `1px solid ${c.border}`, borderRadius: 'var(--radius)' }}>
+      <div style={{ ...revLbl, color: c.text }}>{title}</div>
+      <div style={{ fontSize: '0.82rem', color: c.text, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{body}</div>
+    </div>
+  );
+}
+
+// Everything the single AI call decided, laid out for the human reviewer.
+// Mechanical findings and the duplicate finding are rendered separately by the
+// caller — this panel is only the AI's own output.
+function AiReviewPanel({ note }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const r = note.review;
+  if (!r) return (
+    <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)', fontStyle: 'italic' }}>
+      No AI review stored for this note version.
+    </div>
+  );
+
+  if (r.decision === 'AI_REVIEW_ERROR') {
+    return (
+      <div>
+        <Chip color="red">AI review error</Chip>
+        <div style={{ fontSize: '0.82rem', color: '#991b1b', marginTop: 6 }}>
+          {r.error || 'The AI response could not be parsed or validated.'} This note stays in the queue — re-judge to try again.
+        </div>
+        {r.raw_response && (
+          <>
+            <button className="btn btn-outline btn-xs" style={{ marginTop: 8 }} onClick={() => setShowRaw(v => !v)}>
+              {showRaw ? 'Hide' : 'Show'} raw response
+            </button>
+            {showRaw && (
+              <pre style={{ marginTop: 6, padding: 10, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 4, fontSize: '0.7rem', whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto' }}>
+                {r.raw_response}
+              </pre>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  const o = r.offsite_review || {};
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+        <AiDecisionChip decision={r.decision} />
+        {r.confidence && <Chip color="gray">confidence {r.confidence.toLowerCase()}</Chip>}
+        {r.reused && <Chip color="gray">reused (note unchanged)</Chip>}
+      </div>
+
+      {r.review_summary && (
+        <div style={{ fontSize: '0.84rem', color: 'var(--gray-700)', lineHeight: 1.6, marginBottom: 12 }}>{r.review_summary}</div>
+      )}
+
+      <ReviewRow label="Diagnosis / problem alignment" status={r.diagnosis_problem_alignment?.status} explanation={r.diagnosis_problem_alignment?.explanation} />
+      <ReviewRow label="Narrative / goal alignment"    status={r.narrative_goal_alignment?.status}    explanation={r.narrative_goal_alignment?.explanation} />
+      <ReviewRow label="Intervention"                  status={r.intervention_response_review?.intervention_status} />
+      <ReviewRow label="Client response"               status={r.intervention_response_review?.response_status}
+                 explanation={r.intervention_response_review?.explanation} />
+
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--gray-100)' }}>
+        <div style={revLbl}>Off-site review</div>
+        {o.applicable === false ? (
+          <Chip color="gray">not applicable</Chip>
+        ) : (
+          <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+            {o.service_type && <Chip color="blue">{o.service_type.replace(/_/g, ' ')}</Chip>}
+            {o.status && <Chip color={o.status === 'PASS' ? 'gray' : 'orange'}>{o.status.replace(/_/g, ' ')}</Chip>}
+            {o.rationale_status && <Chip color={/PRESENT_SUFFICIENT|NOT_APPLICABLE/.test(o.rationale_status) ? 'gray' : 'orange'}>rationale: {o.rationale_status.replace(/_/g, ' ').toLowerCase()}</Chip>}
+            {o.location_status && <Chip color={/SUFFICIENT|NOT_APPLICABLE/.test(o.location_status) ? 'gray' : 'orange'}>location: {o.location_status.replace(/_/g, ' ').toLowerCase()}</Chip>}
+            {o.goal_connection_status && <Chip color={/SUFFICIENT|NOT_APPLICABLE/.test(o.goal_connection_status) ? 'gray' : 'orange'}>goal link: {o.goal_connection_status.replace(/_/g, ' ').toLowerCase()}</Chip>}
+          </div>
+        )}
+        {o.explanation && (
+          <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', lineHeight: 1.55, marginTop: 5 }}>{o.explanation}</div>
+        )}
+      </div>
+
+      {r.issues?.length > 0 && (
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--gray-100)' }}>
+          <div style={revLbl}>Issues ({r.issues.length})</div>
+          {r.issues.map((iss, i) => (
+            <div key={i} style={{ marginBottom: 8, paddingLeft: 8, borderLeft: '2px solid var(--gray-200)' }}>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 2 }}>
+                {iss.severity && <Chip color={iss.severity === 'NONBILLABLE' || iss.severity === 'SUPERVISOR' ? 'red' : 'orange'}>{iss.severity.toLowerCase()}</Chip>}
+                {iss.owner && <Chip color="gray">{iss.owner.replace(/_/g, ' ').toLowerCase()}</Chip>}
+                {iss.source && <Chip color="blue">{iss.source.replace(/_/g, ' ').toLowerCase()}</Chip>}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', lineHeight: 1.55 }}>{iss.explanation}</div>
+              {iss.evidence_from_note && (
+                <div style={{ fontSize: '0.76rem', color: 'var(--gray-500)', fontStyle: 'italic', marginTop: 2 }}>“{iss.evidence_from_note}”</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <MessageBlock title="Suggested message to the peer" body={note.suggestedReopenMessage || r.reopen_message_to_peer} />
+      <MessageBlock title="Supervisor message" body={r.supervisor_message} tone="supervisor" />
+
+      <div style={{ marginTop: 12, fontSize: '0.68rem', color: 'var(--gray-400)' }}>
+        {r.review_version} · {r.model} · reviewed {r.reviewed_at ? new Date(r.reviewed_at).toLocaleString() : '—'}
+        {r.usage && ` · ${r.usage.input_tokens} in / ${r.usage.output_tokens} out (cache read ${r.usage.cache_read_input_tokens ?? 0})`}
+        {r.raw_response && (
+          <button className="btn btn-outline btn-xs" style={{ marginLeft: 8 }} onClick={() => setShowRaw(v => !v)}>
+            {showRaw ? 'Hide' : 'Show'} raw
+          </button>
+        )}
+      </div>
+      {showRaw && r.raw_response && (
+        <pre style={{ marginTop: 6, padding: 10, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 4, fontSize: '0.7rem', whiteSpace: 'pre-wrap', maxHeight: 260, overflowY: 'auto' }}>
+          {r.raw_response}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 // ── Draggable / resizable modal shell ─────────────────────────────────────────
 
 // Read and Compare are the two modals that get lived in, so they're movable (by
@@ -462,17 +649,18 @@ function NoteModal({ note, onClose, actions }) {
         </div>
         <ModalClose onClose={onClose} />
       </div>
-      {note.flags?.length > 0 && (
-        <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-          {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
-        </div>
-      )}
+      <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {(note.flags || []).filter(f => !/possible duplicate/i.test(f))
+          .map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+        <DupeChip note={note} />
+        <AiDecisionChip decision={note.aiDecision} />
+        <OffsiteChip offsite={note.offsite} />
+      </div>
     </>
   );
   return (
     <DraggableModal
-      storageKey="ps.modal.read" defaultWidth={760} defaultHeight={Math.round(window.innerHeight * 0.86)}
+      storageKey="ps.modal.read" defaultWidth={860} defaultHeight={Math.round(window.innerHeight * 0.86)}
       onClose={onClose} header={header}
       footer={actions && (
         <div style={{ flexShrink: 0, padding: '14px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
@@ -480,6 +668,12 @@ function NoteModal({ note, onClose, actions }) {
         </div>
       )}>
       <div style={{ padding: '20px 24px' }}>
+        {/* AI review first — it's what the reviewer acts on; the note text is
+            the evidence they check it against. */}
+        <div style={{ marginBottom: 20, padding: 16, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)' }}>
+          <div style={{ ...sectionLabel, margin: '0 0 10px' }}>AI documentation review</div>
+          <AiReviewPanel note={note} />
+        </div>
         <NoteBody text={note.fullNoteText} />
       </div>
     </DraggableModal>
@@ -505,16 +699,92 @@ function ComparePane({ note, highlightRanges }) {
   );
 }
 
-function CompareModal({ pair, onClose, onReopen, onSign }) {
+// The five compared sections, mirroring the backend splitter: scan the labels IN
+// ORDER so a stray "Plan:" inside the narrative can't be taken for the header.
+const COMPARE_SECTIONS = [
+  'Focus of the meeting',
+  'What activities took place, and for how long',
+  'Peer Support Interventions',
+  "Patient's Response/Content",
+  'Plan',
+];
+
+function splitCompareSections(text) {
+  const out = {};
+  if (!text) return out;
+  let from = 0;
+  const marks = [];
+  for (const label of COMPARE_SECTIONS) {
+    const pattern = escapeRe(label).replace(/,/g, ',?').replace(/\s/g, '\\s+');
+    const re = new RegExp(`${pattern}\\s*[:?\\-]\\s*`, 'ig');
+    re.lastIndex = from;
+    const m = re.exec(text);
+    if (!m) continue;
+    marks.push({ label, start: m.index, valueStart: m.index + m[0].length });
+    from = m.index + m[0].length;
+  }
+  for (let i = 0; i < marks.length; i++) {
+    let end;
+    if (i + 1 < marks.length) end = marks[i + 1].start;
+    else {
+      const tail = text.slice(marks[i].valueStart);
+      end = tail.length;
+      for (const re of [/\bF\d{2}\.\d/, /Visit Codes\s*[:\-]/i, /Treatment Plan/, /Electronically Signed/i, /Provider NPI/i])
+        { const mm = re.exec(tail); if (mm && mm.index > 0) end = Math.min(end, mm.index); }
+      end += marks[i].valueStart;
+    }
+    out[marks[i].label] = text.slice(marks[i].valueStart, end).replace(/\s+/g, ' ').trim();
+  }
+  return out;
+}
+
+// Side-by-side of just the sections the mechanical check actually matched, with
+// that section's own similarity. This is the evidence the human adjudicates on.
+function MatchedSections({ a, b, sections }) {
+  const secA = useMemo(() => splitCompareSections(a.fullNoteText || ''), [a.fullNoteText]);
+  const secB = useMemo(() => splitCompareSections(b.fullNoteText || ''), [b.fullNoteText]);
+  if (!sections?.length) return null;
+  return (
+    <div style={{ flexShrink: 0, marginBottom: 12 }}>
+      <div style={{ ...sectionLabel, margin: '0 0 8px' }}>Matched sections ({sections.length})</div>
+      {sections.map((s, i) => {
+        const ta = secA[s.label] || '', tb = secB[s.label] || '';
+        const cr = commonRanges(ta, tb);
+        return (
+          <div key={i} style={{ marginBottom: 10, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+            <div style={{ padding: '6px 12px', background: '#fff7ed', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontWeight: 700, fontSize: '0.78rem', color: 'var(--navy)' }}>{s.label}</span>
+              <Chip color={s.pct >= 90 ? 'red' : 'orange'}>{s.pct}% similar</Chip>
+            </div>
+            <div style={{ display: 'flex', gap: 0 }}>
+              {[{ t: ta, rg: cr?.a }, { t: tb, rg: cr?.b }].map((side, j) => (
+                <div key={j} style={{ flex: '1 1 0', minWidth: 0, padding: '8px 12px', fontSize: '0.78rem', lineHeight: 1.55,
+                                      color: 'var(--gray-700)', maxHeight: 150, overflowY: 'auto',
+                                      borderLeft: j ? '1px solid var(--gray-100)' : 'none' }}>
+                  {side.t ? highlightSlice(side.t, 0, side.rg) : <em style={{ color: 'var(--gray-400)' }}>section not found</em>}
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CompareModal({ pair, onClose, onReopen, onSign, onDupeDecision }) {
   const ranges = pair ? scopedCommonRanges(pair.a.fullNoteText || '', pair.b.fullNoteText || '') : null;
   if (!pair) return null;
   const { a, b } = pair;
   const pct = a.clonePct || b.clonePct;
+  const sections = a.cloneSections || b.cloneSections || [];
+  const decision = a.dupeDecision || b.dupeDecision || null;
   const header = (
     <div style={{ padding: '18px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Cloned Notes</h3>
-        {pct && <Chip color="orange">{pct}% match</Chip>}
+        <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Possible Duplicate</h3>
+        {pct != null && <Chip color="orange">{pct}% highest section</Chip>}
+        {decision && <Chip color={decision === 'confirmed' ? 'red' : 'gray'}>{decision}</Chip>}
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
           <span style={{ display: 'inline-block', width: 12, height: 12, background: '#fee2e2', borderRadius: 2, border: '1px solid #fecaca' }} />
           matching text
@@ -529,8 +799,20 @@ function CompareModal({ pair, onClose, onReopen, onSign }) {
       defaultWidth={Math.min(1200, window.innerWidth - MODAL_PAD * 2)}
       defaultHeight={Math.round(window.innerHeight * 0.9)}
       onClose={onClose} header={header}
-      footer={(onReopen || onSign) && (
+      footer={(onReopen || onSign || onDupeDecision) && (
         <div style={{ flexShrink: 0, padding: '0 20px 16px', display: 'flex', justifyContent: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {onDupeDecision && (
+            <>
+              <button className="btn btn-outline btn-sm" onClick={() => onDupeDecision(a, 'confirmed')}
+                title="Record that this really is inappropriate copying. Only then is the duplicate paragraph added to the suggested reopen message.">
+                Confirm duplicate concern
+              </button>
+              <button className="btn btn-outline btn-sm" onClick={() => onDupeDecision(a, 'dismissed')}
+                title="Record that the similarity is legitimate recurring work.">
+                Dismiss duplicate concern
+              </button>
+            </>
+          )}
           {onReopen && (
             <button className="btn btn-outline btn-sm"
               onClick={() => onReopen({ title: 'Reopen Both Notes for Revision', notes: [{ note: a, partner: b }, { note: b, partner: a }] })}>
@@ -542,7 +824,9 @@ function CompareModal({ pair, onClose, onReopen, onSign }) {
           )}
         </div>
       )}>
-      <div style={{ height: '100%', boxSizing: 'border-box', padding: '16px 20px', display: 'flex', gap: 14, minHeight: 0 }}>
+      <div style={{ height: '100%', boxSizing: 'border-box', padding: '16px 20px', display: 'flex', flexDirection: 'column', minHeight: 0, overflowY: 'auto' }}>
+      <MatchedSections a={a} b={b} sections={sections} />
+      <div style={{ flex: 1, display: 'flex', gap: 14, minHeight: 260 }}>
         {[{ note: a, rg: ranges?.a, other: b }, { note: b, rg: ranges?.b, other: a }].map(({ note, rg, other }) => (
           <div key={note.eid} style={{ flex: '1 1 0', minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
             <ComparePane note={note} highlightRanges={rg} />
@@ -561,6 +845,7 @@ function CompareModal({ pair, onClose, onReopen, onSign }) {
             )}
           </div>
         ))}
+      </div>
       </div>
     </DraggableModal>
   );
@@ -691,10 +976,10 @@ function SettingsTab() {
   const [form, setForm] = useState({
     insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
-    prompt_coherence: '', prompt_clone: '',
+    prompt_core_review: '', prompt_offsite: '',
     qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '',
   });
-  const [defaults, setDefaults] = useState({ prompt_coherence: '', prompt_clone: '' });
+  const [defaults, setDefaults] = useState({ prompt_core_review: '', prompt_offsite: '' });
   const [loading,  setLoading]  = useState(true);
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
@@ -709,16 +994,16 @@ function SettingsTab() {
         no_school_start:   s.no_school_start   || '',
         no_school_end:     s.no_school_end     || '',
         provider_id:       s.provider_id       || '',
-        prompt_coherence:  s.prompt_coherence  || '',
-        prompt_clone:      s.prompt_clone      || '',
+        prompt_core_review: s.prompt_core_review || '',
+        prompt_offsite:     s.prompt_offsite     || '',
         qa_email:          s.qa_email          || '',
         qa_cc:             s.qa_cc             || '',
         reopen_from:       s.reopen_from       || '',
         reopen_reply_to:   s.reopen_reply_to   || '',
       });
       setDefaults({
-        prompt_coherence: s.default_prompt_coherence || '',
-        prompt_clone:     s.default_prompt_clone     || '',
+        prompt_core_review: s.default_prompt_core_review || '',
+        prompt_offsite:     s.default_prompt_offsite     || '',
       });
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
@@ -821,24 +1106,42 @@ function SettingsTab() {
         </div>
       </section>
 
+      <div style={{ ...sectionStyle, background: '#eff6ff', borderColor: '#bfdbfe' }}>
+        <p style={{ margin: 0, fontSize: '0.82rem', color: '#1e40af', lineHeight: 1.6 }}>
+          <strong>Duplicate awareness is mechanical and has no AI prompt.</strong> Notes are compared
+          section by section (Focus, Activities, Interventions, Patient's Response, Plan) using text
+          similarity only — zero AI calls. A note is flagged when one substantive section is at least
+          90% similar, or when at least two sections are at least 80% similar. The Plan section can
+          support a flag but never triggers one on its own. You decide whether a flagged pair is
+          really inappropriate copying, in the Compare view.
+        </p>
+      </div>
+
+      <div style={{ ...sectionStyle, background: '#f8fafc' }}>
+        <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--gray-700)', lineHeight: 1.6 }}>
+          The two prompts below are joined into <strong>one</strong> AI request per note version,
+          together with a fixed JSON output contract. They are instructions only — the note's own data
+          is sent separately, which is what keeps the instruction text identical across notes so it can
+          be cached. Do not paste note data or <code>{'{{tokens}}'}</code> into them.
+        </p>
+      </div>
+
       <PromptEditor
-        title="AI Prompt — Note QA Review"
-        help="Runs on every note. Edit the criteria the AI flags on."
-        tokens={['{{duration}}', '{{narrative}}', '{{plan}}', '{{dx}}', '{{machine_flags}}']}
-        value={form.prompt_coherence}
-        onChange={v => setForm(f => ({ ...f, prompt_coherence: v }))}
-        defaultValue={defaults.prompt_coherence}
-        requiredKeys={['"flag"', '"reason"']}
+        title="AI Prompt — Core Peer Note QA"
+        help="Narrative-to-goal, diagnosis-to-problem, intervention, client response, and who owns each correction. Runs on every note."
+        tokens={[]}
+        value={form.prompt_core_review}
+        onChange={v => setForm(f => ({ ...f, prompt_core_review: v }))}
+        defaultValue={defaults.prompt_core_review}
       />
 
       <PromptEditor
-        title="AI Prompt — Duplicate / Copied-Note Judge"
-        help="Runs only on candidate pairs. Edit what counts as a copy vs. legitimate repetition."
-        tokens={['{{a_name}}', '{{a_date}}', '{{a_content}}', '{{b_name}}', '{{b_date}}', '{{b_content}}']}
-        value={form.prompt_clone}
-        onChange={v => setForm(f => ({ ...f, prompt_clone: v }))}
-        defaultValue={defaults.prompt_clone}
-        requiredKeys={['"copy"', '"reason"']}
+        title="AI Prompt — Off-Site Review Addendum"
+        help="Service-type classification and the off-site rationale rules, including the effective date. Sent in the same request as the core prompt."
+        tokens={[]}
+        value={form.prompt_offsite}
+        onChange={v => setForm(f => ({ ...f, prompt_offsite: v }))}
+        defaultValue={defaults.prompt_offsite}
       />
 
       <button className="btn btn-gold" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
@@ -852,7 +1155,10 @@ function SettingsTab() {
 // placeholder or the JSON contract — both fail silently at scan time otherwise:
 // a missing token hides part of the note from the AI, and a broken JSON shape
 // makes the parse throw and the note come back "clean".
-function PromptEditor({ title, help, tokens, value, onChange, defaultValue, requiredKeys }) {
+// The V2 review prompts are instruction-only (their data arrives in a separate
+// user message, which is what makes the instruction text cacheable), so both
+// lists are empty for them and the placeholder/contract warnings stay hidden.
+function PromptEditor({ title, help, tokens = [], value, onChange, defaultValue, requiredKeys = [] }) {
   const isDefault    = !value.trim() || value.trim() === (defaultValue || '').trim();
   const missingToken = tokens.filter(t => !value.includes(t));
   const missingJson  = requiredKeys.filter(k => !value.includes(k));
@@ -880,7 +1186,9 @@ function PromptEditor({ title, help, tokens, value, onChange, defaultValue, requ
       />
 
       <div style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--gray-500)' }}>
-        Placeholders — keep these, they inject the note's data:{' '}
+        {tokens.length === 0
+          ? "Instructions only — the note's data is sent separately, so this text stays identical across notes and can be cached."
+          : "Placeholders — keep these, they inject the note's data: "}
         {tokens.map((t, i) => (
           <code key={t} style={{
             background: value.includes(t) ? '#f1f5f9' : '#fef2f2',
@@ -1103,6 +1411,17 @@ function QueueTab() {
     finally { setRejudgingId(null); }
   }
 
+  // The human's duplicate call. The mechanical score never decides on its own —
+  // only a confirmed concern adds the duplicate paragraph to the suggested
+  // reopen message, and dismissing it never reopens anything.
+  async function setDupeDecision(note, decision) {
+    try {
+      await api.post(`/ps/cosign/notes/${note.id}/dupe-decision`, { decision });
+      setCompareModal(null);
+      await load();
+    } catch (ex) { alert('Could not record the duplicate decision: ' + ex.message); }
+  }
+
   async function openVersions(eid) {
     try { setVersionsModal(await api.get(`/ps/cosign/notes/${eid}/versions`)); }
     catch (ex) { alert(ex.message); }
@@ -1185,12 +1504,15 @@ function QueueTab() {
           <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
             {note.peerName} · {fmtDt(note.visitDatetime)}
           </div>
-          {(note.flags?.length > 0 || note.aiFlag) && (
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-              {note.flags.map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
-              {note.aiFlag && <Chip color="red">AI: {note.aiFlag}</Chip>}
-            </div>
-          )}
+          {/* Separate chips per track — mechanical, duplicate, AI. Never merged. */}
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {(note.flags || [])
+              .filter(f => !/possible duplicate/i.test(f))
+              .map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
+            <DupeChip note={note} />
+            <AiDecisionChip decision={note.aiDecision} />
+            <OffsiteChip offsite={note.offsite} />
+          </div>
           {note.reopenReason && view === 'reopened' && (
             <div style={{ fontSize: '0.78rem', color: '#9a3412', marginTop: 4 }}><strong>Reopen reason:</strong> {note.reopenReason}</div>
           )}
@@ -1376,7 +1698,8 @@ function QueueTab() {
         pair={compareModal}
         onClose={() => setCompareModal(null)}
         onReopen={view === 'queue' ? (ctx => { setCompareModal(null); setReopenCtx(ctx); }) : undefined}
-        onSign={view === 'queue' ? (list => { setCompareModal(null); signNotes(list, 'Sign'); }) : undefined} />
+        onSign={view === 'queue' ? (list => { setCompareModal(null); signNotes(list, 'Sign'); }) : undefined}
+        onDupeDecision={view === 'queue' ? setDupeDecision : undefined} />
       <VersionsModal versions={versionsModal} onClose={() => setVersionsModal(null)} />
       <ReopenModal ctx={reopenCtx} onClose={() => setReopenCtx(null)} onDone={() => { setReopenCtx(null); load(); }} />
     </div>

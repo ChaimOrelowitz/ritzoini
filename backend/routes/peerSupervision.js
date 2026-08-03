@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
-const { InsyncCoSignEngine, DEFAULT_COHERENCE_PROMPT, DEFAULT_CLONE_PROMPT } = require('../utils/peerSupervisorEngine');
+const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, judgeNote, serializeNote, contentHash } = require('../utils/psIngest');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
@@ -14,7 +14,7 @@ async function buildEngine() {
   const { data: rows } = await supabase.from('app_settings').select('key, value')
     .in('key', ['insync_username','insync_password','insync_provider_id',
                 'ps_no_school_start','ps_no_school_end','anthropic_api_key',
-                'ps_prompt_coherence','ps_prompt_clone']);
+                'ps_prompt_core_review','ps_prompt_offsite']);
   const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
   return new InsyncCoSignEngine({
     username:      S.insync_username    || process.env.INSYNC_USERNAME      || '',
@@ -23,8 +23,8 @@ async function buildEngine() {
     providerId:    S.insync_provider_id || process.env.INSYNC_PROVIDER_ID   || '2317',
     noSchoolStart: S.ps_no_school_start || '',
     noSchoolEnd:   S.ps_no_school_end   || '',
-    coherencePrompt: S.ps_prompt_coherence || '',
-    clonePrompt:     S.ps_prompt_clone     || '',
+    coreReviewPrompt: S.ps_prompt_core_review || '',
+    offsitePrompt:    S.ps_prompt_offsite     || '',
   });
 }
 
@@ -148,7 +148,7 @@ function psNoteView(row) {
   const nd = row.note_data || {};
   const f  = row.ai_flags  || {};
   const flags = [...(f.machine || [])];
-  if (f.clone) flags.push(`Likely copied note: ${f.clone.reason}`);
+  if (f.clone) flags.push(f.clone.reason);
   return {
     id: row.id, eid: row.eid, version: row.version,
     status: row.status, verdict: row.ai_verdict,
@@ -158,11 +158,44 @@ function psNoteView(row) {
     pid: row.pid, cosignId: nd.cosignId, cosignReqId: nd.cosignReqId,
     fullNoteText: nd.fullNoteText || '',
     flags, aiFlag: f.coherence || null,
+    // Duplicate awareness — mechanical, and deliberately NOT part of the AI
+    // decision. `dupeStatus` drives its own chip so the two never merge.
     clonePartnerEid: f.clone?.partnerEid || null,
-    clonePct: f.clone?.pct || null,
+    clonePct:        f.clone?.pct || null,
+    cloneSections:   f.clone?.sections || null,
+    dupeStatus:      f.clone?.status || null,
+    // Human adjudication lives inside ai_flags (JSON) — no schema migration.
+    dupeDecision:    f.clone?.decision || null,   // confirmed | dismissed | null
+    // Full AI review — the source of truth for everything the model decided.
+    review:  f.review || null,
+    offsite: f.offsite || null,
+    aiDecision: f.review?.decision || null,
+    suggestedReopenMessage: composeSuggestedReopenMessage(
+      f.machine || [], f.review || null, f.clone?.decision === 'confirmed' ? f.clone : null),
     reopenReason: row.reopen_reason || null,
     ingestedAt: row.ingested_at, actionedAt: row.actioned_at,
   };
+}
+
+// Deterministic mechanical text + the AI's peer-facing message + (only once a
+// human has CONFIRMED the duplicate concern) the duplicate paragraph. The
+// reviewer edits this before it is ever sent.
+function composeSuggestedReopenMessage(machineFlags, review, confirmedDuplicate) {
+  const parts = [];
+
+  if ((machineFlags || []).some(f => /min|hour|duration|session exceeds|3-hour/i.test(f)))
+    parts.push('The documented duration does not meet the permitted time requirement for this meeting type. '
+      + 'Please correct the recorded duration only if it was entered incorrectly. Do not change the time unless '
+      + 'the corrected time reflects the service that actually occurred.');
+
+  if (review?.reopen_message_to_peer) parts.push(review.reopen_message_to_peer.trim());
+
+  if (confirmedDuplicate)
+    parts.push(`This note substantially matches the note from ${confirmedDuplicate.partnerDate || 'another date'}. `
+      + 'Please revise it to reflect what specifically occurred during this service, including the date-specific '
+      + 'intervention, client response, and progress. Do not simply reword the earlier note.');
+
+  return parts.join('\n\n');
 }
 
 // GET /api/ps/cosign/notes — the durable queue/archive.
@@ -237,19 +270,50 @@ router.post('/cosign/rejudge', requireAuth, requireAdmin, async (req, res) => {
     const note = { ...(row.note_data || {}), eid: row.eid };
     note.visitDateObj = engine._parseDate(note.visitDatetime || row.visit_datetime);
 
-    // Clone pool = current pending notes, minus this one (per spec).
+    // Duplicate pool = current pending notes, minus this one (per spec).
+    // Prepared once; the comparison itself makes no AI calls.
     const { data: pend } = await supabase.from('ps_notes')
-      .select('eid, note_data').eq('status', 'pending').neq('id', id);
-    const corpus = (pend || []).map(r => ({
-      eid: r.eid, patientName: r.note_data?.patientName || '',
-      sessionContent: r.note_data?.sessionContent || '', visitDate: r.note_data?.visitDate || '',
+      .select('eid, mrn, patient_name, visit_date, note_data').eq('status', 'pending').neq('id', id);
+    const corpus = (pend || []).map(r => engine.prepareDupeEntry({
+      eid: r.eid, mrn: r.mrn || r.note_data?.mrn || '',
+      patientName: r.note_data?.patientName || r.patient_name || '',
+      visitDate: r.note_data?.visitDate || r.visit_date || '',
+      fullNoteText: r.note_data?.fullNoteText || '',
     }));
 
-    const judged = await judgeNote(engine, note, corpus);
+    // force: a manual rejudge deliberately bypasses fingerprint reuse — the
+    // operator asked for a fresh opinion. Exactly one AI call either way.
+    const judged = await judgeNote(engine, note, corpus, { force: true });
+    // Preserve any human duplicate adjudication across a rejudge.
+    const priorDecision = row.ai_flags?.clone?.decision || null;
+    if (priorDecision && judged.flags.clone) judged.flags.clone.decision = priorDecision;
+    console.log(`[PS rejudge] eid=${row.eid} aiCalls=${engine.aiCallCount} decision=${judged.flags.review?.decision}`);
+
     await supabase.from('ps_notes')
       .update({ ai_verdict: judged.verdict, ai_flags: judged.flags, judged_at: new Date().toISOString() })
       .eq('id', id);
     const { data: updated } = await supabase.from('ps_notes').select('*').eq('id', id).maybeSingle();
+    res.json(psNoteView(updated));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/ps/cosign/notes/:id/dupe-decision — the HUMAN adjudicates a possible
+// duplicate. Body: { decision: 'confirmed' | 'dismissed' | null }. The mechanical
+// score never decides on its own; this is what records the reviewer's call.
+// Stored inside ai_flags.clone so no schema migration is needed.
+router.post('/cosign/notes/:id/dupe-decision', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { decision } = req.body;
+    if (![null, 'confirmed', 'dismissed'].includes(decision ?? null))
+      return res.status(400).json({ error: "decision must be 'confirmed', 'dismissed', or null" });
+
+    const { data: row } = await supabase.from('ps_notes').select('*').eq('id', req.params.id).maybeSingle();
+    if (!row) return res.status(404).json({ error: 'Note not found' });
+    if (!row.ai_flags?.clone) return res.status(400).json({ error: 'Note has no duplicate finding' });
+
+    const flags = { ...row.ai_flags, clone: { ...row.ai_flags.clone, decision: decision ?? null } };
+    await supabase.from('ps_notes').update({ ai_flags: flags }).eq('id', req.params.id);
+    const { data: updated } = await supabase.from('ps_notes').select('*').eq('id', req.params.id).maybeSingle();
     res.json(psNoteView(updated));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -269,7 +333,7 @@ router.get('/cosign/history', requireAuth, requireAdmin, async (req, res) => {
 router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
-            anthropic_api_key, prompt_coherence, prompt_clone,
+            anthropic_api_key, prompt_core_review, prompt_offsite,
             qa_email, qa_cc, reopen_from, reopen_reply_to } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
@@ -280,8 +344,8 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       anthropic_api_key,
       // Empty string is meaningful: it clears the override and reverts to the
       // shipped default (the engine falls back when the stored value is blank).
-      ps_prompt_coherence: prompt_coherence,
-      ps_prompt_clone:     prompt_clone,
+      ps_prompt_core_review: prompt_core_review,
+      ps_prompt_offsite:     prompt_offsite,
       // Reopen QA email notification.
       ps_qa_email:         qa_email,
       ps_qa_cc:            qa_cc,
@@ -302,7 +366,7 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   const { data } = await supabase.from('app_settings').select('key, value')
     .in('key', ['ps_no_school_start','ps_no_school_end','insync_provider_id',
                 'insync_username','insync_password','anthropic_api_key',
-                'ps_prompt_coherence','ps_prompt_clone',
+                'ps_prompt_core_review','ps_prompt_offsite',
                 'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
@@ -312,14 +376,14 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
     insync_username:   S.insync_username     || '',
     insync_password:   S.insync_password     || '',
     anthropic_api_key: S.anthropic_api_key   || '',
-    prompt_coherence:  S.ps_prompt_coherence || DEFAULT_COHERENCE_PROMPT,
-    prompt_clone:      S.ps_prompt_clone     || DEFAULT_CLONE_PROMPT,
+    prompt_core_review: S.ps_prompt_core_review || DEFAULT_CORE_REVIEW_PROMPT,
+    prompt_offsite:     S.ps_prompt_offsite     || DEFAULT_OFFSITE_PROMPT,
     qa_email:          S.ps_qa_email        || '',
     qa_cc:             S.ps_qa_cc           || '',
     reopen_from:       S.ps_reopen_from     || '',
     reopen_reply_to:   S.ps_reopen_reply_to || '',
-    default_prompt_coherence: DEFAULT_COHERENCE_PROMPT,
-    default_prompt_clone:     DEFAULT_CLONE_PROMPT,
+    default_prompt_core_review: DEFAULT_CORE_REVIEW_PROMPT,
+    default_prompt_offsite:     DEFAULT_OFFSITE_PROMPT,
   });
 });
 

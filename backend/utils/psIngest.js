@@ -43,21 +43,73 @@ function decideAction(existing, hash) {
   return 'skip';
 }
 
-// Judge a single new/revised note: deterministic machine checks + incremental
-// clone check (against the pending pool) + AI coherence review. Exported for
-// testing with a fake engine.
-async function judgeNote(engine, note, corpus) {
-  const machine   = engine.checkNote(note);                 // duration / minor rules
-  const clone     = await engine.findClone(note, corpus);   // vs pending pool only
-  const coherence = await engine.aiReview(note, machine);   // content QA
+// Judge a single new/revised note. Three independent tracks, ALL of which always
+// run — a possible duplicate never suppresses the AI review, and a mechanical
+// failure never suppresses it either:
+//   1. deterministic machine checks (duration / minor rules)   — 0 AI calls
+//   2. mechanical duplicate awareness vs the pending pool      — 0 AI calls
+//   3. exactly one AI documentation review                     — 1 AI call
+//
+// `priorReview` lets an unchanged note reuse its stored review instead of paying
+// for a new call; pass null (or set `force`) to always review.
+// Exported for testing with a fake engine.
+async function judgeNote(engine, note, corpus, { priorReview = null, force = false } = {}) {
+  const machine = engine.checkNote(note);            // 1
+  const dupe    = engine.findDupe(note, corpus);     // 2 — synchronous, no network
+
+  // 3 — reuse the stored review when nothing that affects it has changed.
+  let review;
+  const fingerprint = engine.fingerprintFor(note, machine);
+  const reusable = !force && priorReview
+    && priorReview.fingerprint === fingerprint
+    && priorReview.decision && priorReview.decision !== 'AI_REVIEW_ERROR';
+  if (reusable) {
+    review = { ...priorReview, reused: true };
+  } else {
+    review = await engine.aiReview(note, machine);
+  }
 
   const flags = {
-    machine:   machine,
-    clone:     clone || null,
-    coherence: coherence || null,
+    machine,
+    clone:     dupe || null,
+    // Backward-compatible short line for components not yet reading `review`.
+    coherence: summaryFlagOf(review),
+    offsite:   offsiteSummary(review),
+    review:    review || null,
   };
-  const verdict = (machine.length || clone || coherence) ? 'flagged' : 'clean';
-  return { verdict, flags, clonePartnerEid: clone?.partnerEid || null };
+
+  // Needs human attention when ANY track says so. The duplicate is deliberately
+  // part of this OR — but it is not folded into the AI decision.
+  const needsAttention = machine.length > 0
+    || !!dupe
+    || (review && review.decision && review.decision !== 'PASS');
+  return {
+    verdict: needsAttention ? 'flagged' : 'clean',
+    flags,
+    clonePartnerEid: dupe?.partnerEid || null,
+    aiCalled: !reusable && !!review,
+  };
+}
+
+// Compact `offsite` mirror kept at the top level of ai_flags for the UI.
+function offsiteSummary(review) {
+  const o = review?.offsite_review;
+  if (!o) return null;
+  return {
+    applicable:      o.applicable !== false,
+    serviceType:     o.service_type || null,
+    status:          o.status || null,
+    rationaleStatus: o.rationale_status || null,
+  };
+}
+
+// Local fallback of the engine's summary line (kept here so judgeNote can be
+// unit-tested against a fake engine that doesn't implement it).
+function summaryFlagOf(review) {
+  if (!review) return null;
+  if (review.decision === 'AI_REVIEW_ERROR') return 'AI review error — response could not be parsed';
+  if (!review.decision || review.decision === 'PASS') return null;
+  return `${review.decision.replace(/_/g, ' ')}: ${review.review_summary || review.reopen_message_to_peer || review.supervisor_message || 'see review'}`;
 }
 
 // Full parsed note for storage: everything needed to re-judge, show side-by-side,
@@ -100,7 +152,8 @@ async function ingestCantLoad(row, stats) {
     visit_date: row.visitDate, visit_datetime: row.visitDatetime,
     content_hash: `cantload:${row.eid}`,
     ai_verdict: 'flagged',
-    ai_flags: { machine: ['Could not load note — manual review required'], clone: null, coherence: null },
+    ai_flags: { machine: ['Could not load note — manual review required'],
+                clone: null, coherence: null, offsite: null, review: null },
     status: 'pending', note_data: row, judged_at: new Date().toISOString(),
   });
   stats.cantLoad++;
@@ -116,18 +169,23 @@ async function ingestQueue(engine, { onProgress } = {}) {
   report('Fetching co-sign queue...', 5);
   const { notes, cantLoad } = await engine.fetchNotes(report);
 
-  // Pending pool for clone comparison (status='pending' ONLY, per spec).
+  // Pending pool for duplicate comparison (status='pending' ONLY, per spec).
+  // Section bigrams are precomputed ONCE here via prepareDupeEntry and reused for
+  // every comparison in this pull — never recomputed per pair.
   const { data: pendingRows } = await supabase.from('ps_notes')
-    .select('eid, note_data').eq('status', 'pending');
-  const corpus = (pendingRows || []).map(r => ({
-    eid:            r.eid,
-    patientName:    r.note_data?.patientName    || '',
-    sessionContent: r.note_data?.sessionContent || '',
-    visitDate:      r.note_data?.visitDate      || '',
+    .select('eid, mrn, patient_name, visit_date, note_data').eq('status', 'pending');
+  const corpus = (pendingRows || []).map(r => engine.prepareDupeEntry({
+    eid:          r.eid,
+    mrn:          r.mrn || r.note_data?.mrn || '',
+    patientName:  r.note_data?.patientName || r.patient_name || '',
+    visitDate:    r.note_data?.visitDate   || r.visit_date   || '',
+    fullNoteText: r.note_data?.fullNoteText || '',
   }));
 
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
-                  reconciled: 0, flagged: 0, clean: 0, cantLoad: 0 };
+                  reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,
+                  aiCalls: 0, aiReused: 0 };
+  const aiCallsAtStart = engine.aiCallCount || 0;
 
   for (let i = 0; i < notes.length; i++) {
     const note = notes[i];
@@ -149,17 +207,20 @@ async function ingestQueue(engine, { onProgress } = {}) {
       await supabase.from('ps_notes')
         .update({ status: 'pending', actioned_at: null }).eq('id', existing.id);
       stats.reconciled++;
-      corpus.push({
-        eid: note.eid, patientName: note.patientName,
-        sessionContent: note.sessionContent, visitDate: note.visitDate,
-      });
+      corpus.push(engine.prepareDupeEntry(note));
       continue;
     }
 
-    const judged = await judgeNote(engine, note, corpus);
+    // A revision keeps the prior version's review only if the fingerprint still
+    // matches (it won't, if the content changed) — this is what makes a re-pull
+    // of an unchanged note cost zero AI calls.
+    const priorReview = existing ? await priorReviewFor(note.eid) : null;
+    const judged = await judgeNote(engine, note, corpus, { priorReview });
+    if (judged.aiCalled) stats.aiCalls++; else if (judged.flags.review) stats.aiReused++;
 
-    // Option (b): a confirmed copy pulls its pending partner into the flagged
-    // queue too — must happen before we (possibly) count/close anything out.
+    // Option (b): a possible duplicate pulls its pending partner into the
+    // flagged queue too, so neither half can be bulk-signed by accident. This
+    // never reopens anything on its own — a human still adjudicates.
     if (judged.clonePartnerEid)
       await flagPartner(judged.clonePartnerEid, note.eid, judged.flags.clone);
 
@@ -178,10 +239,7 @@ async function ingestQueue(engine, { onProgress } = {}) {
     });
 
     // Progressive pending pool: later notes in this same batch compare against it.
-    corpus.push({
-      eid: note.eid, patientName: note.patientName,
-      sessionContent: note.sessionContent, visitDate: note.visitDate,
-    });
+    corpus.push(engine.prepareDupeEntry(note));
 
     stats[action]++;            // new | revised
     stats[judged.verdict]++;    // flagged | clean
@@ -189,8 +247,22 @@ async function ingestQueue(engine, { onProgress } = {}) {
 
   for (const row of cantLoad) await ingestCantLoad(row, stats);
 
+  // Invariant: the engine's own AI counter must equal the number of reviews we
+  // believe we requested. Duplicate detection contributes zero to both.
+  stats.engineAiCalls = (engine.aiCallCount || 0) - aiCallsAtStart;
+  console.log(`[PS ingest] AI calls: ${stats.engineAiCalls} (accounted ${stats.aiCalls}, reused ${stats.aiReused}) over ${stats.new + stats.revised} new/revised notes`);
+
   report('Done!', 100);
   return stats;
 }
 
-module.exports = { ingestQueue, decideAction, judgeNote, contentHash, serializeNote };
+// Latest stored review for an eid, whatever version it sits on — the reuse
+// check compares its fingerprint against the incoming note's.
+async function priorReviewFor(eid) {
+  const { data } = await supabase.from('ps_notes')
+    .select('ai_flags').eq('eid', eid)
+    .order('version', { ascending: false }).limit(1).maybeSingle();
+  return data?.ai_flags?.review || null;
+}
+
+module.exports = { ingestQueue, decideAction, judgeNote, contentHash, serializeNote, priorReviewFor };
