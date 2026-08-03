@@ -312,7 +312,7 @@ function defaultReopenReason(note, partner) {
 
 // Age, diagnoses and treatment-plan problems, pulled straight off the note text
 // (the demographics line, the Diagnosis section, and the "Problem:" headers the
-// backend injects into the treatment plan). These three are what the supervisor
+// backend injects into the treatment plan). These three are what the Reviewer
 // wants visible without scrolling while reading or comparing a note.
 function noteFacts(note) {
   const text = note?.fullNoteText || '';
@@ -412,7 +412,7 @@ function MessageBlock({ title, body, tone }) {
   );
 }
 
-// Everything the single AI call decided, laid out for the human reviewer.
+// Everything the single AI call decided, laid out for the Reviewer.
 // Mechanical findings and the duplicate finding are rendered separately by the
 // caller — this panel is only the AI's own output.
 function AiReviewPanel({ note }) {
@@ -668,7 +668,7 @@ function NoteModal({ note, onClose, actions }) {
         </div>
       )}>
       <div style={{ padding: '20px 24px' }}>
-        {/* AI review first — it's what the reviewer acts on; the note text is
+        {/* AI review first — it's what the Reviewer acts on; the note text is
             the evidence they check it against. */}
         <div style={{ marginBottom: 20, padding: 16, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)' }}>
           <div style={{ ...sectionLabel, margin: '0 0 10px' }}>AI documentation review</div>
@@ -804,11 +804,11 @@ function CompareModal({ pair, onClose, onReopen, onSign, onDupeDecision }) {
           {onDupeDecision && (
             <>
               <button className="btn btn-outline btn-sm" onClick={() => onDupeDecision(a, 'confirmed')}
-                title="Record that this really is inappropriate copying. Only then is the duplicate paragraph added to the suggested reopen message.">
+                title="Reviewer decision: this really is inappropriate copying. Only then is the duplicate paragraph added to the suggested reopen message.">
                 Confirm duplicate concern
               </button>
               <button className="btn btn-outline btn-sm" onClick={() => onDupeDecision(a, 'dismissed')}
-                title="Record that the similarity is legitimate recurring work.">
+                title="Reviewer decision: the similarity is legitimate recurring work.">
                 Dismiss duplicate concern
               </button>
             </>
@@ -859,6 +859,8 @@ function CompareModal({ pair, onClose, onReopen, onSign, onDupeDecision }) {
 function ReopenModal({ ctx, onClose, onDone }) {
   const [reasons, setReasons] = useState([]);
   const [busy,    setBusy]    = useState(false);
+  // undefined = follow the Settings switch; false/true = override for this batch.
+  const [sendEmail, setSendEmail] = useState(undefined);
   const [results, setResults] = useState(null);   // { [eid]: { ok, message } }
 
   useEffect(() => {
@@ -880,7 +882,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
         // Same segments the Read view renders → identical PDF.
         segments:  segmentNote(n.note.fullNoteText || ''),
       }));
-      const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload });
+      const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload, sendEmail });
       const byEid = {}, okIds = [];
       (res || []).forEach(r => {
         byEid[r.eid] = r;
@@ -945,9 +947,11 @@ function ReopenModal({ ctx, onClose, onDone }) {
                       <div style={{ color: r.ok ? '#15803d' : '#dc2626' }}>
                         {r.ok ? '✓ Reopened for revision' : `✗ ${r.message || 'Failed'}`}
                       </div>
-                      {r.ok && (r.emailSent
-                        ? <div style={{ color: '#15803d', fontWeight: 500 }}>✉ QA notified by email</div>
-                        : <div style={{ color: '#b45309', fontWeight: 500 }}>⚠ Reopened, but QA email failed: {r.emailError || 'unknown error'}</div>)}
+                      {r.ok && (r.emailSkipped
+                        ? <div style={{ color: 'var(--gray-500)', fontWeight: 500 }}>✉ Email off — no notification sent</div>
+                        : r.emailSent
+                          ? <div style={{ color: '#15803d', fontWeight: 500 }}>✉ Notification email sent</div>
+                          : <div style={{ color: '#b45309', fontWeight: 500 }}>⚠ Reopened, but the email failed: {r.emailError || 'unknown error'}</div>)}
                     </div>
                   )}
                 </div>
@@ -956,7 +960,17 @@ function ReopenModal({ ctx, onClose, onDone }) {
           })}
         </div>
 
-        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {!allDone ? (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', color: 'var(--gray-600)', cursor: 'pointer' }}
+              title="Overrides the Settings switch for this batch only.">
+              <input type="checkbox" checked={sendEmail === false}
+                onChange={e => setSendEmail(e.target.checked ? false : undefined)}
+                style={{ width: 14, height: 14 }} />
+              Don't send a notification email for these
+            </label>
+          ) : <span />}
+          <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-outline btn-sm" onClick={onClose}>{allDone ? 'Close' : 'Cancel'}</button>
           {!allDone && (
             <button className="btn btn-gold btn-sm" onClick={submit}
@@ -964,6 +978,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
               {busy ? 'Reopening…' : ctx.notes.length > 1 ? `Reopen ${ctx.notes.length} Notes` : 'Reopen Note'}
             </button>
           )}
+          </div>
         </div>
       </div>
     </div>
@@ -972,12 +987,62 @@ function ReopenModal({ ctx, onClose, onDone }) {
 
 // ── SettingsTab ───────────────────────────────────────────────────────────────
 
+// Proves that what is saved in Settings is what the next AI review actually
+// sends. Fetches the composed system prompt straight from the engine the ingest
+// and rejudge paths use — not a client-side reconstruction.
+function PromptProvenance() {
+  const [data, setData]   = useState(null);
+  const [open, setOpen]   = useState(false);
+  const [error, setError] = useState('');
+
+  async function check() {
+    setError('');
+    try { setData(await api.get('/ps/cosign/prompt-preview')); setOpen(true); }
+    catch (ex) { setError(ex.message); }
+  }
+
+  return (
+    <section style={{ ...sectionStyle, background: '#f0fdf4', borderColor: '#bbf7d0' }}>
+      <p style={{ ...sectionLabel, color: '#15803d' }}>What the AI is actually being sent</p>
+      <p style={{ margin: '0 0 10px', fontSize: '0.8rem', color: 'var(--gray-600)', lineHeight: 1.6 }}>
+        Loads the exact system prompt the next review will use, straight from the engine — so you can
+        confirm your saved edits are live rather than trusting the text box above.
+      </p>
+      <button className="btn btn-outline btn-sm" onClick={check}>Verify the live prompt</button>
+      {error && <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#dc2626' }}>{error}</div>}
+      {data && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            <Chip color={data.core.source.startsWith('custom') ? 'blue' : 'gray'}>Core: {data.core.source}</Chip>
+            <Chip color={data.offsite.source.startsWith('custom') ? 'blue' : 'gray'}>Off-site: {data.offsite.source}</Chip>
+            <Chip color="gray">{data.chars.toLocaleString()} chars total</Chip>
+          </div>
+          {(data.core.matchesSaved === false || data.offsite.matchesSaved === false) && (
+            <div style={{ fontSize: '0.8rem', color: '#dc2626', marginBottom: 8 }}>
+              ⚠ The live prompt does not match what is saved — save again and re-check.
+            </div>
+          )}
+          <button className="btn btn-outline btn-xs" onClick={() => setOpen(o => !o)}>
+            {open ? 'Hide' : 'Show'} the full prompt
+          </button>
+          {open && (
+            <pre style={{ marginTop: 8, padding: 12, background: 'white', border: '1px solid var(--gray-200)',
+                          borderRadius: 4, fontSize: '0.7rem', lineHeight: 1.5, whiteSpace: 'pre-wrap',
+                          maxHeight: 420, overflowY: 'auto' }}>{data.systemPrompt}</pre>
+          )}
+          <div style={{ marginTop: 8, fontSize: '0.72rem', color: 'var(--gray-500)' }}>{data.note}</div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SettingsTab() {
   const [form, setForm] = useState({
     insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_core_review: '', prompt_offsite: '',
-    qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '',
+    qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '', reopen_email_enabled: true,
   });
   const [defaults, setDefaults] = useState({ prompt_core_review: '', prompt_offsite: '' });
   const [loading,  setLoading]  = useState(true);
@@ -997,6 +1062,7 @@ function SettingsTab() {
         prompt_core_review: s.prompt_core_review || '',
         prompt_offsite:     s.prompt_offsite     || '',
         qa_email:          s.qa_email          || '',
+        reopen_email_enabled: s.reopen_email_enabled !== false,
         qa_cc:             s.qa_cc             || '',
         reopen_from:       s.reopen_from       || '',
         reopen_reply_to:   s.reopen_reply_to   || '',
@@ -1081,15 +1147,26 @@ function SettingsTab() {
       </section>
 
       <section style={sectionStyle}>
-        <p style={sectionLabel}>Reopen QA Email</p>
+        <p style={sectionLabel}>Reopen Notification Email</p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!form.reopen_email_enabled}
+            onChange={e => setForm(f => ({ ...f, reopen_email_enabled: e.target.checked }))}
+            style={{ width: 16, height: 16 }} />
+          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--navy)' }}>
+            Send an email when a note is reopened
+          </span>
+        </label>
         <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-          When a note is reopened, email the reviewer a PDF of the note. Leave the recipient blank to disable.
-          The "From" address must be a domain you've verified in Resend — otherwise leave it blank (system default) and set Reply-to to your work email.
+          {form.reopen_email_enabled
+            ? 'On — reopening a note emails a PDF of it to the recipient below. '
+            : 'Off — notes still reopen in InSync and still move to “Waiting on Peer”; no email goes out. '}
+          You can also silence a single batch from the Reopen dialog without changing this switch.
+          The “From” address must be a domain verified in Resend — otherwise leave it blank (system default) and set Reply-to to your work email.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
-            <label style={lbl}>QA recipient (Avi)</label>
-            <input className="form-input" value={form.qa_email} onChange={set('qa_email')} placeholder="avi@example.com" style={{ width: '100%' }} />
+            <label style={lbl}>Notification recipient</label>
+            <input className="form-input" value={form.qa_email} onChange={set('qa_email')} placeholder="peer-manager@example.com" style={{ width: '100%' }} />
           </div>
           <div>
             <label style={lbl}>CC (optional — e.g. yourself, for a paper trail)</label>
@@ -1143,6 +1220,8 @@ function SettingsTab() {
         onChange={v => setForm(f => ({ ...f, prompt_offsite: v }))}
         defaultValue={defaults.prompt_offsite}
       />
+
+      <PromptProvenance />
 
       <button className="btn btn-gold" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
         {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Settings'}
@@ -1319,6 +1398,121 @@ function MultiFilter({ label, options, selected, onChange }) {
   );
 }
 
+// ── Grouping ──────────────────────────────────────────────────────────────────
+
+// Default view: peer > client, each client's notes newest first. "None" is a
+// flat list in the same date order. Grouping is presentation only — selection,
+// signing and every action keep working on the same note objects.
+const GROUP_MODES = [['peer', 'Peer › client'], ['client', 'Client'], ['none', 'No grouping']];
+
+function noteTime(n) {
+  const d = new Date(n.visitDatetime || n.visitDate || 0);
+  return isNaN(d) ? 0 : d.getTime();
+}
+
+// → [{ key, label, children: [{ key, label, notes }] }] for peer mode,
+//   [{ key, label, notes }] for client mode, or null for 'none'.
+function groupNotes(list, mode) {
+  const byDateDesc = (a, b) => noteTime(b) - noteTime(a);
+  if (mode === 'none') return null;
+
+  if (mode === 'client') {
+    const m = new Map();
+    for (const n of list) {
+      const k = n.patientName || '(no client)';
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(n);
+    }
+    return [...m.entries()]
+      .map(([label, notes]) => ({ key: label, label, notes: notes.sort(byDateDesc) }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }
+
+  const peers = new Map();
+  for (const n of list) {
+    const p = n.peerName || '(no peer)';
+    const c = n.patientName || '(no client)';
+    if (!peers.has(p)) peers.set(p, new Map());
+    const clients = peers.get(p);
+    if (!clients.has(c)) clients.set(c, []);
+    clients.get(c).push(n);
+  }
+  return [...peers.entries()].map(([peer, clients]) => ({
+    key: peer, label: peer,
+    children: [...clients.entries()]
+      .map(([client, notes]) => ({ key: `${peer}|${client}`, label: client, notes: notes.sort(byDateDesc) }))
+      // Clients ordered by their most recent note, so the freshest work is on top.
+      .sort((a, b) => noteTime(b.notes[0]) - noteTime(a.notes[0])),
+  })).sort((a, b) => a.label.localeCompare(b.label));
+}
+
+function GroupPicker({ mode, onChange }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>Group by</span>
+      {GROUP_MODES.map(([key, label]) => (
+        <button key={key} type="button"
+          className={mode === key ? 'btn btn-gold btn-xs' : 'btn btn-outline btn-xs'}
+          onClick={() => onChange(key)}>{label}</button>
+      ))}
+    </div>
+  );
+}
+
+// Renders a list either flat (mode 'none') or grouped, with collapsible headers.
+function GroupedNotes({ notes, mode, renderNote, collapsed, onToggle }) {
+  const groups = useMemo(() => groupNotes(notes, mode), [notes, mode]);
+  const flat = useMemo(() => [...notes].sort((a, b) => noteTime(b) - noteTime(a)), [notes]);
+
+  if (!groups) {
+    return <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{flat.map(renderNote)}</div>;
+  }
+
+  const hdr = (label, count, key, level) => (
+    <button type="button" onClick={() => onToggle(key)}
+      style={{
+        background: 'none', border: 'none', cursor: 'pointer', padding: 0, textAlign: 'left',
+        display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6,
+        fontWeight: level === 0 ? 800 : 700,
+        fontSize: level === 0 ? '0.85rem' : '0.8rem',
+        color: level === 0 ? 'var(--navy)' : 'var(--gray-600)',
+      }}>
+      <span style={{ color: 'var(--gray-400)' }}>{collapsed.has(key) ? '▸' : '▾'}</span>
+      {label}
+      <span style={{ fontWeight: 600, color: 'var(--gray-400)', fontSize: '0.72rem' }}>({count})</span>
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {groups.map(g => {
+        const total = g.children ? g.children.reduce((n, c) => n + c.notes.length, 0) : g.notes.length;
+        return (
+          <div key={g.key}>
+            {hdr(g.label, total, g.key, 0)}
+            {!collapsed.has(g.key) && (g.children ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingLeft: 14, borderLeft: '2px solid var(--gray-100)' }}>
+                {g.children.map(c => (
+                  <div key={c.key}>
+                    {hdr(c.label, c.notes.length, c.key, 1)}
+                    {!collapsed.has(c.key) && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{c.notes.map(renderNote)}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingLeft: 14, borderLeft: '2px solid var(--gray-100)' }}>
+                {g.notes.map(renderNote)}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function QueueTab() {
   const [view,     setView]     = useState('queue');   // queue | reopened | archive
   const [notes,    setNotes]    = useState([]);
@@ -1336,6 +1530,14 @@ function QueueTab() {
   const [reopenCtx,    setReopenCtx]    = useState(null);
   const [versionsModal, setVersionsModal] = useState(null); // [versions]
   const [fClient, setFClient] = useState(new Set());
+  const [groupMode, setGroupMode] = useState(() => {
+    try { return window.localStorage.getItem('ps.groupMode') || 'peer'; } catch { return 'peer'; }
+  });
+  const [collapsed, setCollapsed] = useState(new Set());
+  useEffect(() => { try { window.localStorage.setItem('ps.groupMode', groupMode); } catch { /* ignore */ } }, [groupMode]);
+  const toggleGroup = key => setCollapsed(prev => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
+  });
   const [fPeer,   setFPeer]   = useState(new Set());
   const [fLen,    setFLen]    = useState(new Set());
   const [dFrom,   setDFrom]   = useState('');
@@ -1470,6 +1672,11 @@ function QueueTab() {
         <input type="date" className="form-input" value={dTo} onChange={e => setDTo(e.target.value)} style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
       </div>
       {hasFilter ? <button className="btn btn-outline btn-sm" onClick={clearFilters}>Clear filters</button> : null}
+      <div style={{ flexBasis: '100%', height: 0 }} />
+      <GroupPicker mode={groupMode} onChange={setGroupMode} />
+      {groupMode !== 'none' && collapsed.size > 0 && (
+        <button className="btn btn-outline btn-xs" onClick={() => setCollapsed(new Set())}>Expand all</button>
+      )}
     </div>
   );
 
@@ -1602,8 +1809,9 @@ function QueueTab() {
                 </button>
               </div>
               {showClean && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
-                  {clean.map(note => <NoteRow key={note.id} note={note} />)}
+                <div style={{ marginTop: 12 }}>
+                  <GroupedNotes notes={clean} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
+                    renderNote={note => <NoteRow key={note.id} note={note} />} />
                 </div>
               )}
             </div>
@@ -1626,9 +1834,8 @@ function QueueTab() {
                   </button>
                 )}
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {flagged.map(note => <NoteRow key={note.id} note={note} checkbox />)}
-              </div>
+              <GroupedNotes notes={flagged} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
+                renderNote={note => <NoteRow key={note.id} note={note} checkbox />} />
             </div>
           )}
         </div>
@@ -1640,9 +1847,8 @@ function QueueTab() {
               {notes.length === 0 ? 'Nothing waiting on a peer.' : 'No notes match the filters.'}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {filtered.map(note => <NoteRow key={note.id} note={note} />)}
-            </div>
+            <GroupedNotes notes={filtered} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
+              renderNote={note => <NoteRow key={note.id} note={note} />} />
           )}
         </div>
       ) : (
@@ -1659,9 +1865,8 @@ function QueueTab() {
               {notes.length === 0 ? (query ? 'No matches.' : 'No signed notes yet.') : 'No notes match the filters.'}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {filtered.map(note => <NoteRow key={note.id} note={note} />)}
-            </div>
+            <GroupedNotes notes={filtered} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
+              renderNote={note => <NoteRow key={note.id} note={note} />} />
           )}
         </div>
       )}

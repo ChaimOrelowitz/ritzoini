@@ -106,10 +106,19 @@ router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
     const engine = await buildEngine();
     await engine.login();
 
-    // Email settings for the QA reopen notification (editable in Settings tab).
+    // Email settings for the reopen notification (editable in Settings tab).
+    // ps_reopen_email_enabled is the Reviewer's master on/off switch: with it
+    // off, notes still reopen in InSync and still move to 'reopened' here — only
+    // the outbound email is suppressed, so quiet fixes don't clutter an inbox.
     const { data: srows } = await supabase.from('app_settings').select('key, value')
-      .in('key', ['ps_qa_email', 'ps_qa_cc', 'ps_reopen_from', 'ps_reopen_reply_to']);
+      .in('key', ['ps_qa_email', 'ps_qa_cc', 'ps_reopen_from', 'ps_reopen_reply_to',
+                  'ps_reopen_email_enabled']);
     const emailSettings = Object.fromEntries((srows || []).map(r => [r.key, r.value]));
+    // Default ON: absent setting keeps today's behaviour.
+    const emailEnabled = emailSettings.ps_reopen_email_enabled !== 'false';
+    // Per-request override so the Reviewer can silence one batch without
+    // flipping the global switch. Body: { notes, sendEmail: false }.
+    const sendEmail = req.body.sendEmail === undefined ? emailEnabled : !!req.body.sendEmail;
 
     const results = [];
     for (const n of notes) {
@@ -121,11 +130,17 @@ router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
         results.push({ eid: n.eid, ok: false, message: e.message });
         continue;
       }
-      // Reopen succeeded — email QA. Email failure NEVER rolls back the reopen.
+      // Reopen succeeded — notify. Email failure NEVER rolls back the reopen,
+      // and neither does the toggle being off.
       if (r.ok) {
-        const em = await sendReopenNotification({ note: n, reason: n.reason || '', settings: emailSettings });
-        r.emailSent = em.emailSent;
-        r.emailError = em.emailError;
+        if (sendEmail) {
+          const em = await sendReopenNotification({ note: n, reason: n.reason || '', settings: emailSettings });
+          r.emailSent = em.emailSent;
+          r.emailError = em.emailError;
+        } else {
+          r.emailSent = false;
+          r.emailSkipped = true;
+        }
         // Persistent queue: this note is now waiting on the peer.
         await supabase.from('ps_notes')
           .update({ status: 'reopened', reopen_reason: n.reason || '', actioned_at: new Date().toISOString() })
@@ -334,7 +349,7 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
             anthropic_api_key, prompt_core_review, prompt_offsite,
-            qa_email, qa_cc, reopen_from, reopen_reply_to } = req.body;
+            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
@@ -346,11 +361,12 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       // shipped default (the engine falls back when the stored value is blank).
       ps_prompt_core_review: prompt_core_review,
       ps_prompt_offsite:     prompt_offsite,
-      // Reopen QA email notification.
+      // Reopen notification email.
       ps_qa_email:         qa_email,
       ps_qa_cc:            qa_cc,
       ps_reopen_from:      reopen_from,
       ps_reopen_reply_to:  reopen_reply_to,
+      ps_reopen_email_enabled: reopen_email_enabled === undefined ? undefined : String(!!reopen_email_enabled),
     };
     for (const [key, value] of Object.entries(map))
       if (value !== undefined && value !== null)
@@ -361,13 +377,50 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// GET /api/ps/cosign/prompt-preview — the EXACT system prompt the next AI review
+// will send, built by the same buildEngine() the ingest and rejudge paths use.
+// This is the provenance check: if what you saved in Settings is what runs, it
+// appears here verbatim. `source` says whether each module is your saved custom
+// text or the shipped default.
+router.get('/cosign/prompt-preview', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const crypto = require('crypto');
+    const { data: rows } = await supabase.from('app_settings').select('key, value')
+      .in('key', ['ps_prompt_core_review', 'ps_prompt_offsite']);
+    const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
+    const engine = await buildEngine();
+    const systemPrompt = engine.systemPrompt();
+    const h = t => crypto.createHash('sha256').update(String(t || '')).digest('hex').slice(0, 16);
+    res.json({
+      systemPrompt,
+      chars: systemPrompt.length,
+      core: {
+        source: (S.ps_prompt_core_review || '').trim() ? 'custom (saved in Settings)' : 'built-in default',
+        chars:  engine.coreReviewPrompt.length,
+        hash:   h(engine.coreReviewPrompt),
+        matchesSaved: (S.ps_prompt_core_review || '').trim()
+          ? (S.ps_prompt_core_review || '').trim() === engine.coreReviewPrompt : null,
+      },
+      offsite: {
+        source: (S.ps_prompt_offsite || '').trim() ? 'custom (saved in Settings)' : 'built-in default',
+        chars:  engine.offsitePrompt.length,
+        hash:   h(engine.offsitePrompt),
+        matchesSaved: (S.ps_prompt_offsite || '').trim()
+          ? (S.ps_prompt_offsite || '').trim() === engine.offsitePrompt : null,
+      },
+      note: 'The fixed JSON output contract is appended after both modules and is not editable.',
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/ps/cosign/settings
 router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   const { data } = await supabase.from('app_settings').select('key, value')
     .in('key', ['ps_no_school_start','ps_no_school_end','insync_provider_id',
                 'insync_username','insync_password','anthropic_api_key',
                 'ps_prompt_core_review','ps_prompt_offsite',
-                'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to']);
+                'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to',
+                'ps_reopen_email_enabled']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
     no_school_start:   S.ps_no_school_start || '07/01',
@@ -382,6 +435,7 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
     qa_cc:             S.ps_qa_cc           || '',
     reopen_from:       S.ps_reopen_from     || '',
     reopen_reply_to:   S.ps_reopen_reply_to || '',
+    reopen_email_enabled: S.ps_reopen_email_enabled !== 'false',
     default_prompt_core_review: DEFAULT_CORE_REVIEW_PROMPT,
     default_prompt_offsite:     DEFAULT_OFFSITE_PROMPT,
   });

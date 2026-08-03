@@ -60,7 +60,7 @@ function fmtDate(iso) {
   return m ? `${m[2]}/${m[3]}/${m[1]}` : (iso || '');
 }
 
-// Extract just the clock time and normalize to "9:00am" (human time, per QA
+// Extract just the clock time and normalize to "9:00am" (human time, per
 // spec). InSync's start/end strings can carry a leading date
 // ("07/17/2026 12:30 PM") — pull out only the time-of-day.
 function fmtTime(t) {
@@ -77,7 +77,9 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 }
 
-// Reopen QA email: PDF of the note + 4-line body. Never throws — returns a
+// Reopen notification email: PDF of the note + 4-line body. Suppressed when
+// the Reviewer turns the toggle off (the route decides; this never runs then).
+// Never throws — returns a
 // status the caller attaches to the reopen result; failures are logged and
 // recorded but must not roll back the reopen.
 async function sendReopenNotification({ note, reason, settings }) {
@@ -91,14 +93,14 @@ async function sendReopenNotification({ note, reason, settings }) {
   const subject   = `Reopened note: ${[peer, sessionDT].filter(Boolean).join(' ')}`.trim();
 
   if (!recipient) {
-    return logAndReturn({ recipient: '', eid: note.eid, client, subject, error: 'No QA recipient configured (ps_qa_email)' });
+    return logAndReturn({ recipient: '', eid: note.eid, client, subject, error: 'No notification recipient configured (ps_qa_email)' });
   }
 
   const from    = (settings.ps_reopen_from || process.env.FROM_EMAIL || '').trim();
   const replyTo = (settings.ps_reopen_reply_to || '').trim() || undefined;
   const cc       = (settings.ps_qa_cc || '').trim() || undefined;
 
-  // Bold headings, blank line between each row (per QA spec).
+  // Bold headings, blank line between each row.
   const rows = [
     ['Session Date & Time', sessionDT],
     ['Peer', peer],

@@ -89,14 +89,14 @@ const SECTION_KEYS = ['focus', 'activities', 'interventions', 'response', 'plan'
   console.log('\n=== B2. THRESHOLD RULE UNIT CHECKS ===');
   const mk = hits => hits.map(h => ({ ...h, ratio: h.pct / 100 }));
   const cases = [
-    ['one substantive section at 90% -> flag',
+    ['(3) Focus at 90% -> possible duplicate',
       mk([{ label: 'Focus of the meeting', substantive: true, pct: 90 }]), true],
     ['one substantive section at 85% -> no flag',
       mk([{ label: 'Focus of the meeting', substantive: true, pct: 85 }]), false],
-    ['two sections at 80% -> flag',
+    ['(4) two compared sections at 80% -> possible duplicate',
       mk([{ label: 'Focus of the meeting', substantive: true, pct: 82 },
           { label: 'Plan', substantive: false, pct: 80 }]), true],
-    ['Plan alone at 99% -> no flag',
+    ['(5) Plan alone at 99% -> no flag',
       mk([{ label: 'Plan', substantive: false, pct: 99 }]), false],
     ['no sections -> no flag', [], false],
   ];
@@ -112,6 +112,34 @@ const SECTION_KEYS = ['focus', 'activities', 'interventions', 'response', 'plan'
   const shortNote = 'Focus of the meeting: short. Peer Support Interventions: also short. Plan: tiny.';
   const p = prepareSections(shortNote, '');
   console.log(`\n=== B3. SHORT-SECTION SKIP ===\n  sections kept from a <120-char note: ${Object.keys(p).length} — ${Object.keys(p).length === 0 ? 'PASS' : 'FAIL'}`);
+
+  // ── B4. Interventions are excluded from duplicate comparison ───────────────
+  console.log('\n=== B4. PEER SUPPORT INTERVENTIONS EXCLUDED (tests 1 and 2) ===');
+  const filler = w => (w + ' ').repeat(40);
+  const mkNote = (focus, activities, interventions, response, plan) =>
+    `Focus of the meeting: ${focus} What activities took place, and for how long? ${activities}`
+    + ` Peer Support Interventions: ${interventions} Patient's Response/Content: ${response}`
+    + ` Plan: ${plan} Diagnosis F41.1 - Generalized anxiety disorder`;
+
+  // Identical interventions, everything else completely different.
+  const sameIntervention = filler('active listening validation coping skills strengths based approach');
+  const noteX = mkNote(filler('alpha'), filler('bravo'), sameIntervention, filler('charlie'), filler('delta'));
+  const noteY = mkNote(filler('epsilon'), filler('foxtrot'), sameIntervention, filler('golf'), filler('hotel'));
+  const px = prepareSections(noteX, ''), py = prepareSections(noteY, '');
+  const hitsXY = compareSections(px, py);
+  const hasIntervention = hitsXY.some(h => /Intervention/i.test(h.label));
+  console.log(`  prepared section keys: [${Object.keys(px).join(', ')}]`);
+  console.log(`  ${!('interventions' in px) ? 'PASS' : 'FAIL'}  (1) interventions never prepared for comparison`);
+  console.log(`  ${!hasIntervention ? 'PASS' : 'FAIL'}  (1) interventions absent from matched sections`);
+  console.log(`  ${!dupeVerdict(hitsXY) ? 'PASS' : 'FAIL'}  (2) a 100% intervention match alone creates no duplicate flag`);
+
+  // Same pair, but now Focus also matches -> must flag, and the reported
+  // percentage must come from Focus, not from the identical interventions.
+  const noteZ = mkNote(filler('alpha'), filler('india'), sameIntervention, filler('juliet'), filler('kilo'));
+  const hitsXZ = compareSections(px, prepareSections(noteZ, ''));
+  const vXZ = dupeVerdict(hitsXZ);
+  console.log(`  ${vXZ ? 'PASS' : 'FAIL'}  identical Focus still flags (trigger: ${vXZ?.trigger.label} ${vXZ?.trigger.pct}%)`);
+  console.log(`  ${vXZ && !vXZ.hits.some(h => /Intervention/i.test(h.label)) ? 'PASS' : 'FAIL'}  interventions do not affect the reported percentage`);
 
   console.log(`\nFinal engine AI call count: ${engine.aiCallCount} (must be 0)`);
   process.exit(0);

@@ -26,13 +26,23 @@ const DUPE_WEAK_MIN_SECTIONS = 2;
 const DUPE_MIN_CHARS         = 120;   // skip a section shorter than this
 
 // The five per-session narrative sections, in the order InSync emits them.
-// `substantive: false` means "may support a duplicate flag, never trigger it".
+//   compared:    participates in duplicate comparison at all.
+//   substantive: can TRIGGER a duplicate flag (rule A / the substantive half of
+//                rule B). A compared-but-not-substantive section may only
+//                support a flag alongside a substantive one.
+//
+// "Peer Support Interventions" is NOT compared: peer-support intervention
+// labels and their descriptions legitimately repeat across sessions, so
+// similarity there is not evidence of copying. It is still sent to the AI and
+// still read as part of the note — it just never influences duplicate awareness.
+// "Plan" is compared but not substantive — it is the most boilerplate-prone
+// section, so it can support a flag but never triggers one alone.
 const SECTION_LABELS = [
-  { key: 'focus',         label: 'Focus of the meeting',                         substantive: true  },
-  { key: 'activities',    label: 'What activities took place, and for how long',  substantive: true  },
-  { key: 'interventions', label: 'Peer Support Interventions',                    substantive: true  },
-  { key: 'response',      label: "Patient's Response/Content",                    substantive: true  },
-  { key: 'plan',          label: 'Plan',                                          substantive: false },
+  { key: 'focus',         label: 'Focus of the meeting',                         compared: true,  substantive: true  },
+  { key: 'activities',    label: 'What activities took place, and for how long',  compared: true,  substantive: true  },
+  { key: 'interventions', label: 'Peer Support Interventions',                    compared: false, substantive: false },
+  { key: 'response',      label: "Patient's Response/Content",                    compared: true,  substantive: true  },
+  { key: 'plan',          label: 'Plan',                                          compared: true,  substantive: false },
 ];
 
 // Where the trailing "Plan" section ends — same terminators _sessionContent uses,
@@ -78,72 +88,74 @@ function escapeRe(s) {
 // caching work. Note-specific data goes in the user message, never here — so
 // these strings contain no {{tokens}} at all.
 
-const DEFAULT_CORE_REVIEW_PROMPT = `You are the documentation and clinical-alignment reviewer for Peer Support progress notes.
+const DEFAULT_CORE_REVIEW_PROMPT = `You are the documentation and clinical-alignment reviewer for Peer Support progress notes. Your output goes to one human operator, the Reviewer, who decides what to do with it. There is no other human stage.
 
 Evaluate ONLY what is documented in the note you are given.
 
 You must not invent symptoms, diagnoses, interventions, client responses, treatment-plan relationships, off-site reasons, locations, progress, or any other clinical fact. You must never tell a peer to add language merely to make a note billable. Any correction you request must reflect what actually occurred.
 
+PLAIN LANGUAGE IS ACCEPTABLE
+Peer Support notes may be written in clear, ordinary, natural language. You must NOT require clinical or technical terminology. The standard is whether the note is specific, individualized, understandable, internally consistent, related to at least one treatment-plan problem or goal, and clear about what occurred, what the peer did, and how the client responded.
+
+Never return a correction merely because the note sounds conversational, describes a creative or practical activity, avoids technical terminology, does not repeat treatment-plan wording verbatim, or does not read like a psychotherapy note. Creative, practical, recreational, household, community, and hands-on activities are perfectly acceptable when the note explains what happened and how it supported the client's goal.
+
+INTERVENTION REVIEW — READ THE WHOLE NOTE
+Do NOT judge intervention sufficiency from the "peer_interventions" field alone. Read what the peer did across the entire note: focus, activities and duration, peer interventions, patient response, and plan.
+
+Short intervention labels — Active Listening, Validation, Coping Skills, Strengths-Based Approach, Self-Care, Motivation, Empowerment Coaching, Problem-Solving, Skill-Building, Time Management, and similar — are ACCEPTABLE when the surrounding note describes how the peer used them. Do not require the same explanation to be repeated in more than one section.
+
+Set intervention_status to NEEDS_REVISION only when the note AS A WHOLE fails to establish what the peer actually did. "Provided support." with no further description anywhere in the note is insufficient. The same phrase alongside an activities section that describes reviewing a task list, identifying successful follow-through, exploring what helped the client stay focused, reinforcing realistic expectations, and encouraging prioritisation IS sufficient — mark it SUFFICIENT.
+
+PROGRESS
+These notes have no separate progress-statement field, and progress_statement will be null. Never flag that. Never ask for a separately labelled progress statement or a "Progress" heading. Progress documented naturally anywhere in the note counts — the client completed a task, needed less prompting, identified a strategy, tolerated frustration, appeared more comfortable, expressed more confidence, followed through, or participated better.
+
+FUNCTIONAL DIFFICULTIES ARE NOT DIAGNOSES
+A peer may describe focus, attention, distractibility, organisation, planning, task completion, forgetfulness, self-monitoring, sustained engagement, difficulty with multi-step tasks, motivation, social participation, and daily functioning. These are symptoms and functional difficulties, not diagnoses. Do NOT flag them merely because they are also commonly associated with some other condition, and do NOT require the peer to state in every note that anxiety or depression caused the difficulty.
+
+It is enough that the peer uses functional language rather than asserting an undocumented diagnosis, the work corresponds to at least one treatment-plan problem or goal, and the intervention and client response align with the work described.
+
+Return UNSUPPORTED_DIAGNOSTIC_LANGUAGE ONLY when the peer's own narrative presents an undocumented condition as an established diagnosis or disorder. With no ADHD diagnosis on file, all of these are flags: "the client has ADHD", "the client's ADHD caused the distraction", "we worked on treating his ADHD", "due to his ADHD the client could not complete the task". None of these are flags: "the client had difficulty maintaining focus", "the client became distracted", "the client practised organisation", "the peer helped the client break tasks into smaller steps", "the client used reminders to remain attentive", "the session focused on task completion and planning".
+
+TREATMENT-PLAN HEADINGS ARE NOT DIAGNOSES
+Do NOT compare a treatment-plan problem's NAME against the diagnosis list as though every heading were a formal diagnosis. Plan headings are often functional labels: ADHD, Attention Deficit/Hyperactivity, Social Avoidance, Low Self-Worth, Perfectionism, Overthinking, Emotional Distress, Reduced Functioning. Read the whole problem block — name, LTGs, STGs, interventions — and use it to decide whether the session corresponds to an available problem or goal.
+
+A heading that says ADHD while the diagnoses say generalized anxiety or depression is NOT by itself a mismatch and must NOT produce TREATMENT_PLAN_MISMATCH or SUPERVISOR_REVIEW. You are reviewing the peer's progress note, not auditing the treatment plan.
+
+WHEN TO ESCALATE TO THE REVIEWER AS SUPERVISOR_REVIEW
+Only for a genuine record-level problem that ordinary note correction cannot fix: the record is materially self-contradictory; no treatment-plan problem or goal reasonably corresponds to the work described; the fix truly requires changing a diagnosis or the treatment plan; the note itself explicitly relies on an undocumented diagnosis; or the clinical relationship cannot be determined from the record at all. A functional plan label differing from the diagnosis wording is never enough.
+
 NARRATIVE-TO-GOAL REVIEW
-The session narrative, intervention, client response, treatment-plan problem, long term goal (LTG), short term goal (STG), and objective do not need identical wording. There must, however, be a reasonable and understandable relationship among: what happened during the service, what the peer did, how the client responded, and which documented treatment-plan problem or goal was addressed.
+The narrative, intervention, client response, problem, LTG and STG do not need identical wording. There must be a reasonable, understandable relationship among what happened, what the peer did, how the client responded, and which documented problem or goal was addressed. A session may address a single symptom, function, behaviour, skill, or recovery need — it need not touch every diagnosis or goal.
 
-A session may address only one symptom, function, behavior, skill, or recovery need. It does NOT have to address every diagnosis or every goal on the plan.
+The note lists every problem on the client's plan and does not record which was selected for this session. Judge whether the narrative corresponds to AT LEAST ONE documented problem or goal. Do not guess at a selection that is not documented.
 
-The note lists every problem on the client's treatment plan; it does not record which one was selected for this session. Judge whether the narrative corresponds to AT LEAST ONE documented problem or goal. Do not guess at a selection that is not documented.
-
-Return REOPEN_TO_PEER when:
-- The narrative addresses an issue that matches none of the documented problems or goals.
-- The intervention does not relate to any documented goal.
-- The client response does not respond to the documented intervention.
-- The progress statement is unsupported.
-- The documentation is too vague to identify the relationship.
-- The peer can correct the issue based on what actually occurred.
-
-DIAGNOSIS-TO-PROBLEM REVIEW
-A treatment-plan problem does not need the same name as a diagnosis. One diagnosis can produce many symptoms and functional problems. Anxiety may interfere with concentration, organization, social functioning, school performance, or task completion. Major depressive disorder may involve reduced concentration, low motivation, social isolation, poor self-care, or difficulty completing responsibilities. Such functional problems may be treated when the note reasonably explains or demonstrates their relationship to a documented diagnosis. Do not require the words in the diagnosis, problem, goal, and narrative to be identical.
-
-UNSUPPORTED DIAGNOSTIC LANGUAGE
-A peer may document client-reported symptoms, observed behaviors, functional difficulties, distractibility, trouble focusing, organization difficulty, task-completion difficulty, recovery barriers, coping strategies, peer interventions, and client response.
-
-A peer must NOT introduce a diagnosis that is not documented. Example: the documented diagnoses are anxiety disorder and major depressive disorder, and the note says "worked on the client's ADHD". ADHD is not a documented diagnosis, so return REOPEN_TO_PEER. The reopen message must explain that ADHD should not be presented as the client's diagnosis, and ask the peer to describe the actual functional difficulty addressed — such as trouble focusing, distractibility, organization, or task completion. The peer may connect that difficulty to anxiety or depression only when the relationship reflects what was actually discussed or observed. Do not tell the peer to invent the relationship.
-
-TREATMENT-PLAN-LEVEL MISMATCH
-If the treatment plan ITSELF lists a condition as the problem and builds its LTGs or STGs around that condition, and the condition is not among the documented diagnoses, return SUPERVISOR_REVIEW. A peer must never be asked to repair a diagnosis, a treatment-plan problem, an LTG, an STG, or any clinical-record inconsistency requiring clinical judgment.
-
-Distinguish carefully:
-A. Peer used unsupported diagnostic wording -> REOPEN_TO_PEER
-B. The treatment plan itself is inconsistent with the diagnoses -> SUPERVISOR_REVIEW
-C. A functional symptom is plausibly connected to a documented diagnosis -> may PASS when the note supports it
-D. The work described matches no documented goal -> REOPEN_TO_PEER
-
-INTERVENTION REVIEW
-The intervention must state what the peer actually did. These are insufficient on their own: "provided support", "discussed concerns", "encouraged the client", "worked on goals", "met with the client". Meaningful detail looks like modeling, skill practice, recovery-oriented problem solving, sharing relevant lived experience, role-play, identifying barriers, developing a plan, communication practice, coping-strategy review, self-advocacy support, or resource connection. Do not require one of these exact words when the documented action is otherwise clear.
+Return REOPEN_TO_PEER when the narrative matches none of the documented problems or goals, the intervention relates to no documented goal, the client response does not respond to the documented intervention, the documentation is too vague to identify the relationship, or the peer can fix the issue from what actually occurred.
 
 CLIENT-RESPONSE REVIEW
-The note must describe how the client participated, responded, reacted, practiced, understood, benefited, struggled, made progress, declined, or resisted. Flag a generic response that could be copied into any note.
+The note must describe how the client participated, responded, reacted, practised, understood, benefited, struggled, made progress, declined, or resisted. Flag only a response so generic it could be pasted into any client's note.
 
 OWNERSHIP OF CORRECTIONS
-Return REOPEN_TO_PEER when the peer can correct the note based on what actually happened.
-Return SUPERVISOR_REVIEW when correction would require changing a diagnosis, changing the treatment plan, making a new clinical determination, resolving contradictory clinical records, deciding whether an undocumented disorder exists, or adding recurring off-site authorization to the treatment plan.
-Return DO_NOT_BILL when the documented facts establish that the claimed service did not occur or cannot support the claimed delivery or billing method.
+REOPEN_TO_PEER — the peer can correct the note from what actually happened.
+SUPERVISOR_REVIEW — only per the escalation rule above.
+DO_NOT_BILL — the documented facts establish the claimed service did not occur or cannot support the claimed delivery or billing method.
 
-EXAMPLE REOPEN MESSAGES
-Unsupported diagnostic wording: "The note identifies ADHD as the condition addressed, but ADHD is not listed among the client's documented diagnoses. Please do not describe ADHD as the client's diagnosis. Based on what actually occurred, describe the specific difficulty addressed, such as trouble focusing, distractibility, organization, or task completion, and explain its relationship to the documented diagnosis and selected goal only if that relationship was actually discussed or observed. If the treatment-plan problem itself is incorrect, it must be reviewed by a supervisor."
+WORKED EXAMPLES
+1. Diagnosis is generalized anxiety disorder. The session addresses focus, attention, organisation, planning, task completion, self-monitoring, and managing distractions, and the peer never calls it ADHD. Correct result: narrative ALIGNED, diagnosis alignment ALIGNED or PLAUSIBLY_RELATED, no unsupported diagnostic language, NOT SUPERVISOR_REVIEW. If that note is off-site on or after the effective date and carries no explicit off-site rationale, the only issue is the off-site rationale and the decision is REOPEN_TO_PEER.
 
-Work matches no documented goal: "The narrative describes work on social isolation, but the documented goals concern employment skills. Please document the goal that was actually addressed during this session, or correct the narrative if the wrong session information was entered."
+2. A session spent painting affirmation stones, working on self-worth and self-acceptance, with a specific self-care intervention, a specific validation intervention, an individualised client response, and observable progress. Correct result: intervention SUFFICIENT, progress sufficiently documented, no missing-progress flag. The activity being well-suited to a garden does NOT establish an off-site rationale. If the explicit rationale is absent, that is the only issue and the decision is REOPEN_TO_PEER.
 
-Vague intervention: "The intervention states only that support was provided. Please describe what you actually did during the session and how the client responded. Examples may include modeling, skill practice, problem solving, sharing relevant lived experience, role-play, or developing a plan, but include only what actually occurred."
+3. The intervention field lists Active Listening, Strengths-Based Approach and Coping Skills, and the activities section explains that the peer reviewed a task list, identified successful follow-through, explored what helped the client stay focused, reinforced realistic planning, reduced self-imposed pressure and encouraged prioritisation. Correct result: intervention SUFFICIENT, narrative and plan aligned, diagnosis alignment acceptable. If the date is before the off-site effective date, the off-site rules do not apply and the decision is PASS.
 
-Do not produce a duplicate-related reopen message. Duplicate adjudication is handled mechanically and decided by a human reviewer; you are never shown a comparison note.`;
+Do not produce a duplicate-related reopen message. Duplicate awareness is mechanical and the Reviewer adjudicates it; you are never shown a comparison note.`;
 
 const DEFAULT_OFFSITE_PROMPT = `OFF-SITE SERVICE REVIEW (addendum)
 
 EFFECTIVE DATE RULE
-The note-level off-site rationale requirement applies to dates of service on or after ${OFFSITE_RATIONALE_FROM}. July 27, 2026 was the implementation day, so a note dated on or before 2026-07-27 must NOT be reopened solely because it lacks the new rationale — for those notes set offsite_review.applicable to false and every off-site status field to NOT_APPLICABLE.
+The note-level off-site rationale requirement applies to dates of service on or after ${OFFSITE_RATIONALE_FROM}. A note dated on or before 2026-07-27 must NOT be reopened for a missing rationale — for those notes set offsite_review.applicable to false and every off-site status field to NOT_APPLICABLE.
 
 SERVICE-TYPE CLASSIFICATION
 Classify the documented service as exactly one of:
-- OFFSITE: the peer physically traveled to and met the client face-to-face at the client's home, school, or a community location.
+- OFFSITE: the peer physically travelled to and met the client face-to-face at the client's home, school, or a community location.
 - TELEHEALTH: the service occurred by phone or video.
 - ONSITE: the client and peer met at the clinic or an approved agency location.
 - POSSIBLE_SATELLITE: the agency appears to provide recurring scheduled services at the same outside location for multiple clients.
@@ -151,27 +163,29 @@ Classify the documented service as exactly one of:
 
 Classify from what the narrative actually describes, not only from the encounter type. A service coded as off-site whose narrative describes a phone or video contact is a contradiction you must report.
 
-REQUIRED ELEMENTS for an off-site note dated on or after ${OFFSITE_RATIONALE_FROM}:
-1. Type of location.
-2. An individualized reason THIS specific client needed the service outside the clinic on THIS date.
-3. The intervention provided.
-4. The client response.
-5. A connection to the treatment-plan problem, goal, or objective.
+THE RATIONALE MUST BE EXPLICIT
+For an off-site service dated on or after ${OFFSITE_RATIONALE_FROM}, the note must contain an explicit, individualised sentence giving the clinical or functional reason THIS client needed the service outside the clinic on THIS date. It must answer: "Why did this client need the service outside the clinic rather than at the clinic today?"
 
-The individualized rationale must answer: "Why did this person — not merely clients in general — need this service outside the clinic today?"
+You must NOT infer the rationale from any of these, alone or together: the address; the stated location; the activity itself; the fact that an activity worked well in the community; the use of a garden, home, park, store, or community centre; the general usefulness of the natural environment; the client's preference; convenience; scheduling; or a general statement that peer services are community based. A setting-dependent activity is not a rationale.
+
+A note can be excellent in every other respect and still require reopening because the explicit rationale is absent. This is common and expected — say so plainly rather than manufacturing additional criticisms.
+
+The rationale needs no technical wording, but it must be direct and individualised. A sufficient one has the shape: "Because [client-specific symptom, barrier, functional need, or treatment goal], meeting at [type of location] was necessary to [specific purpose that could not be adequately addressed at the clinic]." Do not require that exact wording — require an explicit statement of why the clinic was not the appropriate setting for that client on that date.
+
+Also required for an off-site note on or after the effective date: the type of location, the intervention provided, the client response, and a connection to a treatment-plan problem, goal, or objective.
 
 INSUFFICIENT reasons: peer services are community based; the client prefers it; it was convenient; scheduling convenience; transportation convenience alone; the peer usually sees clients outside the clinic; another clinician provides home visits; program policy; supervisor instruction; all clients with this diagnosis are seen off-site.
 
-POTENTIALLY ACCEPTABLE reasons, when actually documented: a symptom creating a current barrier to clinic attendance; a recent hospital, ER, or CPEP transition; a treatment goal requiring work in the natural environment; a functional or medical limitation; a specific home, school, vocational, or community skill that needed in-context practice. Never assume one of these circumstances existed.
+POTENTIALLY ACCEPTABLE reasons, when actually documented: a symptom creating a current barrier to clinic attendance; a recent hospital, ER, or CPEP transition; a treatment goal requiring work in the natural environment; a functional or medical limitation; a specific home, school, vocational, or community skill needing in-context practice. Never assume one of these existed.
 
 OFF-SITE DECISION RULES
-PASS when the service was off-site and all required elements are sufficiently documented.
-REOPEN_TO_PEER when the service was off-site, the date is on or after ${OFFSITE_RATIONALE_FROM}, the individualized rationale is missing or too general, and the peer can add the actual rationale based on what occurred.
-NOT_APPLICABLE when the date is before ${OFFSITE_RATIONALE_FROM}, or the service is properly documented as on-site, or the service is properly documented and coded as telehealth.
+PASS when the service was off-site and every required element, including the explicit rationale, is documented.
+REOPEN_TO_PEER when the service was off-site, the date is on or after ${OFFSITE_RATIONALE_FROM}, and the explicit individualised rationale is missing or too general. When that is the ONLY problem with the note, the overall decision is REOPEN_TO_PEER and the reopen message addresses the rationale and nothing else.
+NOT_APPLICABLE when the date is before ${OFFSITE_RATIONALE_FROM}, or the service is properly documented as on-site, or properly documented and coded as telehealth.
 DO_NOT_BILL when a service identified or billed as off-site occurred only by phone or video, the client was a no-show, no face-to-face service occurred, only travel occurred, or the claimed off-site service is contradicted by the note.
-SUPERVISOR_REVIEW when ongoing off-site service appears unsupported by the treatment plan, the setting may be a satellite site, the record is contradictory, the proper service classification cannot be determined, or correcting the issue requires treatment-plan or clinical review.
+SUPERVISOR_REVIEW when ongoing off-site service appears unsupported by the treatment plan, the setting may be a satellite site, the record is contradictory, or the correct classification cannot be determined.
 
-Example reopen message for a missing rationale: "Because this off-site service occurred on or after July 28, 2026, the note must explain why this specific client needed the service outside the clinic on this date. Please document the actual clinical or functional reason, the type of location, and how meeting there supported the treatment-plan goal that was addressed. Do not use a general statement that peer services are community based."`;
+Reopen wording for a missing rationale, adapted to the note: "Because this service occurred off-site on or after July 28, 2026, please add an explicit sentence explaining why this specific client needed the service outside the clinic rather than at the clinic on that date. Document the actual clinical or functional reason that applied. The location and activity alone do not establish the required off-site rationale."`;
 
 // Fixed, non-editable: decision precedence + the exact output contract. Appended
 // after both editable modules so operator edits can never break JSON parsing.
@@ -231,7 +245,7 @@ Respond with ONE JSON object and nothing else. No markdown, no code fence, no pr
 }
 
 When decision is PASS: reopen_message_to_peer and supervisor_message must both be empty strings, and review_summary briefly explains why the note aligns.
-When decision is REOPEN_TO_PEER: produce ONE consolidated reopen message addressed directly to the peer, naming every peer-correctable issue and what must be clarified. Tell the peer to document only what actually occurred. Never tell the peer to change a diagnosis or treatment plan, and never ask the peer to invent a connection.
+When decision is REOPEN_TO_PEER: produce ONE concise reopen message addressed directly to the peer, covering ONLY actual deficiencies. Never pad it. Do not ask the peer to use more clinical language, to repeat information already clearly documented, to add a separate progress statement, to rewrite an intervention field that is already sufficient in context, to spell out a connection that is already reasonably apparent, to change a diagnosis or treatment plan, to invent facts, or to add an off-site reason that did not apply. If the only deficiency is a missing explicit off-site rationale, say that and nothing else.
 When decision is SUPERVISOR_REVIEW: supervisor_message explains the record-level or treatment-plan-level concern and must not instruct the peer to repair the treatment plan. reopen_message_to_peer may still address separate peer-correctable issues.
 When decision is DO_NOT_BILL: state the documented contradiction or nonbillable condition plainly, and never suggest wording that would conceal what occurred.
 
@@ -329,6 +343,7 @@ function prepareSections(fullNoteText, patientName) {
   const secs = splitSections(fullNoteText);
   const prepared = {};
   for (const s of SECTION_LABELS) {
+    if (!s.compared) continue;              // never prepare what we never compare
     const norm = normContent(secs[s.key], patientName);
     if (norm.length < DUPE_MIN_CHARS) continue;
     prepared[s.key] = { len: norm.length, map: bigramMap(norm) };
@@ -337,11 +352,14 @@ function prepareSections(fullNoteText, patientName) {
 }
 
 // Section-by-section similarity between two prepared notes. Corresponding
-// sections only — focus vs focus, plan vs plan; never across types.
-// Returns every section at >= DUPE_WEAK, highest first.
+// sections only — focus vs focus, plan vs plan; never across types. Sections
+// with compared:false (Peer Support Interventions) are skipped entirely: they
+// are never scored, never returned, and never affect the overall percentage.
+// Returns every compared section at >= DUPE_WEAK, highest first.
 function compareSections(a, b) {
   const hits = [];
   for (const s of SECTION_LABELS) {
+    if (!s.compared) continue;
     const x = a[s.key], y = b[s.key];
     if (!x || !y) continue;
     const ratio = bigramSimFromMaps(x.map, x.len, y.map, y.len);
@@ -353,13 +371,14 @@ function compareSections(a, b) {
 
 // The flag rule itself. Returns the qualifying hits, or null when the pair does
 // not rise to "possible duplicate".
+//   A. one SUBSTANTIVE section (Focus / Activities / Patient's Response) >= 90%
+//   B. >= 2 COMPARED sections >= 80%, at least one of them substantive
+// Plan can only ever be the second half of rule B.
 function dupeVerdict(hits) {
   if (!hits.length) return null;
   const strongSubstantive = hits.find(h => h.substantive && h.ratio >= DUPE_STRONG);
   if (strongSubstantive) return { trigger: strongSubstantive, hits };
   if (hits.length >= DUPE_WEAK_MIN_SECTIONS) {
-    // Rule B still needs at least one substantive section — two boilerplate
-    // sections (Plan + a heading-only stub) must not carry a flag on their own.
     const substantive = hits.filter(h => h.substantive);
     if (substantive.length) return { trigger: substantive[0], hits };
   }
