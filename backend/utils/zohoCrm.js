@@ -653,7 +653,7 @@ async function getRoster() {
   const [zg, zi, rg, ri] = await Promise.all([
     supabase.from('zoho_groups').select('*'),
     supabase.from('zoho_instructors').select('id, name, phone'),
-    supabase.from('groups').select('zoho_session_id').not('zoho_session_id', 'is', null),
+    supabase.from('groups').select('id, zoho_session_id').not('zoho_session_id', 'is', null),
     supabase.from('instructors').select('first_name, last_name, phone'),
   ]);
 
@@ -663,7 +663,8 @@ async function getRoster() {
     const n = normalizeName(`${i.first_name || ''} ${i.last_name || ''}`);
     if (n && i.phone) ritzPhoneByName[n] = i.phone;
   });
-  const onRitzoini = new Set((rg.data || []).map(g => g.zoho_session_id));
+  const ritzByZoho = {};
+  (rg.data || []).forEach(g => { if (g.zoho_session_id) ritzByZoho[g.zoho_session_id] = g.id; });
 
   const mine = (zg.data || []).filter(g => therapist && normalizeName(g.therapist_name) === therapist);
   return mine.map(g => {
@@ -685,7 +686,8 @@ async function getRoster() {
       // Flag a real instructor (not the "No Instructor" placeholder) with no phone anywhere.
       phone_missing:     !phone && !!g.instructor_name && iname !== 'no instructor',
       cancelled_dates:   Array.isArray(g.cancelled_dates) ? g.cancelled_dates : [],
-      on_ritzoini:       onRitzoini.has(g.id),
+      ritzoini_group_id: ritzByZoho[g.id] || null,
+      on_ritzoini:       !!ritzByZoho[g.id],
     };
   });
 }

@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
 
 const DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const ZOHO_ORG = '871314197';
+const zohoSessionUrl = (id) => `https://crm.zoho.com/crm/org${ZOHO_ORG}/tab/Session/${id}`;
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -89,8 +91,13 @@ export default function RosterPage() {
               <tbody>
                 {byDay[day].map(g => (
                   <tr key={g.id} style={{ borderBottom: '1px solid var(--gray-100)' }}>
-                    <td style={{ ...td, fontWeight: 600, color: 'var(--navy)' }}>
-                      {g.group_name}
+                    <td style={{ ...td, fontWeight: 600 }}>
+                      {g.ritzoini_group_id ? (
+                        <Link to={`/groups/${g.ritzoini_group_id}`} style={{ color: 'var(--navy)', textDecoration: 'none' }}>{g.group_name}</Link>
+                      ) : (
+                        <a href={zohoSessionUrl(g.id)} target="_blank" rel="noreferrer" style={{ color: '#6941C6', textDecoration: 'none' }}
+                           title="Not linked to a Ritzoini group — opens the Zoho record">{g.group_name} ↗</a>
+                      )}
                       {g.session_code && <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', fontWeight: 400 }}>{g.session_code}</div>}
                     </td>
                     <td style={td}>{g.group_activity || '—'}</td>
