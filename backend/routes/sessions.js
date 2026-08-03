@@ -367,150 +367,142 @@ router.patch('/:id', requireAuth, async (req, res) => {
  *   - do not move notes into locked sessions
  *   - do not move notes out of locked sessions
  */
+// Core cancel logic, callable programmatically (route + Zoho reflection).
+// addSession:false = no replacement session; notes shift forward down the chain
+// with locked sessions as barriers. Throws on error.
+async function cancelSessionCore(sessionId, { addSession = true } = {}) {
+  const { data: session, error: loadErr } = await supabase
+    .from('sessions')
+    .select(
+      'id, group_id, status, session_number, ' +
+      'group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)'
+    )
+    .eq('id', sessionId)
+    .single();
+
+  if (loadErr || !session) throw new Error('Session not found');
+  if (session.status === 'cancelled') return { alreadyCancelled: true, newSess: null };
+
+  const g = session.group;
+  const sTime = (g.start_time || g.session_time || '09:00').slice(0, 5);
+  const dur = parseInt(g.default_duration, 10) || 45;
+  const eTime = addMinutesToTime(sTime, dur);
+  const ecwTime = (g.ecw_time || sTime).slice(0, 5);
+  const ecwEnd = g.ecw_end_time || computeEcwEnd(ecwTime, dur);
+
+  const { data: allSessions, error: allErr } = await supabase
+    .from('sessions')
+    .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked, status')
+    .eq('group_id', session.group_id)
+    .order('session_number', { ascending: true });
+  if (allErr) throw allErr;
+  if (!allSessions?.length) throw new Error('No sessions found for group');
+
+  let newSess = null;
+  if (addSession) {
+    const lastSess = allSessions[allSessions.length - 1];
+    const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
+    if (!lastDateStr) throw new Error('Last session has no date');
+    const [y, m, d] = lastDateStr.split('-').map(Number);
+    const nextDate = new Date(y, m - 1, d);
+    nextDate.setDate(nextDate.getDate() + 7);
+    const nextDateStr = nextDate.toISOString().split('T')[0];
+    const newNum = (lastSess.session_number || 0) + 1;
+    const { data: inserted, error: insertErr } = await supabase
+      .from('sessions')
+      .insert({
+        group_id: session.group_id, session_number: newNum,
+        session_date: nextDateStr, scheduled_date: nextDateStr,
+        start_time: sTime, scheduled_time: sTime, end_time: eTime,
+        ecw_time: ecwTime, ecw_end_time: ecwEnd,
+        duration: dur, session_day_of_week: nextDate.getDay(),
+        status: 'scheduled', status_manual_override: false,
+        soap_note: null, notes: null,
+      })
+      .select().single();
+    if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
+    newSess = inserted;
+  }
+
+  // ── SHIFT NOTES FORWARD ───────────────────────────────────
+  const chainBase = allSessions
+    .filter(s => s.session_number >= session.session_number && s.status !== 'cancelled' && s.status !== 'group_ended')
+    .sort((a, b) => a.session_number - b.session_number);
+  const chain = addSession ? [...chainBase, newSess] : [...chainBase];
+
+  if (!chain.some(s => s.id === session.id)) {
+    console.warn('[cancel] Cancelled session not found in shift chain, skipping note shift');
+  } else {
+    for (let i = chain.length - 2; i >= 0; i--) {
+      const from = chain[i];
+      const to = chain[i + 1];
+      if (from.locked || to.locked) continue;
+      const note = getNote(from);
+      if (!note || !String(note).trim()) continue;
+      const { error: upToErr } = await supabase.from('sessions').update({ soap_note: note, notes: note }).eq('id', to.id);
+      if (upToErr) throw upToErr;
+      const { error: clearFromErr } = await supabase.from('sessions').update({ soap_note: null, notes: null }).eq('id', from.id);
+      if (clearFromErr) throw clearFromErr;
+    }
+  }
+
+  const { error: cancelErr } = await supabase
+    .from('sessions')
+    .update({ status: 'cancelled', status_manual_override: true, ...(newSess ? { replacement_session_id: newSess.id } : {}) })
+    .eq('id', sessionId);
+  if (cancelErr) throw cancelErr;
+
+  if (addSession && newSess) {
+    await supabase.from('groups').update({ total_sessions: newSess.session_number }).eq('id', session.group_id);
+  }
+  return { newSess, alreadyCancelled: false };
+}
+
 router.post('/:id/cancel', requireAuth, async (req, res) => {
   try {
     const addSession = req.body.add_session !== false; // default true
-
-    const { data: session, error: loadErr } = await supabase
-      .from('sessions')
-      .select(
-        'id, group_id, status, session_number, ' +
-        'group:groups(id, supervisor_id, start_time, session_time, ecw_time, ecw_end_time, default_duration)'
-      )
-      .eq('id', req.params.id)
-      .single();
-
-    if (loadErr || !session) return res.status(404).json({ error: 'Session not found' });
-    if (session.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
-    if (req.user.role === 'supervisor' && session.group.supervisor_id !== req.user.id)
+    const { data: sess, error: loadErr } = await supabase
+      .from('sessions').select('status, group:groups(supervisor_id)').eq('id', req.params.id).single();
+    if (loadErr || !sess) return res.status(404).json({ error: 'Session not found' });
+    if (sess.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
+    if (req.user.role === 'supervisor' && sess.group.supervisor_id !== req.user.id)
       return res.status(403).json({ error: 'Access denied' });
-
-    const g = session.group;
-
-    const sTime = (g.start_time || g.session_time || '09:00').slice(0, 5);
-    const dur = parseInt(g.default_duration, 10) || 45;
-    const eTime = addMinutesToTime(sTime, dur);
-    const ecwTime = (g.ecw_time || sTime).slice(0, 5);
-    const ecwEnd = g.ecw_end_time || computeEcwEnd(ecwTime, dur);
-
-    // Fetch all sessions ascending, including notes and locked status
-    const { data: allSessions, error: allErr } = await supabase
-      .from('sessions')
-      .select('id, session_number, session_date, scheduled_date, soap_note, notes, locked, status')
-      .eq('group_id', session.group_id)
-      .order('session_number', { ascending: true });
-
-    if (allErr) throw allErr;
-    if (!allSessions?.length) throw new Error('No sessions found for group');
-
-    let newSess = null;
-
-    if (addSession) {
-      // Compute where the new replacement session will go
-      const lastSess = allSessions[allSessions.length - 1];
-      const lastDateStr = lastSess.session_date || lastSess.scheduled_date;
-      if (!lastDateStr) throw new Error('Last session has no date');
-
-      const [y, m, d] = lastDateStr.split('-').map(Number);
-      const nextDate = new Date(y, m - 1, d);
-      nextDate.setDate(nextDate.getDate() + 7);
-      const nextDateStr = nextDate.toISOString().split('T')[0];
-      const newNum = (lastSess.session_number || 0) + 1;
-
-      const { data: inserted, error: insertErr } = await supabase
-        .from('sessions')
-        .insert({
-          group_id: session.group_id,
-          session_number: newNum,
-
-          session_date: nextDateStr,
-          scheduled_date: nextDateStr,
-
-          start_time: sTime,
-          scheduled_time: sTime,
-          end_time: eTime,
-
-          ecw_time: ecwTime,
-          ecw_end_time: ecwEnd,
-
-          duration: dur,
-          session_day_of_week: nextDate.getDay(),
-
-          status: 'scheduled',
-          status_manual_override: false,
-
-          soap_note: null,
-          notes: null,
-        })
-        .select()
-        .single();
-      if (insertErr) throw new Error(`Could not create replacement: ${insertErr.message}`);
-      newSess = inserted;
-    }
-
-    // ── SHIFT NOTES FORWARD ───────────────────────────────────
-    const chainBase = allSessions
-      .filter(s =>
-        s.session_number >= session.session_number &&
-        s.status !== 'cancelled' &&
-        s.status !== 'group_ended'
-      )
-      .sort((a, b) => a.session_number - b.session_number);
-
-    const chain = addSession ? [...chainBase, newSess] : [...chainBase];
-
-    const hasCancelledInChain = chain.some(s => s.id === session.id);
-    if (!hasCancelledInChain) {
-      console.warn('[cancel] Cancelled session not found in shift chain, skipping note shift');
-    } else {
-      for (let i = chain.length - 2; i >= 0; i--) {
-        const from = chain[i];
-        const to = chain[i + 1];
-
-        if (from.locked || to.locked) continue;
-
-        const note = getNote(from);
-        if (!note || !String(note).trim()) continue;
-
-        const { error: upToErr } = await supabase
-          .from('sessions')
-          .update({ soap_note: note, notes: note })
-          .eq('id', to.id);
-        if (upToErr) throw upToErr;
-
-        const { error: clearFromErr } = await supabase
-          .from('sessions')
-          .update({ soap_note: null, notes: null })
-          .eq('id', from.id);
-        if (clearFromErr) throw clearFromErr;
-      }
-    }
-
-    // Cancel original
-    const { error: cancelErr } = await supabase
-      .from('sessions')
-      .update({
-        status: 'cancelled',
-        status_manual_override: true,
-        ...(newSess ? { replacement_session_id: newSess.id } : {}),
-      })
-      .eq('id', req.params.id);
-    if (cancelErr) throw cancelErr;
-
-    // Bump total_sessions only if we added a makeup session
-    if (addSession && newSess) {
-      await supabase
-        .from('groups')
-        .update({ total_sessions: newSess.session_number })
-        .eq('id', session.group_id);
-    }
-
+    const { newSess } = await cancelSessionCore(req.params.id, { addSession });
     res.json({ success: true, new_session: newSess });
   } catch (err) {
     console.error('[cancel]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
+// Reflect Zoho cancellations onto Ritzoini sessions: cancel (no replacement),
+// notes shift down. Locked (finalized/billed) sessions are left untouched.
+async function reflectZohoCancellations() {
+  const { data: zgroups } = await supabase.from('zoho_groups').select('id, cancelled_dates');
+  const datesByZoho = {};
+  for (const z of (zgroups || [])) {
+    if (Array.isArray(z.cancelled_dates) && z.cancelled_dates.length) datesByZoho[z.id] = new Set(z.cancelled_dates);
+  }
+  const zohoIds = Object.keys(datesByZoho);
+  if (!zohoIds.length) return { cancelled: 0, skippedLocked: 0, errors: 0 };
+
+  const { data: groups } = await supabase.from('groups').select('id, zoho_session_id').in('zoho_session_id', zohoIds);
+  let cancelled = 0, skippedLocked = 0, errors = 0;
+  for (const grp of (groups || [])) {
+    const dset = datesByZoho[grp.zoho_session_id];
+    const { data: sessions } = await supabase
+      .from('sessions').select('id, session_date, scheduled_date, status, locked').eq('group_id', grp.id);
+    for (const s of (sessions || [])) {
+      const d = s.session_date || s.scheduled_date;
+      if (!dset.has(d) || s.status === 'cancelled') continue;
+      if (s.locked) { skippedLocked++; continue; }
+      try { await cancelSessionCore(s.id, { addSession: false }); cancelled++; }
+      catch (e) { errors++; console.error('[zoho] reflect-cancel error for', s.id, e.message); }
+    }
+  }
+  console.log(`[zoho] reflect-cancellations: cancelled=${cancelled} skippedLocked=${skippedLocked} errors=${errors}`);
+  return { cancelled, skippedLocked, errors };
+}
 
 /**
  * POST /api/sessions/:id/uncancel
@@ -837,3 +829,5 @@ router.post('/:id/lock', requireAuth, async (req, res) => {
 
 module.exports = router;
 module.exports.autoCompleteSessions = autoCompleteSessions;
+module.exports.cancelSessionCore = cancelSessionCore;
+module.exports.reflectZohoCancellations = reflectZohoCancellations;

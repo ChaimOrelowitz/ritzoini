@@ -44,7 +44,13 @@ export default function RosterPage() {
 
   async function sync() {
     setSyncing(true); setMsg(''); setError('');
-    try { const r = await api.syncZohoGroups(); setMsg(`Synced ${r.fetched} groups from Zoho.`); await load(); }
+    try {
+      const r = await api.syncZohoGroups();
+      const c = r.cancellations;
+      const cancelMsg = c && c.cancelled ? ` Cancelled ${c.cancelled} session${c.cancelled !== 1 ? 's' : ''}${c.skippedLocked ? `, skipped ${c.skippedLocked} locked` : ''}.` : '';
+      setMsg(`Synced ${r.fetched} groups from Zoho.${cancelMsg}`);
+      await load();
+    }
     catch (err) { setError('Sync failed: ' + err.message); }
     finally { setSyncing(false); }
   }

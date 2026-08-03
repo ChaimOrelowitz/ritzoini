@@ -6,6 +6,7 @@ const { Resend } = require('resend');
 const resend = new Resend(process.env.RESEND_API_KEY);
 const { generateOrRefreshDigest } = require('../utils/peerDigestGenerator');
 const { postSoapNoteToZoho, syncZohoGroups, syncZohoLockStatus } = require('../utils/zohoCrm');
+const { reflectZohoCancellations } = require('./sessions');
 const { getDeliveryMode } = require('../utils/soapNoteDelivery');
 
 function requireCronSecret(req, res, next) {
@@ -51,7 +52,10 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
 // POST /api/cron/zoho-sync-groups — daily pull of Zoho groups + auto-align.
 router.post('/zoho-sync-groups', requireCronSecret, async (req, res) => {
   try {
-    res.json(await syncZohoGroups());
+    const result = await syncZohoGroups();
+    try { result.cancellations = await reflectZohoCancellations(); }
+    catch (e) { console.error('[cron] reflect-cancellations failed:', e.message); result.cancellations = { error: e.message }; }
+    res.json(result);
   } catch (err) {
     console.error('[cron] zoho-sync-groups error:', err.message);
     res.status(500).json({ error: err.message });

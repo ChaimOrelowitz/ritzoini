@@ -6,6 +6,7 @@ const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/
 const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, zohoLockBackfill, getRoster } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 const supabase = require('./db/supabase');
+const { reflectZohoCancellations } = require('./routes/sessions');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -185,10 +186,14 @@ app.get('/api/config/zoho-groups', requireAuth, async (req, res) => {
 });
 
 // Pull Zoho groups + auto-align to Ritzoini groups by name (admin button).
+// Also reflects Zoho cancellations onto Ritzoini sessions (locked ones skipped).
 app.post('/api/config/zoho-sync-groups', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
   try {
-    res.json(await syncZohoGroups());
+    const result = await syncZohoGroups();
+    try { result.cancellations = await reflectZohoCancellations(); }
+    catch (e) { console.error('[zoho] reflect-cancellations failed:', e.message); result.cancellations = { error: e.message }; }
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
