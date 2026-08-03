@@ -299,6 +299,9 @@ function noteDateStr(dt) {
 // Pre-fills the reopen reason: a duplicate message referencing the partner note
 // for clone pairs, otherwise the note's own flag text.
 function defaultReopenReason(note, partner) {
+  // The backend already composed this: mechanical text + the AI's peer message,
+  // plus the duplicate paragraph only once the Reviewer confirmed the concern.
+  if (note.suggestedReopenMessage) return note.suggestedReopenMessage;
   if (partner) {
     const who = partner.mrn ? `MRN# ${partner.mrn}` : (partner.patientName || 'other client');
     return `Possible duplicate of other client's note — please revise. (${who} and ${noteDateStr(partner.visitDatetime)})`;
@@ -306,6 +309,14 @@ function defaultReopenReason(note, partner) {
   const flags = [...(note.flags || [])];
   if (note.aiFlag) flags.push(note.aiFlag);
   return flags.length ? flags.join('; ') : '';
+}
+
+// Does this note's AI review say the off-site rationale is the problem? Drives
+// the "select every note missing an off-site rationale" bulk action.
+function needsOffsiteRationale(note) {
+  const o = note.offsite;
+  return !!o && o.applicable !== false
+    && ['MISSING', 'PRESENT_TOO_GENERAL', 'UNSUPPORTED'].includes(o.rationaleStatus);
 }
 
 // ── At-a-glance clinical context ──────────────────────────────────────────────
@@ -862,37 +873,54 @@ function ReopenModal({ ctx, onClose, onDone }) {
   // undefined = follow the Settings switch; false/true = override for this batch.
   const [sendEmail, setSendEmail] = useState(undefined);
   const [results, setResults] = useState(null);   // { [eid]: { ok, message } }
+  const [progress, setProgress] = useState(null); // { done, total } while sending
+  const [bulkText, setBulkText] = useState('');
+  const [compact, setCompact] = useState(false);
 
   useEffect(() => {
-    if (ctx) { setReasons(ctx.notes.map(n => defaultReopenReason(n.note, n.partner))); setResults(null); setBusy(false); }
+    if (ctx) { setReasons(ctx.notes.map(n => defaultReopenReason(n.note, n.partner))); setResults(null); setBusy(false); setBulkText(''); setProgress(null); setCompact(ctx.notes.length > 5); }
   }, [ctx]);
 
   if (!ctx) return null;
 
+  // Reopening is two InSync round-trips per note (claim gate, then the edit),
+  // plus an optional email. A 30-note batch in one request would sit long enough
+  // to risk a proxy timeout, so send in small chunks and report progress as each
+  // lands. Partial failure is fine: results accumulate per note either way.
+  const CHUNK = 5;
+
   async function submit() {
     setBusy(true);
+    setProgress({ done: 0, total: ctx.notes.length });
+    const byEid = {}, okIds = [];
     try {
-      const payload = ctx.notes.map((n, i) => ({
-        eid: n.note.eid, pid: n.note.pid, reason: reasons[i],
-        client:    n.note.patientName,
-        visitDate: n.note.visitDate,
-        startTime: n.note.startTimeStr,
-        endTime:   n.note.endTimeStr,
-        peer:      n.note.peerName,
-        // Same segments the Read view renders → identical PDF.
-        segments:  segmentNote(n.note.fullNoteText || ''),
-      }));
-      const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload, sendEmail });
-      const byEid = {}, okIds = [];
-      (res || []).forEach(r => {
-        byEid[r.eid] = r;
-        const match = ctx.notes.find(x => x.note.eid === r.eid);
-        if (r.ok && match) okIds.push(match.note.eid);
-      });
-      setResults(byEid);
+      for (let i = 0; i < ctx.notes.length; i += CHUNK) {
+        const slice = ctx.notes.slice(i, i + CHUNK);
+        const payload = slice.map((n) => ({
+          eid: n.note.eid, pid: n.note.pid, reason: reasons[ctx.notes.indexOf(n)],
+          client:    n.note.patientName,
+          visitDate: n.note.visitDate,
+          startTime: n.note.startTimeStr,
+          endTime:   n.note.endTimeStr,
+          peer:      n.note.peerName,
+          // Same segments the Read view renders → identical PDF.
+          segments:  segmentNote(n.note.fullNoteText || ''),
+        }));
+        const { results: res } = await api.post('/ps/cosign/reopen', { notes: payload, sendEmail });
+        (res || []).forEach(r => {
+          byEid[r.eid] = r;
+          const match = ctx.notes.find(x => x.note.eid === r.eid);
+          if (r.ok && match) okIds.push(match.note.eid);
+        });
+        setResults({ ...byEid });
+        setProgress({ done: Math.min(i + CHUNK, ctx.notes.length), total: ctx.notes.length });
+      }
       if (okIds.length) onDone(okIds);
-    } catch (ex) { alert('Reopen error: ' + ex.message); }
-    finally { setBusy(false); }
+    } catch (ex) {
+      setResults({ ...byEid });
+      alert(`Reopen stopped after ${Object.keys(byEid).length} of ${ctx.notes.length}: ${ex.message}`);
+    }
+    finally { setBusy(false); setProgress(null); }
   }
 
   const allDone = results && ctx.notes.every(n => results[n.note.eid]);
@@ -912,7 +940,36 @@ function ReopenModal({ ctx, onClose, onDone }) {
         <div style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--gray-600)' }}>
             Reopening sends the note back to the peer for revision. Billed encounters cannot be reopened.
+            {ctx.notes.length > 1 && ' Each note keeps its own reason — edit any of them below, or set one reason for all.'}
           </p>
+
+          {/* Bulk: one reason applied to every note in the batch. The per-note
+              text stays editable afterwards, so this is a starting point, not a
+              lock. */}
+          {ctx.notes.length > 1 && !allDone && (
+            <div style={{ padding: 14, background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)' }}>
+              <label style={lbl}>Set one reason for all {ctx.notes.length} notes</label>
+              <textarea
+                className="form-input" rows={4} value={bulkText} disabled={busy}
+                onChange={e => setBulkText(e.target.value)}
+                placeholder="e.g. Because this service occurred off-site on or after July 28, 2026, please add an explicit sentence explaining why this specific client needed the service outside the clinic rather than at the clinic on that date…"
+                style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
+              />
+              <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+                <button className="btn btn-outline btn-sm" disabled={busy || !bulkText.trim()}
+                  onClick={() => setReasons(rs => rs.map((v, i) => (results?.[ctx.notes[i].note.eid]?.ok ? v : bulkText)))}>
+                  Apply to all {ctx.notes.length}
+                </button>
+                <button className="btn btn-outline btn-sm" disabled={busy}
+                  onClick={() => setReasons(ctx.notes.map(n => defaultReopenReason(n.note, n.partner)))}>
+                  Reset to each note's own AI message
+                </button>
+                <button className="btn btn-outline btn-sm" disabled={busy} onClick={() => setCompact(c => !c)}>
+                  {compact ? 'Show full notes' : 'Hide note text'}
+                </button>
+              </div>
+            </div>
+          )}
           {ctx.notes.map((n, i) => {
             const r = results?.[n.note.eid];
             return (
@@ -920,17 +977,20 @@ function ReopenModal({ ctx, onClose, onDone }) {
                 display: 'flex', gap: 16, flexWrap: 'wrap',
                 paddingTop: i > 0 ? 18 : 0, borderTop: i > 0 ? '1px solid var(--gray-100)' : 'none',
               }}>
-                {/* Left: the note itself, to reference while writing the reason */}
-                <div style={{ flex: '1 1 340px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+                {/* Left: the note itself, to reference while writing the reason.
+                    Hidden in compact mode so a 30-note batch stays navigable. */}
+                <div style={{ flex: compact ? '0 0 240px' : '1 1 340px', minWidth: 0, border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                   <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--gray-100)', background: '#f8fafc' }}>
                     <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--navy)' }}>{n.note.patientName}</div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--gray-500)', marginTop: 2 }}>
                       {n.note.peerName} · {fmtDt(n.note.visitDatetime)}{n.note.mrn ? ` · MRN ${n.note.mrn}` : ''}
                     </div>
                   </div>
-                  <div style={{ padding: '12px 14px', maxHeight: '52vh', overflowY: 'auto' }}>
-                    <NoteBody text={n.note.fullNoteText} />
-                  </div>
+                  {!compact && (
+                    <div style={{ padding: '12px 14px', maxHeight: '52vh', overflowY: 'auto' }}>
+                      <NoteBody text={n.note.fullNoteText} />
+                    </div>
+                  )}
                 </div>
                 {/* Right: the reopen reason */}
                 <div style={{ flex: '1 1 280px', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
@@ -940,7 +1000,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
                     onChange={e => setReasons(rs => rs.map((v, j) => j === i ? e.target.value : v))}
                     disabled={busy || (r && r.ok)}
                     placeholder="Reason for reopening (required)"
-                    style={{ width: '100%', flex: 1, minHeight: 180, resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
+                    style={{ width: '100%', flex: 1, minHeight: compact ? 90 : 180, resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }}
                   />
                   {r && (
                     <div style={{ marginTop: 8, fontSize: '0.78rem', fontWeight: 600 }}>
@@ -975,7 +1035,9 @@ function ReopenModal({ ctx, onClose, onDone }) {
           {!allDone && (
             <button className="btn btn-gold btn-sm" onClick={submit}
               disabled={busy || reasons.some(r => !r?.trim())}>
-              {busy ? 'Reopening…' : ctx.notes.length > 1 ? `Reopen ${ctx.notes.length} Notes` : 'Reopen Note'}
+              {busy
+                ? (progress ? `Reopening ${progress.done} of ${progress.total}…` : 'Reopening…')
+                : ctx.notes.length > 1 ? `Reopen ${ctx.notes.length} Notes` : 'Reopen Note'}
             </button>
           )}
           </div>
@@ -1659,6 +1721,8 @@ function QueueTab() {
   // is still reachable from Compare.
   const partnerOf = note => note.clonePartnerEid ? notes.find(x => x.eid === note.clonePartnerEid) : null;
   const selectedFlagged = flagged.filter(n => selected.has(n.eid));
+  // Flagged notes whose only-or-main gap is the explicit off-site rationale.
+  const offsiteGap = flagged.filter(needsOffsiteRationale);
 
   const filterBar = (
     <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1828,11 +1892,31 @@ function QueueTab() {
                     All
                   </label>
                 </div>
-                {selectedFlagged.length > 0 && (
-                  <button className="btn btn-outline btn-sm" onClick={() => signNotes(selectedFlagged, `Sign selected (${selectedFlagged.length})`)} disabled={busyIds.size > 0}>
-                    Sign selected ({selectedFlagged.length})
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {/* One click to select every note the AI says is missing an
+                      off-site rationale — the common bulk case. */}
+                  {offsiteGap.length > 0 && (
+                    <button className="btn btn-outline btn-sm"
+                      onClick={() => setSelected(new Set(offsiteGap.map(n => n.eid)))}
+                      title="Select every flagged note whose AI review says the off-site rationale is missing or too general">
+                      Select missing off-site rationale ({offsiteGap.length})
+                    </button>
+                  )}
+                  {selectedFlagged.length > 0 && (
+                    <>
+                      <button className="btn btn-gold btn-sm" disabled={busyIds.size > 0}
+                        onClick={() => setReopenCtx({
+                          title: `Reopen ${selectedFlagged.length} Note${selectedFlagged.length > 1 ? 's' : ''}`,
+                          notes: selectedFlagged.map(note => ({ note, partner: partnerOf(note) })),
+                        })}>
+                        Reopen selected ({selectedFlagged.length})
+                      </button>
+                      <button className="btn btn-outline btn-sm" onClick={() => signNotes(selectedFlagged, `Sign selected (${selectedFlagged.length})`)} disabled={busyIds.size > 0}>
+                        Sign selected ({selectedFlagged.length})
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
               <GroupedNotes notes={flagged} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
                 renderNote={note => <NoteRow key={note.id} note={note} checkbox />} />
