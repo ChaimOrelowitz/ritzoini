@@ -79,6 +79,8 @@ export const api = {
   getZohoGroups:    () => authFetch('/api/config/zoho-groups'),
   getZohoAlignment: () => authFetch('/api/config/zoho-alignment'),
   getRoster:        () => authFetch('/api/config/zoho-roster'),
+  linkZohoInstructor: (zoho_instructor_id, ritzoini_instructor_id) =>
+    authFetch('/api/config/zoho-instructor-link', { method: 'POST', body: JSON.stringify({ zoho_instructor_id, ritzoini_instructor_id }) }),
   zohoLockBackfill: (apply) => authFetch('/api/config/zoho-lock-backfill', { method: 'POST', body: JSON.stringify({ apply: !!apply }) }),
 
   // Pay Periods

@@ -119,6 +119,21 @@ app.get('/api/config/zoho-inspect', requireAuth, async (req, res) => {
   }
 });
 
+// Link a Zoho instructor to a Ritzoini instructor (Roster reconciliation).
+app.post('/api/config/zoho-instructor-link', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  const { zoho_instructor_id, ritzoini_instructor_id } = req.body;
+  if (!zoho_instructor_id) return res.status(400).json({ error: 'zoho_instructor_id required' });
+  try {
+    const { error } = await supabase.from('zoho_instructors')
+      .update({ ritzoini_instructor_id: ritzoini_instructor_id || null }).eq('id', zoho_instructor_id);
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Roster: the configured therapist's Zoho groups (from the cache) for the Roster page.
 app.get('/api/config/zoho-roster', requireAuth, async (req, res) => {
   try {

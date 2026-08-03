@@ -27,11 +27,20 @@ export default function RosterPage() {
   const [syncing, setSyncing] = useState(false);
   const [msg, setMsg] = useState('');
 
+  const [instructors, setInstructors] = useState([]);
   const load = useCallback(async () => {
-    try { setRows(await api.getRoster()); }
-    catch (err) { setError(err.message); }
+    try {
+      const [r, ins] = await Promise.all([api.getRoster(), api.getInstructors().catch(() => [])]);
+      setRows(r);
+      setInstructors((ins || []).slice().sort((a, b) => (a.last_name || '').localeCompare(b.last_name || '')));
+    } catch (err) { setError(err.message); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  async function linkInstructor(zohoInstructorId, ritzId) {
+    try { await api.linkZohoInstructor(zohoInstructorId, ritzId || null); await load(); }
+    catch (err) { setError('Link failed: ' + err.message); }
+  }
 
   async function sync() {
     setSyncing(true); setMsg(''); setError('');
@@ -105,9 +114,23 @@ export default function RosterPage() {
                     <td style={td}>
                       {g.instructor_name || '—'}
                       {g.instructor_phone && <div style={{ fontSize: '0.72rem', color: 'var(--gray-500)' }}>{g.instructor_phone}</div>}
-                      {g.phone_missing && (
-                        <div style={{ fontSize: '0.72rem', color: '#b45309' }}>
-                          ⚠ no phone — <Link to="/instructors" style={{ color: '#b45309', textDecoration: 'underline' }}>add in Instructors</Link>
+                      {g.phone_missing && g.zoho_instructor_id && (
+                        <div style={{ marginTop: 3 }}>
+                          <div style={{ fontSize: '0.7rem', color: '#b45309', marginBottom: 2 }}>⚠ no phone — link to an instructor:</div>
+                          <select
+                            defaultValue=""
+                            onChange={e => e.target.value && linkInstructor(g.zoho_instructor_id, e.target.value)}
+                            style={{ fontSize: '0.72rem', padding: '2px 4px', borderRadius: 5, border: '1px solid var(--gray-300)', maxWidth: 170 }}>
+                            <option value="">— pick —</option>
+                            {instructors.map(i => (
+                              <option key={i.id} value={i.id}>
+                                {i.first_name} {i.last_name}{i.phone ? ` · ${i.phone}` : ''}
+                              </option>
+                            ))}
+                          </select>
+                          <div style={{ fontSize: '0.66rem', color: 'var(--gray-400)', marginTop: 2 }}>
+                            or <Link to="/instructors" style={{ color: 'var(--gray-500)' }}>add in Instructors</Link>
+                          </div>
                         </div>
                       )}
                     </td>

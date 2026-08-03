@@ -588,6 +588,8 @@ async function syncZohoGroups() {
     const { error } = await supabase.from('zoho_instructors').upsert(instRows, { onConflict: 'id' });
     if (error) console.error('[zoho] zoho_instructors upsert failed:', error.message);
   }
+  // Auto-link Zoho instructors to the fuller Ritzoini Instructors records.
+  try { await autoLinkInstructors(); } catch (e) { console.error('[zoho] instructor auto-link failed:', e.message); }
 
   // Cancelled occurrence dates per group.
   let cancelledByGroup = {};
@@ -643,6 +645,50 @@ async function syncZohoGroups() {
   return { fetched: sessions.length, aligned, alreadyLinked, unmatched };
 }
 
+// Strip titles / annotations from a messy Zoho instructor name for matching:
+// "Mr Ch Neustadt - Paint Group" / "Leah Hoffman (Daniella Hassan)" → core name.
+function cleanInstructorName(name) {
+  return String(name || '')
+    .replace(/\([^)]*\)/g, ' ')                          // (Daniella Hassan)
+    .replace(/\s[-–].*$/, ' ')                            // - Paint Group
+    .replace(/\b(mr|mrs|ms|dr|rabbi|reb)\.?\b/gi, ' ')    // titles
+    .replace(/\s+/g, ' ').trim();
+}
+
+// Auto-link Zoho instructors → Ritzoini instructors by a CONFIDENT (unique)
+// name match. Never overwrites an existing (manual or prior) link.
+async function autoLinkInstructors() {
+  const [{ data: zi }, { data: ri }] = await Promise.all([
+    supabase.from('zoho_instructors').select('id, name, ritzoini_instructor_id'),
+    supabase.from('instructors').select('id, first_name, last_name'),
+  ]);
+  const byFull = {}, byFirst = {}, byLast = {};
+  const add = (m, k, id) => { if (!k) return; (m[k] ||= new Set()).add(id); };
+  for (const r of (ri || [])) {
+    const f = normalizeName(r.first_name), l = normalizeName(r.last_name);
+    add(byFull, `${f} ${l}`.trim(), r.id); add(byFirst, f, r.id); add(byLast, l, r.id);
+  }
+  const uniq = (m, k) => { const s = m[k]; return s && s.size === 1 ? [...s][0] : null; };
+
+  let linked = 0;
+  for (const z of (zi || [])) {
+    if (z.ritzoini_instructor_id) continue;
+    const n = normalizeName(cleanInstructorName(z.name));
+    if (!n || n === 'no instructor') continue;
+    const toks = n.split(' ').filter(Boolean);
+    let target = uniq(byFull, n);
+    if (!target) target = toks.length === 1
+      ? (uniq(byFirst, toks[0]) || uniq(byLast, toks[0]))
+      : uniq(byLast, toks[toks.length - 1]);
+    if (target) {
+      const { error } = await supabase.from('zoho_instructors').update({ ritzoini_instructor_id: target }).eq('id', z.id);
+      if (!error) linked++;
+    }
+  }
+  console.log(`[zoho] instructor auto-link: linked ${linked}`);
+  return linked;
+}
+
 // Assemble the Roster from the caches: the configured therapist's Zoho groups,
 // each with instructor phone (Zoho → Ritzoini Instructors fallback → missing
 // flag), cancelled dates, and whether it's linked to a Ritzoini group.
@@ -652,42 +698,46 @@ async function getRoster() {
 
   const [zg, zi, rg, ri] = await Promise.all([
     supabase.from('zoho_groups').select('*'),
-    supabase.from('zoho_instructors').select('id, name, phone'),
+    supabase.from('zoho_instructors').select('id, name, phone, ritzoini_instructor_id'),
     supabase.from('groups').select('id, zoho_session_id').not('zoho_session_id', 'is', null),
-    supabase.from('instructors').select('first_name, last_name, phone'),
+    supabase.from('instructors').select('id, first_name, last_name, phone'),
   ]);
 
-  const instById = Object.fromEntries((zi.data || []).map(i => [i.id, i]));
-  const ritzPhoneByName = {};
-  (ri.data || []).forEach(i => {
-    const n = normalizeName(`${i.first_name || ''} ${i.last_name || ''}`);
-    if (n && i.phone) ritzPhoneByName[n] = i.phone;
-  });
+  const zInstById = Object.fromEntries((zi.data || []).map(i => [i.id, i]));
+  const rInstById = Object.fromEntries((ri.data || []).map(i => [i.id, i]));
   const ritzByZoho = {};
   (rg.data || []).forEach(g => { if (g.zoho_session_id) ritzByZoho[g.zoho_session_id] = g.id; });
 
   const mine = (zg.data || []).filter(g => therapist && normalizeName(g.therapist_name) === therapist);
   return mine.map(g => {
-    const iname = normalizeName(g.instructor_name);
-    const phone = instById[g.instructor_id]?.phone || ritzPhoneByName[iname] || null;
+    const zinst = zInstById[g.instructor_id];
+    // Linked Ritzoini instructor is authoritative for name + phone.
+    const rinst = zinst?.ritzoini_instructor_id ? rInstById[zinst.ritzoini_instructor_id] : null;
+    const displayName = rinst
+      ? `${rinst.first_name || ''} ${rinst.last_name || ''}`.trim()
+      : (g.instructor_name || zinst?.name || null);
+    const phone = rinst?.phone || zinst?.phone || null;
+    const isPlaceholder = normalizeName(displayName) === 'no instructor' || !displayName;
     return {
       id: g.id,
-      group_name:        g.session_name,
-      group_activity:    g.group_activity,
-      class_day:         g.class_day,
-      group_type:        g.group_type,
-      session_code:      g.session_code,
-      status:            g.status,
-      start_at:          g.start_at,
-      end_at:            g.end_at,
-      how_many_sessions: g.how_many_sessions,
-      instructor_name:   g.instructor_name,
-      instructor_phone:  phone,
-      // Flag a real instructor (not the "No Instructor" placeholder) with no phone anywhere.
-      phone_missing:     !phone && !!g.instructor_name && iname !== 'no instructor',
-      cancelled_dates:   Array.isArray(g.cancelled_dates) ? g.cancelled_dates : [],
-      ritzoini_group_id: ritzByZoho[g.id] || null,
-      on_ritzoini:       !!ritzByZoho[g.id],
+      group_name:          g.session_name,
+      group_activity:      g.group_activity,
+      class_day:           g.class_day,
+      group_type:          g.group_type,
+      session_code:        g.session_code,
+      status:              g.status,
+      start_at:            g.start_at,
+      end_at:              g.end_at,
+      how_many_sessions:   g.how_many_sessions,
+      instructor_name:     displayName,
+      instructor_phone:    phone,
+      zoho_instructor_id:  g.instructor_id || null,
+      instructor_linked:   !!rinst,
+      // Flag a real instructor with no phone anywhere (prompts a manual link).
+      phone_missing:       !phone && !isPlaceholder,
+      cancelled_dates:     Array.isArray(g.cancelled_dates) ? g.cancelled_dates : [],
+      ritzoini_group_id:   ritzByZoho[g.id] || null,
+      on_ritzoini:         !!ritzByZoho[g.id],
     };
   });
 }
