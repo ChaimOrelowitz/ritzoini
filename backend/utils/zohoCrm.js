@@ -540,18 +540,39 @@ async function exchangeGrantCode(code) {
 }
 
 // Pull all parent Session (group) records from Zoho, paginated.
-async function listZohoSessions() {
+// Generic paginated fetch of a module's records with a fields list.
+async function listAll(module, fields) {
   const out = [];
-  const fields = `${PARENT_NAME_FIELD},Session_Code,Group_Activity,Class_Day,Group_Type,Status`;
-  for (let page = 1; page <= 25; page++) {
-    const resp = await zohoFetch(`/crm/v2/${PARENT_MODULE}?fields=${fields}&per_page=200&page=${page}`);
+  for (let page = 1; page <= 50; page++) {
+    const resp = await zohoFetch(`/crm/v2/${module}?fields=${fields}&per_page=200&page=${page}`);
     if (resp.status === 204) break;
     const body = await resp.json().catch(() => ({}));
-    if (!resp.ok) throw new Error(`Zoho ${PARENT_MODULE} list failed: ${resp.status} ${JSON.stringify(body)}`);
+    if (!resp.ok) throw new Error(`Zoho ${module} list failed: ${resp.status} ${JSON.stringify(body)}`);
     for (const r of (body.data || [])) out.push(r);
     if (!body.info || !body.info.more_records) break;
   }
   return out;
+}
+
+async function listZohoSessions() {
+  return listAll(PARENT_MODULE,
+    `${PARENT_NAME_FIELD},Session_Code,Group_Activity,Class_Day,Group_Type,Status,` +
+    `Instructor,Therapist,Start_Date_and_Time,End_Date_and_Time,How_many_Sessions`);
+}
+
+// Cancelled occurrence dates, grouped by parent Session id — for the Roster.
+async function listCancelledDatesByGroup() {
+  const occ = await listAll(OCC_MODULE, `Session,${DATE_FIELD},Status,${STATUS_FIELD}`);
+  const byGroup = {};
+  for (const r of occ) {
+    const cancelled = String(r.Status || '').toLowerCase() === 'cancelled'
+                   || String(r[STATUS_FIELD] || '').toLowerCase() === 'cancelled';
+    if (cancelled && r.Session?.id && r[DATE_FIELD]) {
+      (byGroup[r.Session.id] ||= []).push(r[DATE_FIELD]);
+    }
+  }
+  for (const k of Object.keys(byGroup)) byGroup[k] = [...new Set(byGroup[k])].sort();
+  return byGroup;
 }
 
 // Sync Zoho groups into the zoho_groups cache and auto-align Ritzoini groups
@@ -560,15 +581,36 @@ async function syncZohoGroups() {
   const sessions = await listZohoSessions();
   const now = new Date().toISOString();
 
+  // Instructors (name + phone) → cache, for the Roster.
+  const instructors = await listAll('Instructors', 'Name,Phone');
+  const instRows = instructors.map(i => ({ id: i.id, name: i.Name || null, phone: i.Phone || null, synced_at: now }));
+  if (instRows.length) {
+    const { error } = await supabase.from('zoho_instructors').upsert(instRows, { onConflict: 'id' });
+    if (error) console.error('[zoho] zoho_instructors upsert failed:', error.message);
+  }
+
+  // Cancelled occurrence dates per group.
+  let cancelledByGroup = {};
+  try { cancelledByGroup = await listCancelledDatesByGroup(); }
+  catch (e) { console.error('[zoho] cancelled-dates fetch failed:', e.message); }
+
   const rows = sessions.map(s => ({
-    id:             s.id,
-    session_name:   s[PARENT_NAME_FIELD] || null,
-    session_code:   s.Session_Code || null,
-    group_activity: s.Group_Activity || null,
-    class_day:      s.Class_Day || null,
-    group_type:     s.Group_Type || null,
-    status:         s.Status || null,
-    synced_at:      now,
+    id:                s.id,
+    session_name:      s[PARENT_NAME_FIELD] || null,
+    session_code:      s.Session_Code || null,
+    group_activity:    s.Group_Activity || null,
+    class_day:         s.Class_Day || null,
+    group_type:        s.Group_Type || null,
+    status:            s.Status || null,
+    instructor_id:     s.Instructor?.id || null,
+    instructor_name:   s.Instructor?.name || null,
+    therapist_id:      s.Therapist?.id || null,
+    therapist_name:    s.Therapist?.name || null,
+    start_at:          s.Start_Date_and_Time || null,
+    end_at:            s.End_Date_and_Time || null,
+    how_many_sessions: s.How_many_Sessions ?? null,
+    cancelled_dates:   cancelledByGroup[s.id] || [],
+    synced_at:         now,
   }));
   if (rows.length) {
     const { error } = await supabase.from('zoho_groups').upsert(rows, { onConflict: 'id' });
@@ -601,4 +643,51 @@ async function syncZohoGroups() {
   return { fetched: sessions.length, aligned, alreadyLinked, unmatched };
 }
 
-module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, setOccurrenceLock, syncZohoLockStatus, zohoLockBackfill };
+// Assemble the Roster from the caches: the configured therapist's Zoho groups,
+// each with instructor phone (Zoho → Ritzoini Instructors fallback → missing
+// flag), cancelled dates, and whether it's linked to a Ritzoini group.
+async function getRoster() {
+  const { data: cfg } = await supabase.from('app_config').select('value').eq('key', 'zoho_roster_therapist').maybeSingle();
+  const therapist = normalizeName(cfg?.value || 'Chaim Orelowitz');
+
+  const [zg, zi, rg, ri] = await Promise.all([
+    supabase.from('zoho_groups').select('*'),
+    supabase.from('zoho_instructors').select('id, name, phone'),
+    supabase.from('groups').select('zoho_session_id').not('zoho_session_id', 'is', null),
+    supabase.from('instructors').select('first_name, last_name, phone'),
+  ]);
+
+  const instById = Object.fromEntries((zi.data || []).map(i => [i.id, i]));
+  const ritzPhoneByName = {};
+  (ri.data || []).forEach(i => {
+    const n = normalizeName(`${i.first_name || ''} ${i.last_name || ''}`);
+    if (n && i.phone) ritzPhoneByName[n] = i.phone;
+  });
+  const onRitzoini = new Set((rg.data || []).map(g => g.zoho_session_id));
+
+  const mine = (zg.data || []).filter(g => therapist && normalizeName(g.therapist_name) === therapist);
+  return mine.map(g => {
+    const iname = normalizeName(g.instructor_name);
+    const phone = instById[g.instructor_id]?.phone || ritzPhoneByName[iname] || null;
+    return {
+      id: g.id,
+      group_name:        g.session_name,
+      group_activity:    g.group_activity,
+      class_day:         g.class_day,
+      group_type:        g.group_type,
+      session_code:      g.session_code,
+      status:            g.status,
+      start_at:          g.start_at,
+      end_at:            g.end_at,
+      how_many_sessions: g.how_many_sessions,
+      instructor_name:   g.instructor_name,
+      instructor_phone:  phone,
+      // Flag a real instructor (not the "No Instructor" placeholder) with no phone anywhere.
+      phone_missing:     !phone && !!g.instructor_name && iname !== 'no instructor',
+      cancelled_dates:   Array.isArray(g.cancelled_dates) ? g.cancelled_dates : [],
+      on_ritzoini:       onRitzoini.has(g.id),
+    };
+  });
+}
+
+module.exports = { postSoapNoteToZoho, zohoConfigured, findOccurrence, getAccessToken, zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, setOccurrenceLock, syncZohoLockStatus, zohoLockBackfill, getRoster };

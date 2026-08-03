@@ -3,7 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
-const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, zohoLockBackfill } = require('./utils/zohoCrm');
+const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, zohoLockBackfill, getRoster } = require('./utils/zohoCrm');
 const { requireAuth } = require('./middleware/auth');
 const supabase = require('./db/supabase');
 
@@ -116,6 +116,15 @@ app.get('/api/config/zoho-inspect', requireAuth, async (req, res) => {
     res.json(await getOccurrenceRaw(req.query.occurrence_id));
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+// Roster: the configured therapist's Zoho groups (from the cache) for the Roster page.
+app.get('/api/config/zoho-roster', requireAuth, async (req, res) => {
+  try {
+    res.json(await getRoster());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -62,6 +62,11 @@ export default function Layout() {
           <span className="nav-icon">🎓</span> Instructors
         </NavLink>
         {isAdmin && (
+          <NavLink to="/roster" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+            <span className="nav-icon">📋</span> Roster
+          </NavLink>
+        )}
+        {isAdmin && (
           <NavLink to="/supervisors" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">👤</span> Users
           </NavLink>
