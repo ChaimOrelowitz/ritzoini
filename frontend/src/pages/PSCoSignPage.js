@@ -277,6 +277,10 @@ function noteFacts(note) {
   const ageM = /\bAge\s*[:\-]\s*(\d+)/i.exec(text);
   const age  = note?.age ?? (ageM ? Number(ageM[1]) : null);
 
+  // Billed session length, as InSync states it ("3 hr 0 min").
+  const durM     = /\bTotal Time\s*[:\-]\s*(.*?)\s*(?=\bNote of Session\b|\bEncounter Type\b|\bStart Time\b|$)/i.exec(text);
+  const duration = (note?.totalTime || durM?.[1] || '').trim();
+
   // "Diagnosis F90.2 - ADHD, combined type F34.1 - Dysthymic disorder" — split
   // on the next ICD code, since nothing else delimits one label from the next.
   const dxSection = note?.diagnosis
@@ -299,19 +303,24 @@ function noteFacts(note) {
     if (name && !problems.includes(name)) problems.push(name);
   }
 
-  return { age, dxs, problems };
+  return { age, duration, dxs, problems };
 }
 
 const factLbl  = { fontSize: '0.62rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--gray-400)', paddingTop: 3 };
 const factDash = { fontSize: '0.78rem', color: 'var(--gray-400)' };
 
 function NoteFacts({ note }) {
-  const { age, dxs, problems } = useMemo(() => noteFacts(note), [note]);
-  if (age == null && !dxs.length && !problems.length) return null;
+  const { age, duration, dxs, problems } = useMemo(() => noteFacts(note), [note]);
+  if (age == null && !duration && !dxs.length && !problems.length) return null;
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr)', gap: '5px 10px', marginTop: 8, alignItems: 'start' }}>
       <div style={factLbl}>Age</div>
-      <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--gray-700)' }}>{age != null ? age : '—'}</div>
+      <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--gray-700)', display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 7 }}>
+        <span>{age != null ? age : '—'}</span>
+        <span style={{ color: 'var(--gray-300)' }}>·</span>
+        <span style={{ ...factLbl, paddingTop: 0 }}>Duration</span>
+        <span>{duration || '—'}</span>
+      </div>
       <div style={factLbl}>Dx</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
         {dxs.length
