@@ -46,4 +46,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin };
+// Co-Sign Review queue: admins, plus non-admin accounts flagged `ps_cosign`
+// (assistants who work the queue). Grants the queue only — the Settings tab's
+// routes stay behind requireAdmin.
+function requireCoSign(req, res, next) {
+  if (req.user?.role !== 'admin' && req.user?.ps_cosign !== true) {
+    return res.status(403).json({ error: 'Co-Sign Review access required' });
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireAdmin, requireCoSign };

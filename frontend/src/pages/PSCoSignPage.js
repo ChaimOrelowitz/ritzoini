@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { api } from '../utils/api';
 import supabase from '../supabaseClient';
+import { useAuth } from '../context/AuthContext';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:4000';
 
@@ -1999,14 +2000,19 @@ function QueueTab() {
 
 export default function PSCoSignPage() {
   const [tab, setTab] = useState('queue');
+  // Settings is admin-only; ps_cosign accounts get the Queue and nothing else,
+  // so for them the tab strip collapses to a single tab and is hidden.
+  const { profile } = useAuth();
+  const isAdmin = profile?.role === 'admin';
+  const tabs = isAdmin ? [['queue', 'Queue'], ['settings', 'Settings']] : [['queue', 'Queue']];
 
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1000, margin: '0 auto' }}>
       <h2 style={{ margin: '0 0 20px', fontSize: '1.15rem', fontWeight: 700, color: 'var(--navy)' }}>Co-Sign Review</h2>
 
       {/* Sub-tabs */}
-      <div style={{ display: 'flex', gap: 0, marginBottom: 28, borderBottom: '2px solid var(--gray-100)' }}>
-        {[['queue', 'Queue'], ['settings', 'Settings']].map(([key, label]) => (
+      <div style={{ display: tabs.length > 1 ? 'flex' : 'none', gap: 0, marginBottom: 28, borderBottom: '2px solid var(--gray-100)' }}>
+        {tabs.map(([key, label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
             padding: '8px 20px', fontSize: '0.85rem', fontWeight: tab === key ? 700 : 400,
@@ -2017,7 +2023,7 @@ export default function PSCoSignPage() {
         ))}
       </div>
 
-      {tab === 'settings' ? <SettingsTab /> : <QueueTab />}
+      {tab === 'settings' && isAdmin ? <SettingsTab /> : <QueueTab />}
     </div>
   );
 }

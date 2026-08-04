@@ -45,6 +45,7 @@ export default function Layout() {
   const initials = [profile?.first_name?.[0], profile?.last_name?.[0]]
     .filter(Boolean).join('').toUpperCase() || '?';
   const isAdmin = profile?.role === 'admin';
+  const canCoSign = isAdmin || profile?.ps_cosign === true;
 
   const navLinks = {
     ritzoini: (
@@ -118,7 +119,7 @@ export default function Layout() {
         <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
           <span className="nav-icon">👥</span> Peer Management
         </NavLink>
-        {isAdmin && (
+        {canCoSign && (
           <NavLink to="/ps/cosign" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
             <span className="nav-icon">✍</span> Co-Sign Review
           </NavLink>

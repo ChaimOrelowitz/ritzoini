@@ -8,6 +8,7 @@ function EditUserModal({ user, onClose, onSaved }) {
     phone: user.phone || '',
     role: user.role || 'supervisor',
     ps_payroll_only: user.ps_payroll_only === true,
+    ps_cosign: user.ps_cosign === true,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -76,6 +77,21 @@ function EditUserModal({ user, onClose, onSaved }) {
                   <strong>Payroll report only</strong> — restrict this account to viewing the
                   Peer Management → Payroll Report screen. Everything else in the app is hidden and
                   blocked. Overrides the role above.
+                </span>
+              </label>
+            </div>
+            <div className="form-group" style={{ marginTop: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.ps_cosign}
+                  onChange={e => set('ps_cosign', e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span style={{ fontSize: '0.82rem', color: 'var(--gray-600)' }}>
+                  <strong>Co-Sign Review access</strong> — let this non-admin account work the
+                  Peer Management → Co-Sign Review queue (pull, sign, reopen, re-judge). The
+                  Settings tab stays admin-only. Admins already have this.
                 </span>
               </label>
             </div>
@@ -251,6 +267,11 @@ export default function AdminUsersPage() {
                       {user.ps_payroll_only && (
                         <span className="badge badge-scheduled" style={{ marginLeft: 6 }} title="Restricted to the Payroll Report screen">
                           payroll only
+                        </span>
+                      )}
+                      {user.ps_cosign && user.role !== 'admin' && (
+                        <span className="badge badge-completed" style={{ marginLeft: 6 }} title="Can work the Co-Sign Review queue">
+                          co-sign
                         </span>
                       )}
                     </td>

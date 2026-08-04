@@ -23,11 +23,15 @@ import OOPeerNotesPage from './pages/OOPeerNotesPage';
 import PeerManagementPage from './pages/PeerManagementPage';
 import PSCoSignPage from './pages/PSCoSignPage';
 
-function PrivateRoute({ children, adminOnly = false }) {
+function PrivateRoute({ children, adminOnly = false, coSignOnly = false }) {
   const { user, profile, loading } = useAuth();
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (adminOnly && profile?.role !== 'admin') return <Navigate to="/" replace />;
+  // Co-Sign Review: admins, plus non-admins flagged ps_cosign.
+  if (coSignOnly && profile?.role !== 'admin' && profile?.ps_cosign !== true) {
+    return <Navigate to="/" replace />;
+  }
   return children;
 }
 
@@ -77,7 +81,7 @@ export default function App() {
           {/* Peer Management section */}
           <Route path="ps" element={<PeerManagementPage />} />
           <Route path="ps/cosign" element={
-            <PrivateRoute adminOnly><PSCoSignPage /></PrivateRoute>
+            <PrivateRoute coSignOnly><PSCoSignPage /></PrivateRoute>
           } />
         </Route>
       </Routes>

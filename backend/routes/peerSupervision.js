@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
-const { requireAuth, requireAdmin } = require('../middleware/auth');
+const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
 const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, judgeNote, serializeNote, contentHash } = require('../utils/psIngest');
@@ -68,7 +68,7 @@ router.get('/cosign/scan', async (req, res) => {
 });
 
 // POST /api/ps/cosign/sign — sign a list of notes; body: { notes, runId, delta }
-router.post('/cosign/sign', requireAuth, requireAdmin, async (req, res) => {
+router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { notes, runId, delta = 0 } = req.body;
     if (!notes?.length) return res.status(400).json({ error: 'notes required' });
@@ -98,7 +98,7 @@ router.post('/cosign/sign', requireAuth, requireAdmin, async (req, res) => {
 // POST /api/ps/cosign/reopen — reopen (send back to peer for revision) one or
 // more notes. Body: { notes: [{ eid, pid, reason }] }. Each note is gated on
 // InSync's claim-generated check, so billed encounters are refused per-note.
-router.post('/cosign/reopen', requireAuth, requireAdmin, async (req, res) => {
+router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { notes } = req.body;
     if (!notes?.length) return res.status(400).json({ error: 'notes required' });
@@ -216,7 +216,7 @@ function composeSuggestedReopenMessage(machineFlags, review, confirmedDuplicate)
 // GET /api/ps/cosign/notes — the durable queue/archive.
 // Params: status (default 'pending'; comma-list or 'all'), verdict, q (text
 // search on patient/peer name).
-router.get('/cosign/notes', requireAuth, requireAdmin, async (req, res) => {
+router.get('/cosign/notes', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { status = 'pending', verdict, q } = req.query;
     let query = supabase.from('ps_notes').select('*');
@@ -237,7 +237,7 @@ router.get('/cosign/notes', requireAuth, requireAdmin, async (req, res) => {
 
 // GET /api/ps/cosign/notes/:eid/versions — every version of one note, oldest
 // first, for the side-by-side old-vs-new view of a revised reopened note.
-router.get('/cosign/notes/:eid/versions', requireAuth, requireAdmin, async (req, res) => {
+router.get('/cosign/notes/:eid/versions', requireAuth, requireCoSign, async (req, res) => {
   const { data, error } = await supabase.from('ps_notes').select('*')
     .eq('eid', req.params.eid).order('version', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });
@@ -252,8 +252,13 @@ router.get('/cosign/pull', async (req, res) => {
   if (!token) return res.status(401).json({ error: 'Missing token' });
   const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
   if (authErr || !user) return res.status(401).json({ error: 'Invalid token' });
-  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-  if (profile?.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+  // Same rule as requireCoSign, hand-rolled because the middleware chain can't
+  // run here (no Authorization header). Payroll-only accounts stay locked out —
+  // requireAuth's chokepoint never sees this request.
+  const { data: profile } = await supabase.from('profiles')
+    .select('role, ps_cosign, ps_payroll_only').eq('id', user.id).single();
+  const mayCoSign = (profile?.role === 'admin' || profile?.ps_cosign === true) && !profile?.ps_payroll_only;
+  if (!mayCoSign) return res.status(403).json({ error: 'Co-Sign Review access required' });
 
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -274,7 +279,7 @@ router.get('/cosign/pull', async (req, res) => {
 
 // POST /api/ps/cosign/rejudge — re-run the AI on ONE already-stored note (new
 // prompt / fresh verdict) with NO InSync round-trip. Body: { id }.
-router.post('/cosign/rejudge', requireAuth, requireAdmin, async (req, res) => {
+router.post('/cosign/rejudge', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { id } = req.body;
     if (!id) return res.status(400).json({ error: 'id required' });
@@ -316,7 +321,7 @@ router.post('/cosign/rejudge', requireAuth, requireAdmin, async (req, res) => {
 // duplicate. Body: { decision: 'confirmed' | 'dismissed' | null }. The mechanical
 // score never decides on its own; this is what records the reviewer's call.
 // Stored inside ai_flags.clone so no schema migration is needed.
-router.post('/cosign/notes/:id/dupe-decision', requireAuth, requireAdmin, async (req, res) => {
+router.post('/cosign/notes/:id/dupe-decision', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { decision } = req.body;
     if (![null, 'confirmed', 'dismissed'].includes(decision ?? null))
