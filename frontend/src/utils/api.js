@@ -86,7 +86,7 @@ export const api = {
   // Pay Periods
   getPayPeriods:    () => authFetch('/api/pay-periods'),
   createPayPeriod:  (body) => authFetch('/api/pay-periods', { method: 'POST', body: JSON.stringify(body) }),
-  generatePayPeriods: (anchor_date) => authFetch('/api/pay-periods/generate', { method: 'POST', body: JSON.stringify({ anchor_date }) }),
+  generatePayPeriods: (body = {}) => authFetch('/api/pay-periods/generate', { method: 'POST', body: JSON.stringify(body) }),
   updatePayPeriod:  (id, body) => authFetch(`/api/pay-periods/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deletePayPeriod:  (id) => authFetch(`/api/pay-periods/${id}`, { method: 'DELETE' }),
 

@@ -150,10 +150,10 @@ function PayPeriodsTab() {
   }
 
   async function handleGenerate() {
-    if (!window.confirm('Auto-generate biweekly pay periods (18 months back, 6 months forward from Jan 6 2026)?\n\nExisting periods will not be overwritten.')) return;
+    if (!window.confirm('Auto-generate the next 13 biweekly pay periods, continuing forward from the most recent one?\n\nExisting periods will not be overwritten.')) return;
     setGenerating(true);
     try {
-      const r = await api.generatePayPeriods('2026-01-06');
+      const r = await api.generatePayPeriods({ count: 13 });
       await load();
       alert(r.inserted > 0 ? `Generated ${r.inserted} new pay periods.` : 'All periods already exist — nothing new to add.');
     } catch (e) { setError(e.message); }

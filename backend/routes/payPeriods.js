@@ -34,38 +34,36 @@ router.post('/', requireAuth, requireAdmin, async (req, res) => {
 
 router.post('/generate', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { anchor_date = '2026-01-06', months_back = 18, months_forward = 6 } = req.body;
+    const { count = 13, anchor_date = '2026-01-06' } = req.body;
 
-    const anchor = new Date(anchor_date + 'T00:00:00Z');
-    const cutStart = new Date(anchor);
-    cutStart.setMonth(cutStart.getMonth() - months_back);
-    const cutEnd = new Date(anchor);
-    cutEnd.setMonth(cutEnd.getMonth() + months_forward);
+    // Continue the biweekly cadence forward from the most recent existing
+    // period. If none exist yet, start at the anchor date.
+    const { data: latest, error: latestErr } = await supabase
+      .from('pay_periods')
+      .select('start_date')
+      .order('start_date', { ascending: false })
+      .limit(1);
+    if (latestErr) throw latestErr;
 
-    const periodsMap = new Map();
+    const cur = (latest && latest.length)
+      ? new Date(latest[0].start_date + 'T00:00:00Z')
+      : new Date(anchor_date + 'T00:00:00Z');
+    // First new period starts one cadence (14 days) after the latest one;
+    // when starting from the anchor we use the anchor itself as-is.
+    if (latest && latest.length) cur.setUTCDate(cur.getUTCDate() + 14);
 
-    const addPeriod = (start) => {
-      const end = new Date(start);
-      end.setDate(end.getDate() + 13);
-      if (start >= cutStart && start <= cutEnd) {
-        const s = start.toISOString().split('T')[0];
-        const e = end.toISOString().split('T')[0];
-        periodsMap.set(s, { start_date: s, end_date: e, label: `${fmtLabel(s)} – ${fmtLabel(e)}` });
+    const existingStarts = new Set((latest || []).map(p => p.start_date));
+    const toInsert = [];
+    for (let i = 0; i < count; i++) {
+      const end = new Date(cur);
+      end.setUTCDate(end.getUTCDate() + 13);
+      const s = cur.toISOString().split('T')[0];
+      const e = end.toISOString().split('T')[0];
+      if (!existingStarts.has(s)) {
+        toInsert.push({ start_date: s, end_date: e, label: `${fmtLabel(s)} – ${fmtLabel(e)}` });
       }
-    };
-
-    // Forward from anchor
-    let cur = new Date(anchor);
-    while (cur <= cutEnd) { addPeriod(new Date(cur)); cur.setDate(cur.getDate() + 14); }
-
-    // Backward from anchor
-    cur = new Date(anchor);
-    cur.setDate(cur.getDate() - 14);
-    while (cur >= cutStart) { addPeriod(new Date(cur)); cur.setDate(cur.getDate() - 14); }
-
-    const { data: existing } = await supabase.from('pay_periods').select('start_date');
-    const existingStarts = new Set((existing || []).map(p => p.start_date));
-    const toInsert = [...periodsMap.values()].filter(p => !existingStarts.has(p.start_date));
+      cur.setUTCDate(cur.getUTCDate() + 14);
+    }
 
     if (!toInsert.length) return res.json({ inserted: 0, message: 'All periods already exist' });
 
