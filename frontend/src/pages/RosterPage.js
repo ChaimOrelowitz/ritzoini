@@ -37,7 +37,8 @@ export default function RosterPage() {
       const [r, ins] = await Promise.all([api.getRoster(), api.getInstructors().catch(() => [])]);
       setRows(r);
       setInstructors((ins || []).slice().sort((a, b) => (a.last_name || '').localeCompare(b.last_name || '')));
-    } catch (err) { setError(err.message); }
+      return r;
+    } catch (err) { setError(err.message); return []; }
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -84,10 +85,10 @@ export default function RosterPage() {
     setSyncing(true); setMsg(''); setError('');
     try {
       const r = await api.syncZohoGroups();
+      const mine = await load();
       const c = r.cancellations;
       const cancelMsg = c && c.cancelled ? ` Cancelled ${c.cancelled} session${c.cancelled !== 1 ? 's' : ''}${c.skippedLocked ? `, skipped ${c.skippedLocked} locked` : ''}.` : '';
-      setMsg(`Synced ${r.fetched} groups from Zoho.${cancelMsg}`);
-      await load();
+      setMsg(`Synced ${r.fetched} Zoho groups (all therapists) — ${mine.length} are yours.${cancelMsg}`);
     }
     catch (err) { setError('Sync failed: ' + err.message); }
     finally { setSyncing(false); }
