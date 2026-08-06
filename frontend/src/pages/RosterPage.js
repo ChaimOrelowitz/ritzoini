@@ -7,16 +7,19 @@ const DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 const ZOHO_ORG = '871314197';
 const zohoSessionUrl = (id) => `https://crm.zoho.com/crm/org${ZOHO_ORG}/tab/Session/${id}`;
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : iso;
+function fmtDate(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd || '');
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : (ymd || '—');
 }
-function fmtTime(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (isNaN(d)) return '';
-  return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+function fmtTime(hm) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(hm || '');
+  if (!m) return '';
+  const h = +m[1];
+  return `${h % 12 || 12}:${m[2]} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+// Activity minus the numbers, e.g. "Surprise Crafts 5:20" → "Surprise Crafts".
+function activityText(a) {
+  return String(a || '').replace(/\d[\d:.]*/g, '').replace(/\s+/g, ' ').trim();
 }
 
 const th = { padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: 'var(--gray-500)', fontSize: '0.68rem', textTransform: 'uppercase', letterSpacing: '0.04em', whiteSpace: 'nowrap' };
@@ -46,19 +49,23 @@ export default function RosterPage() {
   const [addPrefill, setAddPrefill] = useState(null); // { _zohoId, ...form fields }
 
   function startAdd(g) {
-    const dateOf = iso => (iso || '').slice(0, 10);
-    const timeOf = iso => { const m = /T(\d{2}):(\d{2})/.exec(iso || ''); return m ? `${m[1]}:${m[2]}` : ''; };
-    const t = timeOf(g.start_at);
+    const desc = [
+      g.group_name,
+      activityText(g.group_activity),
+      g.group_type,
+      g.age_range && `Ages ${g.age_range}`,
+    ].filter(Boolean).join(' · ');
     setAddPrefill({
       _zohoId:         g.id,
       group_name:      g.group_name,
       internal_name:   g.session_code || g.group_name,
-      supervisor_name: 'Chaim Orelowitz',
+      description:     desc,
+      supervisor_name: 'Chaim Orelowitz Supervisor',
       instructor_id:   g.ritzoini_instructor_id || '',
-      start_date:      dateOf(g.start_at),
-      end_date:        dateOf(g.end_at),
-      start_time:      t,
-      ecw_time:        t,
+      start_date:      g.start_date || '',
+      end_date:        g.end_date || '',
+      start_time:      g.start_time || '',
+      ecw_time:        g.start_time || '',
       total_sessions:  g.how_many_sessions || '',
     });
   }
@@ -147,7 +154,7 @@ export default function RosterPage() {
                       {g.session_code && <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', fontWeight: 400 }}>{g.session_code}</div>}
                     </td>
                     <td style={td}>{g.group_activity || '—'}</td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtTime(g.start_at) || '—'}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtTime(g.start_time) || '—'}</td>
                     <td style={td}>
                       {g.instructor_name || '—'}
                       {g.instructor_phone && <div style={{ fontSize: '0.72rem', color: 'var(--gray-500)' }}>{g.instructor_phone}</div>}
@@ -171,8 +178,8 @@ export default function RosterPage() {
                         </div>
                       )}
                     </td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.start_at)}</td>
-                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.end_at)}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.start_date)}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.end_date)}</td>
                     <td style={td}>{g.group_type || '—'}</td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>
                       {g.age_range || '—'}

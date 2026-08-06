@@ -619,8 +619,17 @@ async function syncZohoGroups() {
   try { cancelledByGroup = await listCancelledDatesByGroup(); }
   catch (e) { console.error('[zoho] cancelled-dates fetch failed:', e.message); }
 
-  const rows = sessions.map(s => ({
+  // Zoho datetimes carry the local offset ("…T16:30:00-04:00"); the wall-clock
+  // time IS the intended local time. Capture it as text before timestamptz
+  // normalization loses it to UTC.
+  const localParts = iso => { const m = /(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(iso || ''); return m ? { date: m[1], time: m[2] } : { date: null, time: null }; };
+  const rows = sessions.map(s => {
+    const sp = localParts(s.Start_Date_and_Time), ep = localParts(s.End_Date_and_Time);
+    return {
     id:                s.id,
+    start_date:        sp.date,
+    start_time:        sp.time,
+    end_date:          ep.date,
     session_name:      s[PARENT_NAME_FIELD] || null,
     session_code:      s.Session_Code || null,
     group_activity:    s.Group_Activity || null,
@@ -636,7 +645,8 @@ async function syncZohoGroups() {
     how_many_sessions: s.How_many_Sessions ?? null,
     cancelled_dates:   cancelledByGroup[s.id] || [],
     synced_at:         now,
-  }));
+    };
+  });
   if (rows.length) {
     const { error } = await supabase.from('zoho_groups').upsert(rows, { onConflict: 'id' });
     if (error) throw new Error(`zoho_groups upsert failed: ${error.message}`);
@@ -767,8 +777,9 @@ async function getRoster() {
       group_type:          g.group_type,
       session_code:        g.session_code,
       status:              g.status,
-      start_at:            g.start_at,
-      end_at:              g.end_at,
+      start_date:          g.start_date,   // local wall-clock text (tz-safe)
+      start_time:          g.start_time,
+      end_date:            g.end_date,
       how_many_sessions:   g.how_many_sessions,
       instructor_name:       displayName,
       instructor_phone:      phone,

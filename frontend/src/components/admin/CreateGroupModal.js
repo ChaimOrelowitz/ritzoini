@@ -87,7 +87,7 @@ export default function CreateGroupModal({ onClose, onCreated, initial }) {
   const [showNewInstructor, setShowNewInstructor] = useState(false);
   const [lastEdited, setLastEdited] = useState('sessions');
   const [form, setForm] = useState({
-    internal_name: initial?.internal_name || '', group_name: initial?.group_name || '', description: '',
+    internal_name: initial?.internal_name || '', group_name: initial?.group_name || '', description: initial?.description || '',
     supervisor_id: initial?.supervisor_id || '', instructor_id: initial?.instructor_id || '',
     start_date: initial?.start_date || '', end_date: initial?.end_date || '',
     start_time: initial?.start_time || '', ecw_time: initial?.ecw_time || '',
@@ -111,7 +111,10 @@ export default function CreateGroupModal({ onClose, onCreated, initial }) {
       // Pre-fill: default the supervisor by name (e.g. "Chaim Orelowitz") when given.
       if (initial?.supervisor_name) {
         const want = initial.supervisor_name.trim().toLowerCase();
-        const match = sups.find(s => `${s.first_name || ''} ${s.last_name || ''}`.trim().toLowerCase() === want);
+        const match = sups.find(s => {
+          const n = `${s.first_name || ''} ${s.last_name || ''}`.trim().toLowerCase();
+          return n === want || n.includes(want) || want.includes(n);
+        });
         if (match) setForm(f => ({ ...f, supervisor_id: f.supervisor_id || match.id }));
       }
     });
