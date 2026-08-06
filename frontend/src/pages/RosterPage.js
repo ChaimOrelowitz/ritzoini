@@ -97,6 +97,9 @@ export default function RosterPage() {
 
   const byDay = {};
   (rows || []).forEach(g => { (byDay[g.class_day || 'Unscheduled'] ||= []).push(g); });
+  // Within each day, order groups by start time (early → late; blanks last).
+  Object.values(byDay).forEach(list =>
+    list.sort((a, b) => (a.start_time || '99:99').localeCompare(b.start_time || '99:99')));
   const days = Object.keys(byDay).sort((a, b) => {
     const ia = DAY_ORDER.indexOf(a), ib = DAY_ORDER.indexOf(b);
     return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
