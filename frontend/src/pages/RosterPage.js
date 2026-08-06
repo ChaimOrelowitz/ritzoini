@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../utils/api';
+import CreateGroupModal from '../components/admin/CreateGroupModal';
 
 const DAY_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const ZOHO_ORG = '871314197';
@@ -40,6 +41,36 @@ export default function RosterPage() {
   async function linkInstructor(zohoInstructorId, ritzId) {
     try { await api.linkZohoInstructor(zohoInstructorId, ritzId || null); await load(); }
     catch (err) { setError('Link failed: ' + err.message); }
+  }
+
+  const [addPrefill, setAddPrefill] = useState(null); // { _zohoId, ...form fields }
+
+  function startAdd(g) {
+    const dateOf = iso => (iso || '').slice(0, 10);
+    const timeOf = iso => { const m = /T(\d{2}):(\d{2})/.exec(iso || ''); return m ? `${m[1]}:${m[2]}` : ''; };
+    const t = timeOf(g.start_at);
+    setAddPrefill({
+      _zohoId:         g.id,
+      group_name:      g.group_name,
+      internal_name:   g.session_code || g.group_name,
+      supervisor_name: 'Chaim Orelowitz',
+      instructor_id:   g.ritzoini_instructor_id || '',
+      start_date:      dateOf(g.start_at),
+      end_date:        dateOf(g.end_at),
+      start_time:      t,
+      ecw_time:        t,
+      total_sessions:  g.how_many_sessions || '',
+    });
+  }
+
+  async function onGroupCreated(created) {
+    const zid = addPrefill?._zohoId;
+    if (created?.id && zid) {
+      try { await api.updateGroup(created.id, { zoho_session_id: zid }); }
+      catch (err) { setError('Group created, but linking to Zoho failed: ' + err.message); }
+    }
+    setAddPrefill(null);
+    await load();
   }
 
   async function sync() {
@@ -156,10 +187,15 @@ export default function RosterPage() {
                             </span>
                           ))}
                     </td>
-                    <td style={{ ...td, textAlign: 'center' }}>
-                      {g.on_ritzoini
-                        ? <span style={{ color: '#12855C', fontWeight: 700 }}>✓</span>
-                        : <span style={{ color: 'var(--gray-300)' }}>—</span>}
+                    <td style={{ ...td, textAlign: 'center', whiteSpace: 'nowrap' }}>
+                      {g.on_ritzoini ? (
+                        <span style={{ color: '#12855C', fontWeight: 700 }}>✓</span>
+                      ) : (
+                        <button onClick={() => startAdd(g)}
+                          style={{ fontSize: '0.68rem', fontWeight: 600, color: '#6941C6', background: 'none', border: '1px solid #d6bbfb', borderRadius: 6, padding: '3px 8px', cursor: 'pointer' }}>
+                          + Add
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -168,6 +204,14 @@ export default function RosterPage() {
           </div>
         </section>
       ))}
+
+      {addPrefill && (
+        <CreateGroupModal
+          initial={addPrefill}
+          onClose={() => setAddPrefill(null)}
+          onCreated={onGroupCreated}
+        />
+      )}
     </div>
   );
 }

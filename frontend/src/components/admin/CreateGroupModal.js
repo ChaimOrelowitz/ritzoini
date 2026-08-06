@@ -80,18 +80,18 @@ function NewInstructorInline({ onCreated, onCancel }) {
   );
 }
 
-export default function CreateGroupModal({ onClose, onCreated }) {
+export default function CreateGroupModal({ onClose, onCreated, initial }) {
   const { profile, isAdmin } = useAuth();
   const [supervisors, setSupervisors]   = useState([]);
   const [instructors, setInstructors]   = useState([]);
   const [showNewInstructor, setShowNewInstructor] = useState(false);
   const [lastEdited, setLastEdited] = useState('sessions');
   const [form, setForm] = useState({
-    internal_name: '', group_name: '', description: '',
-    supervisor_id: '', instructor_id: '',
-    start_date: '', end_date: '',
-    start_time: '', ecw_time: '',
-    total_sessions: '', default_duration: '45',
+    internal_name: initial?.internal_name || '', group_name: initial?.group_name || '', description: '',
+    supervisor_id: initial?.supervisor_id || '', instructor_id: initial?.instructor_id || '',
+    start_date: initial?.start_date || '', end_date: initial?.end_date || '',
+    start_time: initial?.start_time || '', ecw_time: initial?.ecw_time || '',
+    total_sessions: initial?.total_sessions ? String(initial.total_sessions) : '', default_duration: '45',
   });
   const [skipDates, setSkipDates] = useState([]);
   const [skipInput, setSkipInput] = useState('');
@@ -105,7 +105,16 @@ export default function CreateGroupModal({ onClose, onCreated }) {
   }
 
   useEffect(() => {
-    if (isAdmin) api.getUsers().then(u => setSupervisors(u.filter(x => x.role === 'supervisor')));
+    if (isAdmin) api.getUsers().then(u => {
+      const sups = u.filter(x => x.role === 'supervisor');
+      setSupervisors(sups);
+      // Pre-fill: default the supervisor by name (e.g. "Chaim Orelowitz") when given.
+      if (initial?.supervisor_name) {
+        const want = initial.supervisor_name.trim().toLowerCase();
+        const match = sups.find(s => `${s.first_name || ''} ${s.last_name || ''}`.trim().toLowerCase() === want);
+        if (match) setForm(f => ({ ...f, supervisor_id: f.supervisor_id || match.id }));
+      }
+    });
     api.getInstructors().then(setInstructors);
   }, [isAdmin]);
 
@@ -148,7 +157,7 @@ export default function CreateGroupModal({ onClose, onCreated }) {
     e.preventDefault();
     setLoading(true); setError('');
     try {
-      await api.createGroup({
+      const created = await api.createGroup({
         ...form,
         total_sessions:   form.total_sessions ? parseInt(form.total_sessions) : null,
         default_duration: parseInt(form.default_duration) || 45,
@@ -158,7 +167,7 @@ export default function CreateGroupModal({ onClose, onCreated }) {
         end_date:       form.end_date || null,
         skip_dates:     skipDates.length ? skipDates : undefined,
       });
-      onCreated();
+      onCreated(created);
     } catch (err) { setError(err.message); }
     finally { setLoading(false); }
   }
