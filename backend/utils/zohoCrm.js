@@ -692,34 +692,54 @@ function cleanInstructorName(name) {
 // name match. Never overwrites an existing (manual or prior) link.
 async function autoLinkInstructors() {
   const [{ data: zi }, { data: ri }] = await Promise.all([
-    supabase.from('zoho_instructors').select('id, name, ritzoini_instructor_id'),
+    supabase.from('zoho_instructors').select('id, name, phone, ritzoini_instructor_id'),
     supabase.from('instructors').select('id, first_name, last_name'),
   ]);
   const byFull = {}, byFirst = {}, byLast = {};
   const add = (m, k, id) => { if (!k) return; (m[k] ||= new Set()).add(id); };
-  for (const r of (ri || [])) {
+  const index = (r) => {
     const f = normalizeName(r.first_name), l = normalizeName(r.last_name);
     add(byFull, `${f} ${l}`.trim(), r.id); add(byFirst, f, r.id); add(byLast, l, r.id);
-  }
+  };
+  for (const r of (ri || [])) index(r);
   const uniq = (m, k) => { const s = m[k]; return s && s.size === 1 ? [...s][0] : null; };
 
-  let linked = 0;
+  let linked = 0, created = 0;
   for (const z of (zi || [])) {
     if (z.ritzoini_instructor_id) continue;
-    const n = normalizeName(cleanInstructorName(z.name));
+    const cleaned = cleanInstructorName(z.name);
+    const n = normalizeName(cleaned);
     if (!n || n === 'no instructor') continue;
     const toks = n.split(' ').filter(Boolean);
+
+    // 1. Link to an existing Ritzoini instructor by a confident unique match.
     let target = uniq(byFull, n);
     if (!target) target = toks.length === 1
       ? (uniq(byFirst, toks[0]) || uniq(byLast, toks[0]))
       : uniq(byLast, toks[toks.length - 1]);
+
+    // 2. Not in Ritzoini yet + has a name and a phone → create the instructor.
+    if (!target) {
+      const digits = String(z.phone || '').replace(/\D/g, '');
+      const parts = cleaned.split(/\s+/).filter(Boolean);
+      if (digits.length >= 4 && parts.length) {
+        const first_name = parts.length > 1 ? parts[0] : '';
+        const last_name  = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+        const { data: ins, error } = await supabase.from('instructors')
+          .insert({ first_name: first_name || null, last_name, phone: digits })
+          .select('id, first_name, last_name').single();
+        if (!error && ins) { target = ins.id; created++; index(ins); }
+        else if (error) console.error('[zoho] instructor create failed for', z.name, error.message);
+      }
+    }
+
     if (target) {
       const { error } = await supabase.from('zoho_instructors').update({ ritzoini_instructor_id: target }).eq('id', z.id);
       if (!error) linked++;
     }
   }
-  console.log(`[zoho] instructor auto-link: linked ${linked}`);
-  return linked;
+  console.log(`[zoho] instructor auto-link: linked ${linked}, created ${created}`);
+  return { linked, created };
 }
 
 // Assemble the Roster from the caches: the configured therapist's Zoho groups,
