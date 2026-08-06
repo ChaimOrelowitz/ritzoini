@@ -591,6 +591,29 @@ async function syncZohoGroups() {
   // Auto-link Zoho instructors to the fuller Ritzoini Instructors records.
   try { await autoLinkInstructors(); } catch (e) { console.error('[zoho] instructor auto-link failed:', e.message); }
 
+  // Clients (Deals) → cache, roster-relevant fields ONLY (no PII/financial).
+  try {
+    const SESSION_KEYS = ['Session', ...Array.from({ length: 10 }, (_, i) => `Session${i + 2}`)];
+    const clients = await listAll('Deals',
+      `First_Name,Last_Name,Age,Grade,Gender,Stage,${SESSION_KEYS.join(',')}`);
+    const cRows = clients.map(d => ({
+      id:         d.id,
+      first_name: d.First_Name || null,
+      last_name:  d.Last_Name || null,
+      age:        Number.isFinite(+d.Age) && d.Age !== '' && d.Age != null ? parseInt(d.Age, 10) : null,
+      grade:      d.Grade || null,
+      gender:     d.Gender || null,
+      stage:      d.Stage || null,
+      group_ids:  SESSION_KEYS.map(k => d[k]?.id).filter(Boolean),
+      synced_at:  now,
+    }));
+    if (cRows.length) {
+      const { error } = await supabase.from('zoho_clients').upsert(cRows, { onConflict: 'id' });
+      if (error) console.error('[zoho] zoho_clients upsert failed:', error.message);
+    }
+    console.log(`[zoho] sync clients: ${cRows.length}`);
+  } catch (e) { console.error('[zoho] client sync failed:', e.message); }
+
   // Cancelled occurrence dates per group.
   let cancelledByGroup = {};
   try { cancelledByGroup = await listCancelledDatesByGroup(); }
@@ -696,12 +719,23 @@ async function getRoster() {
   const { data: cfg } = await supabase.from('app_config').select('value').eq('key', 'zoho_roster_therapist').maybeSingle();
   const therapist = normalizeName(cfg?.value || 'Chaim Orelowitz');
 
-  const [zg, zi, rg, ri] = await Promise.all([
+  const [zg, zi, rg, ri, zc] = await Promise.all([
     supabase.from('zoho_groups').select('*'),
     supabase.from('zoho_instructors').select('id, name, phone, ritzoini_instructor_id'),
     supabase.from('groups').select('id, zoho_session_id').not('zoho_session_id', 'is', null),
     supabase.from('instructors').select('id, first_name, last_name, phone'),
+    supabase.from('zoho_clients').select('age, stage, group_ids'),
   ]);
+
+  // Per-group active-client counts + ages (for the Age range column).
+  const agesByGroup = {}, countByGroup = {};
+  for (const c of (zc.data || [])) {
+    if (String(c.stage || '').toLowerCase() !== 'active') continue;
+    for (const gid of (Array.isArray(c.group_ids) ? c.group_ids : [])) {
+      countByGroup[gid] = (countByGroup[gid] || 0) + 1;
+      if (Number.isFinite(c.age)) (agesByGroup[gid] ||= []).push(c.age);
+    }
+  }
 
   const zInstById = Object.fromEntries((zi.data || []).map(i => [i.id, i]));
   const rInstById = Object.fromEntries((ri.data || []).map(i => [i.id, i]));
@@ -718,8 +752,15 @@ async function getRoster() {
       : (g.instructor_name || zinst?.name || null);
     const phone = rinst?.phone || zinst?.phone || null;
     const isPlaceholder = normalizeName(displayName) === 'no instructor' || !displayName;
+    const ages = agesByGroup[g.id] || [];
+    const ageMin = ages.length ? Math.min(...ages) : null;
+    const ageMax = ages.length ? Math.max(...ages) : null;
     return {
       id: g.id,
+      age_min:             ageMin,
+      age_max:             ageMax,
+      age_range:           ages.length ? (ageMin === ageMax ? `${ageMin}` : `${ageMin}–${ageMax}`) : null,
+      client_count:        countByGroup[g.id] || 0,
       group_name:          g.session_name,
       group_activity:      g.group_activity,
       class_day:           g.class_day,

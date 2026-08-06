@@ -98,7 +98,7 @@ export default function RosterPage() {
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: 'var(--gray-50)', borderBottom: '1px solid var(--gray-200)' }}>
-                  {['Group Name', 'Activity', 'Time', 'Instructor', 'Start', 'End', 'Gender', 'Cancellations', 'On Ritzoini'].map(h => (
+                  {['Group Name', 'Activity', 'Time', 'Instructor', 'Start', 'End', 'Gender', 'Age', 'Cancellations', 'On Ritzoini'].map(h => (
                     <th key={h} style={th}>{h}</th>
                   ))}
                 </tr>
@@ -143,6 +143,10 @@ export default function RosterPage() {
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.start_at)}</td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDate(g.end_at)}</td>
                     <td style={td}>{g.group_type || '—'}</td>
+                    <td style={{ ...td, whiteSpace: 'nowrap' }}>
+                      {g.age_range || '—'}
+                      {g.client_count > 0 && <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)' }}>{g.client_count} client{g.client_count !== 1 ? 's' : ''}</div>}
+                    </td>
                     <td style={td}>
                       {g.cancelled_dates.length === 0
                         ? <span style={{ color: 'var(--gray-400)' }}>—</span>
