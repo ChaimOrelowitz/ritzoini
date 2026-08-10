@@ -45,13 +45,136 @@ const SECTION_LABELS = [
   { key: 'plan',          label: 'Plan',                                          compared: true,  substantive: false },
 ];
 
-// Where the trailing "Plan" section ends — same terminators _sessionContent uses,
-// so the compared text never bleeds into ICD codes / visit codes / the treatment
-// plan / the signature block.
-const SECTION_TERMINATORS = [
-  /\bF\d{2}\.\d/, /Visit Codes\s*[:\-]/i, /Treatment Plan/,
-  /Electronically Signed/i, /Provider NPI/i, /Plan \/ Visit Codes/i,
+// ── Top-level heading detection ──────────────────────────────────────────────
+//
+// Every section in a note ends where the NEXT recognised heading begins. One
+// detector serves all three parsers (splitSections, _sessionContent, _section),
+// so a boundary fixed for one field is fixed for all of them.
+//
+// The hard constraint is that the runtime input has NO LINE STRUCTURE. _parseNote
+// strips tags and collapses whitespace (`.replace(/\s+/g,' ')`), so a real note
+// arrives as one ~8,000-character line: "...skills he has developed. Diagnosis
+// F90.2 - Attention-deficit...". Nothing can anchor to "start of line" there.
+// So a heading is recognised in any of three contexts:
+//
+//   (a) STANDALONE LINE — "Diagnosis", "  Diagnosis  ", "* Diagnosis:"
+//   (b) MARKDOWN BOLD   — "**Diagnosis**", "**Diagnosis:**"
+//   (c) FLAT TEXT       — the runtime case, where the only remaining signals are
+//       the label's own capitalisation plus what follows it.
+//
+// (a) and (b) are matched case-insensitively. (c) CANNOT be: in flattened text
+// "Plan:" the heading and "his plan and finished" the noun are distinguishable
+// only by case, and treating narrative words as headings is the exact failure
+// this parser must never have. So the flat rule requires the canonical casing,
+// a word boundary, and then either a colon, or — for the handful of headings
+// InSync genuinely emits without one — content that starts like content
+// (capital, digit, bullet, bracket) rather than a lower-case continuation.
+const NOTE_HEADINGS = [
+  // Longest-first: "Plan / Visit Codes" and "Treatment Plan" must win over the
+  // bare "Plan" they contain.
+  { label: 'What activities took place, and for how long' },
+  { label: 'Location of the Meeting' },
+  { label: 'Electronically Signed', colonless: true, anywhere: true },
+  { label: "Patient's Response/Content" },
+  { label: 'Plan / Visit Codes',     colonless: true },
+  { label: 'Peer Support Interventions' },
+  { label: 'Focus of the meeting' },
+  { label: 'Encounter Details',      colonless: true },
+  { label: 'Treatment Plan',         colonless: true },
+  { label: 'Patient Details',        colonless: true },
+  { label: 'Note of Session',        colonless: true },
+  { label: 'Persons Present' },
+  { label: 'Visit Details',          colonless: true },
+  { label: 'Encounter Type' },
+  { label: 'Provider NPI',           colonless: true },
+  { label: 'Visit Codes',            colonless: true },
+  { label: 'Total Time' },
+  { label: 'Start Time' },
+  { label: 'Visit Date' },
+  { label: 'Diagnosis',              colonless: true },
+  { label: 'End Time' },
+  { label: 'Address' },
+  { label: 'E-mail' },
+  { label: 'Phone' },
+  { label: 'Plan' },
+  { label: 'Name' },
+  { label: 'DOB' },
+  { label: 'Age' },
+  { label: 'MRN' },
+  { label: 'POS' },
 ];
+
+// The label as a regex body: escaped, but with whitespace and the optional comma
+// left flexible — InSync is inconsistent about the comma in "What activities
+// took place, and for how long?".
+function headingBody(label) {
+  return escapeRe(label).replace(/,/g, ',?').replace(/\\ |\s/g, '\\s+');
+}
+
+// Every position in `text` where a recognised heading actually sits, in document
+// order, non-overlapping. Each entry is { label, start, valueStart } — `start` is
+// where the heading begins (where the PREVIOUS section must end) and `valueStart`
+// is where this section's content begins (after the heading and its punctuation).
+function findHeadings(text) {
+  if (!text) return [];
+  const hits = [];
+
+  for (const { label, colonless, anywhere } of NOTE_HEADINGS) {
+    const body = headingBody(label);
+
+    // (a) standalone line and (b) markdown bold — case-insensitive.
+    const structured = new RegExp(
+      `(?:^|\\n)[ \\t]*(?:[*+\\-•]\\s*)?(?:\\*\\*)?[ \\t]*(?:${body})[ \\t]*:?[ \\t]*(?:\\*\\*)?[ \\t]*(?=\\n|$)`
+      + `|\\*\\*[ \\t]*(?:${body})[ \\t]*:?[ \\t]*\\*\\*[ \\t]*:?`,
+      'gi');
+    for (let m; (m = structured.exec(text)) !== null; ) {
+      // Trim the leading newline/indent so `start` points at the heading itself.
+      // The bullet must be followed by whitespace, or the first '*' of a
+      // "**Bold**" heading gets eaten and stranded in the previous section.
+      const lead = /^\s*(?:[*+\-•][ \t]+)?/.exec(m[0])[0].length;
+      hits.push({ label, start: m.index + lead, valueStart: m.index + m[0].length, len: label.length });
+      if (m.index === structured.lastIndex) structured.lastIndex++;
+    }
+
+    // (c) flat text — canonical casing required, see the note above.
+    //   `colonless` — InSync writes it with no colon, so accept it when what
+    //     follows starts like content (capital / digit / bullet / bracket).
+    //   `anywhere`  — a phrase distinctive enough that it is never narrative, so
+    //     accept it whatever follows. "Electronically Signed" needs this: it is
+    //     always followed by a lower-case "by …" in real notes.
+    const flat = new RegExp(
+      `(?<![A-Za-z])(?:${body})[ \\t]*:`
+      + (anywhere ? `|(?<![A-Za-z])(?:${body})(?![A-Za-z])` : '')
+      + (colonless && !anywhere ? `|(?<![A-Za-z])(?:${body})(?=\\s+[A-Z0-9*\\[•])` : ''),
+      'g');
+    for (let m; (m = flat.exec(text)) !== null; ) {
+      hits.push({ label, start: m.index, valueStart: m.index + m[0].length, len: label.length });
+      if (m.index === flat.lastIndex) flat.lastIndex++;
+    }
+  }
+
+  // Document order; at the same position the longest label wins ("Treatment
+  // Plan" over "Plan"). Then drop anything overlapping an already-kept heading.
+  hits.sort((a, b) => a.start - b.start || b.len - a.len);
+  const out = [];
+  for (const h of hits) {
+    const prev = out[out.length - 1];
+    if (prev && h.start < prev.valueStart) continue;
+    out.push(h);
+  }
+  return out;
+}
+
+// A section's text, given where its content starts and where the next heading is.
+// Strips leading bullets/markdown, collapses the whitespace _parseNote left, and
+// trims — the content itself is untouched.
+function headingValue(text, valueStart, end) {
+  return text.slice(valueStart, end)
+    .replace(/^[\s:]*(?:\*\*)?[\s]*(?:[*+\-•][ \t]+)?/, '')
+    .replace(/\*\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 // AI review identity — part of the fingerprint, so bumping any of these forces a
 // fresh review of every note.
@@ -310,37 +433,36 @@ function splitSections(text) {
   for (const s of SECTION_LABELS) out[s.key] = '';
   if (!text) return out;
 
-  const marks = [];
+  const headings = findHeadings(text);
+  if (!headings.length) return out;
+
+  // Pick the five narrative headings IN ORDER, each search resuming after the
+  // previous one — so a stray "Plan:" earlier in the narrative can't be mistaken
+  // for the real Plan header (3 of 324 stored notes contain a second "Plan:").
   let from = 0;
   for (const s of SECTION_LABELS) {
-    // Escape the label, but let ',' and whitespace flex — InSync is inconsistent
-    // about the comma in "What activities took place, and for how long?".
-    const pattern = escapeRe(s.label).replace(/,/g, ',?').replace(/\\ |\s/g, '\\s+');
-    const re = new RegExp(`${pattern}\\s*[:?\\-]\\s*`, 'ig');
-    re.lastIndex = from;
-    const m = re.exec(text);
-    if (!m) continue;
-    marks.push({ key: s.key, start: m.index, valueStart: m.index + m[0].length });
-    from = m.index + m[0].length;
-  }
-  if (!marks.length) return out;
-
-  for (let i = 0; i < marks.length; i++) {
-    let end;
-    if (i + 1 < marks.length) {
-      end = marks[i + 1].start;
-    } else {
-      const tail = text.slice(marks[i].valueStart);
-      end = tail.length;
-      for (const re of SECTION_TERMINATORS) {
-        const mm = re.exec(tail);
-        if (mm && mm.index > 0) end = Math.min(end, mm.index);
-      }
-      end += marks[i].valueStart;
-    }
-    out[marks[i].key] = text.slice(marks[i].valueStart, end).replace(/\s+/g, ' ').trim();
+    const i = headings.findIndex((h, idx) => idx >= from && h.label === s.label);
+    if (i === -1) continue;
+    // Every section ends at the NEXT recognised heading of ANY kind — which is
+    // what keeps "Diagnosis" out of Plan, "Visit Codes" out of Diagnosis, and so
+    // on, instead of relying on a per-field terminator list.
+    const end = i + 1 < headings.length ? headings[i + 1].start : text.length;
+    out[s.key] = headingValue(text, headings[i].valueStart, end);
+    from = i + 1;
   }
   return out;
+}
+
+// The value of one top-level heading — the replacement for the old indexOf-based
+// _section(). Case-insensitive on the label, but the heading must have been
+// detected as a heading, so a narrative "…his diagnosis helped him…" is never
+// mistaken for the Diagnosis section.
+function sectionByLabel(text, label) {
+  const headings = findHeadings(text);
+  const i = headings.findIndex(h => h.label.toLowerCase() === label.toLowerCase());
+  if (i === -1) return '';
+  const end = i + 1 < headings.length ? headings[i + 1].start : text.length;
+  return headingValue(text, headings[i].valueStart, end);
 }
 
 // Per-section bigram maps for one note, computed ONCE and reused across every
@@ -912,8 +1034,10 @@ class InsyncCoSignEngine {
 
     const sessionNarrative = this._section(text, 'Note of Session', ['Diagnosis','Plan / Visit Codes','Electronically Signed']);
     const sessionContent   = this._sessionContent(text);
-    const diagnosis        = this._section(text, 'Diagnosis',        ['Plan / Visit Codes','Treatment Plan','Electronically Signed']);
-    const treatmentPlan    = this._section(text, 'Treatment Plan',   ['Electronically Signed','Provider NPI']);
+    // End labels are no longer passed: every section now ends at the next
+    // recognised heading, whatever it happens to be.
+    const diagnosis        = this._section(text, 'Diagnosis');
+    const treatmentPlan    = this._section(text, 'Treatment Plan');
     // Place of service and the billed visit codes — context for the AI's
     // service-type classification, and for spotting a delivery/billing mismatch.
     const pos              = field('POS');
@@ -945,28 +1069,23 @@ class InsyncCoSignEngine {
   // everything outside it (demographics, times, ICD codes, the templated
   // treatment-plan goals) is boilerplate that shouldn't drive clone matching.
   _sessionContent(text) {
-    const sm = /Focus of the meeting\s*[:\-]/i.exec(text);
-    if (!sm) return '';
-    const start = sm.index;
-    const tail  = text.slice(start);
-    let end = tail.length;
-    for (const re of [/\bF\d{2}\.\d/, /Visit Codes\s*[:\-]/i, /Treatment Plan/, /Electronically Signed/i, /Provider NPI/i]) {
-      const mm = re.exec(tail);
-      if (mm && mm.index > 0) end = Math.min(end, mm.index);
+    const headings = findHeadings(text);
+    const start = headings.findIndex(h => h.label === 'Focus of the meeting');
+    if (start === -1) return '';
+    // Runs to the first heading that is NOT one of the five narrative sections —
+    // Diagnosis, Plan / Visit Codes, Treatment Plan, the signature block. Ending
+    // at the heading (not at the ICD code after it) is what kept the bare word
+    // "Diagnosis" out of the narrative.
+    const narrative = new Set(SECTION_LABELS.map(s => s.label));
+    let end = text.length;
+    for (let i = start + 1; i < headings.length; i++) {
+      if (!narrative.has(headings[i].label)) { end = headings[i].start; break; }
     }
-    return tail.slice(0, end).replace(/\s+/g, ' ').trim();
+    return text.slice(headings[start].start, end).replace(/\s+/g, ' ').trim();
   }
 
-  _section(text, startLabel, endLabels) {
-    const si = text.toLowerCase().indexOf(startLabel.toLowerCase());
-    if (si === -1) return '';
-    const cs = si + startLabel.length;
-    let end = text.length;
-    for (const el of endLabels) {
-      const ei = text.toLowerCase().indexOf(el.toLowerCase(), cs);
-      if (ei !== -1) end = Math.min(end, ei);
-    }
-    return text.slice(cs, end).replace(/^[\s:,-]+/, '').trim();
+  _section(text, startLabel) {
+    return sectionByLabel(text, startLabel);
   }
 
   _timeMins(t) {
@@ -1387,4 +1506,6 @@ module.exports = {
   dateKeyOf,
   // exported for unit testing of the mechanical duplicate path
   splitSections, prepareSections, compareSections, dupeVerdict,
+  // exported for unit testing of heading-boundary parsing
+  findHeadings, sectionByLabel, NOTE_HEADINGS,
 };
