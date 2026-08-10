@@ -77,6 +77,13 @@ const SESSION_TIMEOUT_MARKERS = [
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// The date a queue row belongs to, as InSync writes it: the MM/DD/YYYY half of
+// `visitDatetime`. Used as the grouping key for the date picker AND as the
+// filter key on pull, so the two can never disagree about what "a date" is.
+function dateKeyOf(row) {
+  return (row?.visitDatetime || '').split(' ')[0] || '';
+}
+
 function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1262,9 +1269,14 @@ class InsyncCoSignEngine {
   // Download only: fetch the co-sign queue rows and load each note's content.
   // NO judging, NO field stripping — the ingest orchestrator (utils/psIngest.js)
   // decides what's new/revised and judges just those. Caller must login() first.
-  async fetchNotes(onProgress) {
+  // `dates` (optional) is a Set of MM/DD/YYYY keys — see dateKeyOf. When given,
+  // rows outside those dates are dropped BEFORE loadNote, which is the whole
+  // point: loading a note costs three round-trips to InSync, so filtering the
+  // cheap listing is what makes a one-day pull fast.
+  async fetchNotes(onProgress, { dates = null } = {}) {
     const report = (m, p) => { if (onProgress) onProgress(m, p); };
-    const rows = await this.fetchAllPages(report);
+    let rows = await this.fetchAllPages(report);
+    if (dates && dates.size) rows = rows.filter(r => dates.has(dateKeyOf(r)));
     const total = rows.length;
     const notes = [], cantLoad = [];
     for (let i = 0; i < rows.length; i++) {
@@ -1372,6 +1384,7 @@ module.exports = {
   DEFAULT_OFFSITE_PROMPT,
   REVIEW_VERSION,
   OFFSITE_RATIONALE_FROM,
+  dateKeyOf,
   // exported for unit testing of the mechanical duplicate path
   splitSections, prepareSections, compareSections, dupeVerdict,
 };

@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
-const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT } = require('../utils/peerSupervisorEngine');
+const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, judgeNote, serializeNote, contentHash } = require('../utils/psIngest');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
@@ -244,6 +244,44 @@ router.get('/cosign/notes/:eid/versions', requireAuth, requireCoSign, async (req
   res.json((data || []).map(psNoteView));
 });
 
+// GET /api/ps/cosign/dates — the InSync co-sign queue grouped by visit date,
+// WITHOUT downloading a single note. The queue listing already carries each
+// row's visit date, so this is login + a few paged requests: seconds, not
+// minutes. `known` counts eids already sitting in our queue, so the picker can
+// show what's genuinely new before you commit to the long download.
+router.get('/cosign/dates', requireAuth, requireCoSign, async (req, res) => {
+  try {
+    const engine = await buildEngine();
+    await engine.login();
+    const rows = await engine.fetchAllPages();
+
+    const eids = rows.map(r => r.eid).filter(Boolean);
+    const known = new Set();
+    // Chunked: a few hundred eids in one .in() filter makes for a huge URL.
+    for (let i = 0; i < eids.length; i += 200) {
+      const { data } = await supabase.from('ps_notes')
+        .select('eid').in('status', ['pending', 'reopened']).in('eid', eids.slice(i, i + 200));
+      for (const r of (data || [])) known.add(r.eid);
+    }
+
+    const byDate = new Map();
+    for (const row of rows) {
+      const key = dateKeyOf(row);
+      if (!key) continue;
+      if (!byDate.has(key)) byDate.set(key, { key, total: 0, known: 0, fresh: 0 });
+      const d = byDate.get(key);
+      d.total++;
+      if (known.has(row.eid)) d.known++; else d.fresh++;
+    }
+
+    // Oldest first — MM/DD/YYYY sorts wrong as a string, so key on the date.
+    const dates = [...byDate.values()].sort((a, b) => new Date(a.key) - new Date(b.key));
+    res.json({ dates, total: rows.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/ps/cosign/pull — SSE: incremental ingest (login → download → dedup →
 // judge new/revised → persist). Read-only against InSync (no sign/reopen). Auth
 // via ?token= because EventSource can't set headers.
@@ -268,7 +306,13 @@ router.get('/cosign/pull', async (req, res) => {
 
   try {
     const engine = await buildEngine();
-    const stats = await ingestQueue(engine, { onProgress: (msg, pct) => send('progress', { msg, pct }) });
+    // ?dates=MM/DD/YYYY,MM/DD/YYYY — the date picker's selection. Absent means
+    // the whole queue, which is the pre-picker behaviour.
+    const dates = (req.query.dates || '').split(',').map(d => d.trim()).filter(Boolean);
+    const stats = await ingestQueue(engine, {
+      onProgress: (msg, pct) => send('progress', { msg, pct }),
+      dates,
+    });
     send('done', { stats });
   } catch (err) {
     send('error', { message: err.message });

@@ -53,22 +53,22 @@ function decideAction(existing, hash) {
 // `priorReview` lets an unchanged note reuse its stored review instead of paying
 // for a new call; pass null (or set `force`) to always review.
 // Exported for testing with a fake engine.
-async function judgeNote(engine, note, corpus, { priorReview = null, force = false } = {}) {
-  const machine = engine.checkNote(note);            // 1
-  const dupe    = engine.findDupe(note, corpus);     // 2 — synchronous, no network
-
-  // 3 — reuse the stored review when nothing that affects it has changed.
-  let review;
+// Track 3 alone: one AI call, or the stored review when nothing that affects it
+// has changed. Split out of judgeNote so ingestQueue can run this — the only
+// slow, network-bound track — in parallel, while tracks 1 and 2 stay strictly
+// serial (the duplicate corpus is order-dependent; the AI never sees it).
+async function reviewFor(engine, note, machine, { priorReview = null, force = false } = {}) {
   const fingerprint = engine.fingerprintFor(note, machine);
   const reusable = !force && priorReview
     && priorReview.fingerprint === fingerprint
     && priorReview.decision && priorReview.decision !== 'AI_REVIEW_ERROR';
-  if (reusable) {
-    review = { ...priorReview, reused: true };
-  } else {
-    review = await engine.aiReview(note, machine);
-  }
+  if (reusable) return { review: { ...priorReview, reused: true }, reused: true };
+  return { review: await engine.aiReview(note, machine), reused: false };
+}
 
+// Fold the three tracks into one verdict. Pure — no I/O — so it can run after a
+// parallel review wave without changing anything about the outcome.
+function assembleJudged(machine, dupe, review, reused) {
   const flags = {
     machine,
     clone:     dupe || null,
@@ -87,8 +87,15 @@ async function judgeNote(engine, note, corpus, { priorReview = null, force = fal
     verdict: needsAttention ? 'flagged' : 'clean',
     flags,
     clonePartnerEid: dupe?.partnerEid || null,
-    aiCalled: !reusable && !!review,
+    aiCalled: !reused && !!review,
   };
+}
+
+async function judgeNote(engine, note, corpus, { priorReview = null, force = false } = {}) {
+  const machine = engine.checkNote(note);            // 1
+  const dupe    = engine.findDupe(note, corpus);     // 2 — synchronous, no network
+  const { review, reused } = await reviewFor(engine, note, machine, { priorReview, force }); // 3
+  return assembleJudged(machine, dupe, review, reused);
 }
 
 // Compact `offsite` mirror kept at the top level of ai_flags for the UI.
@@ -160,14 +167,18 @@ async function ingestCantLoad(row, stats) {
 }
 
 // Main entry: login → download → dedup → judge new/revised → persist.
-async function ingestQueue(engine, { onProgress } = {}) {
+// `dates` (optional) is an array of MM/DD/YYYY keys from the date picker; only
+// those visit dates are downloaded and judged. Everything else is untouched —
+// notes on other dates are neither pulled nor altered.
+async function ingestQueue(engine, { onProgress, dates = null } = {}) {
   const report = (m, p) => { if (onProgress) onProgress(m, p); };
 
   report('Logging into InSync...', 2);
   await engine.login();
 
   report('Fetching co-sign queue...', 5);
-  const { notes, cantLoad } = await engine.fetchNotes(report);
+  const dateSet = dates && dates.length ? new Set(dates) : null;
+  const { notes, cantLoad } = await engine.fetchNotes(report, { dates: dateSet });
 
   // Pending pool for duplicate comparison (status='pending' ONLY, per spec).
   // Section bigrams are precomputed ONCE here via prepareDupeEntry and reused for
@@ -187,10 +198,14 @@ async function ingestQueue(engine, { onProgress } = {}) {
                   aiCalls: 0, aiReused: 0 };
   const aiCallsAtStart = engine.aiCallCount || 0;
 
+  // ── Pass 1 — dedup + the two mechanical tracks. Strictly serial and in order:
+  // the duplicate corpus grows as we go, so note i must see notes 0..i-1 exactly
+  // as it does today. No network here beyond quick DB lookups, so it's fast.
+  const work = [];
   for (let i = 0; i < notes.length; i++) {
     const note = notes[i];
-    report(`Processing ${i + 1} of ${notes.length}...`,
-      80 + Math.floor((i / Math.max(notes.length, 1)) * 18));
+    report(`Checking ${i + 1} of ${notes.length}...`,
+      78 + Math.floor((i / Math.max(notes.length, 1)) * 4));
 
     const hash = contentHash(note);
     const { data: existing } = await supabase.from('ps_notes')
@@ -211,11 +226,44 @@ async function ingestQueue(engine, { onProgress } = {}) {
       continue;
     }
 
-    // A revision keeps the prior version's review only if the fingerprint still
-    // matches (it won't, if the content changed) — this is what makes a re-pull
-    // of an unchanged note cost zero AI calls.
-    const priorReview = existing ? await priorReviewFor(note.eid) : null;
-    const judged = await judgeNote(engine, note, corpus, { priorReview });
+    const machine = engine.checkNote(note);        // track 1
+    const dupe    = engine.findDupe(note, corpus); // track 2 — order-dependent
+    // Progressive pending pool: later notes in this same batch compare against it.
+    corpus.push(engine.prepareDupeEntry(note));
+    work.push({ note, hash, existing, action, machine, dupe });
+  }
+
+  // ── Pass 2 — the AI reviews, in parallel. This is the whole runtime of a pull
+  // (~20s each, serial before this), and nothing about it is order-dependent.
+  // The first note runs alone so it writes the shared prompt-cache entry; the
+  // rest then read it instead of each paying a cache write.
+  const concurrency = Math.max(1, Number(process.env.PS_AI_CONCURRENCY) || 5);
+  let reviewed = 0;
+  async function runReview(w) {
+    try {
+      // A revision keeps the prior version's review only if the fingerprint still
+      // matches (it won't, if the content changed) — this is what makes a re-pull
+      // of an unchanged note cost zero AI calls.
+      const priorReview = w.existing ? await priorReviewFor(w.note.eid) : null;
+      const { review, reused } = await reviewFor(engine, w.note, w.machine, { priorReview });
+      w.judged = assembleJudged(w.machine, w.dupe, review, reused);
+    } catch (err) {
+      // A single failed review must not sink the wave — record it as an error
+      // verdict so the note still lands in the queue for a human.
+      w.judged = assembleJudged(w.machine, w.dupe,
+        { decision: 'AI_REVIEW_ERROR', error: `Review failed: ${err.message}` }, false);
+    }
+    reviewed++;
+    report(`AI review ${reviewed} of ${work.length}...`,
+      82 + Math.floor((reviewed / Math.max(work.length, 1)) * 16));
+  }
+  if (work.length) await runReview(work[0]);
+  for (let i = 1; i < work.length; i += concurrency)
+    await Promise.all(work.slice(i, i + concurrency).map(runReview));
+
+  // ── Pass 3 — persist, serially and in the original order, so stats and the
+  // partner-flag writes stay deterministic.
+  for (const { note, hash, existing, action, judged } of work) {
     if (judged.aiCalled) stats.aiCalls++; else if (judged.flags.review) stats.aiReused++;
 
     // Option (b): a possible duplicate pulls its pending partner into the
@@ -237,9 +285,6 @@ async function ingestQueue(engine, { onProgress } = {}) {
       status: 'pending', note_data: serializeNote(note),
       judged_at: new Date().toISOString(),
     });
-
-    // Progressive pending pool: later notes in this same batch compare against it.
-    corpus.push(engine.prepareDupeEntry(note));
 
     stats[action]++;            // new | revised
     stats[judged.verdict]++;    // flagged | clean
@@ -265,4 +310,5 @@ async function priorReviewFor(eid) {
   return data?.ai_flags?.review || null;
 }
 
-module.exports = { ingestQueue, decideAction, judgeNote, contentHash, serializeNote, priorReviewFor };
+module.exports = { ingestQueue, decideAction, judgeNote, reviewFor, assembleJudged,
+                   contentHash, serializeNote, priorReviewFor };

@@ -1414,6 +1414,103 @@ function VersionsModal({ versions, onClose }) {
 
 const VIEWS = [['queue', 'Queue'], ['reopened', 'Waiting on Peer'], ['archive', 'Archive']];
 
+// MM/DD/YYYY (how InSync writes it, and our date key) → "Mon, Aug 3, 2026".
+function fmtDateKey(key) {
+  const d = new Date(key);
+  if (isNaN(d)) return key;
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ── DatePickerModal ───────────────────────────────────────────────────────────
+// Step 1 of the two-step pull: read InSync's co-sign LISTING only (seconds — no
+// note downloads), group it by visit date, and let the reviewer choose which
+// dates to actually pull. Downloading is the slow half, so choosing first is
+// what turns a 100-note wait into a one-day wait.
+//
+// Duplicate detection compares against everything currently unsigned, so a wider
+// selection catches more copying — hence the note at the bottom.
+function DatePickerModal({ onClose, onPull }) {
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+  const [dates,   setDates]   = useState([]);
+  const [picked,  setPicked]  = useState(new Set());
+
+  useEffect(() => {
+    let live = true;
+    api.get('/ps/cosign/dates')
+      .then(d => { if (live) { setDates(d.dates || []); setLoading(false); } })
+      .catch(ex => { if (live) { setError(ex.message); setLoading(false); } });
+    return () => { live = false; };
+  }, []);
+
+  const toggle = key => setPicked(p => {
+    const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); return n;
+  });
+
+  const pickedDates = dates.filter(d => picked.has(d.key));
+  const noteCount = pickedDates.reduce((s, d) => s + d.total, 0);
+  const freshCount = pickedDates.reduce((s, d) => s + d.fresh, 0);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 560 }}>
+        <div className="modal-header">
+          <h3 style={{ margin: 0, fontSize: '1rem' }}>Pull by date</h3>
+        </div>
+        <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          {loading && <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Reading the InSync queue…</div>}
+          {error && <div style={{ color: '#b91c1c', fontSize: '0.85rem' }}>{error}</div>}
+          {!loading && !error && dates.length === 0 && (
+            <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Nothing is awaiting co-signature in InSync.</div>
+          )}
+          {!loading && !error && dates.length > 0 && (
+            <>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <button className="btn btn-outline btn-xs" onClick={() => setPicked(new Set(dates.map(d => d.key)))}>All dates</button>
+                <button className="btn btn-outline btn-xs" onClick={() => setPicked(new Set(dates.filter(d => d.fresh > 0).map(d => d.key)))}>Only dates with new notes</button>
+                <button className="btn btn-outline btn-xs" onClick={() => setPicked(new Set())}>Clear</button>
+              </div>
+              {dates.map(d => (
+                <label key={d.key} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                  padding: '8px 10px', borderRadius: 'var(--radius)',
+                  background: picked.has(d.key) ? '#fffbeb' : 'transparent',
+                  border: `1px solid ${picked.has(d.key) ? '#fde68a' : 'transparent'}`,
+                }}>
+                  <input type="checkbox" checked={picked.has(d.key)} onChange={() => toggle(d.key)} />
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', minWidth: 165 }}>{fmtDateKey(d.key)}</span>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--gray-600)' }}>
+                    {d.total} note{d.total === 1 ? '' : 's'}
+                    {d.known > 0 && <span style={{ color: 'var(--gray-400)' }}> · {d.known} already in queue</span>}
+                    {d.fresh > 0 && <span style={{ color: '#065f46', fontWeight: 600 }}> · {d.fresh} new</span>}
+                  </span>
+                </label>
+              ))}
+              <div style={{ marginTop: 14, fontSize: '0.76rem', color: 'var(--gray-600)', background: 'var(--gray-50, #f9fafb)', borderRadius: 'var(--radius)', padding: '10px 12px' }}>
+                Duplicate detection compares each note against everything unsigned in your
+                queue — so pulling a wider range, and signing at the end, catches copying
+                that a one-day-at-a-time pass would miss.
+              </div>
+            </>
+          )}
+        </div>
+        <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--gray-600)' }}>
+            {picked.size === 0 ? 'No dates selected'
+              : `${picked.size} date${picked.size === 1 ? '' : 's'} · ${noteCount} note${noteCount === 1 ? '' : 's'}${freshCount ? `, ${freshCount} new` : ''}`}
+          </span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline" onClick={onClose}>Cancel</button>
+            <button className="btn btn-gold" disabled={picked.size === 0} onClick={() => onPull([...picked])}>
+              Pull selected
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatTile({ label, val, color }) {
   return (
     <div style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 130, textAlign: 'center' }}>
@@ -1605,6 +1702,7 @@ function QueueTab() {
   const [fLen,    setFLen]    = useState(new Set());
   const [dFrom,   setDFrom]   = useState('');
   const [dTo,     setDTo]     = useState('');
+  const [datePicker, setDatePicker] = useState(false);
   const esRef = useRef(null);
 
   const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); };
@@ -1628,15 +1726,18 @@ function QueueTab() {
   // Filter options are drawn from the current view's notes, so reset on switch.
   useEffect(() => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); }, [view]);
 
-  async function startPull() {
+  // `dates` — MM/DD/YYYY keys from the date picker. Omitted pulls the whole queue.
+  async function startPull(dates = null) {
     if (pulling) return;
+    setDatePicker(false);
     setPulling(true);
     setProgress({ msg: 'Connecting…', pct: 0 });
     const { data: { session } } = await supabase.auth.getSession();
     const token = session?.access_token;
     if (!token) { alert('Not logged in'); setPulling(false); return; }
 
-    const es = new EventSource(`${API}/api/ps/cosign/pull?token=${encodeURIComponent(token)}`);
+    const dq = dates && dates.length ? `&dates=${encodeURIComponent(dates.join(','))}` : '';
+    const es = new EventSource(`${API}/api/ps/cosign/pull?token=${encodeURIComponent(token)}${dq}`);
     esRef.current = es;
     es.onmessage = e => {
       try {
@@ -1835,7 +1936,10 @@ function QueueTab() {
               <ProgressBar pct={progress.pct} />
             </div>
           )}
-          <button className="btn btn-gold btn-sm" onClick={startPull} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+          <button className="btn btn-outline btn-sm" onClick={() => setDatePicker(true)} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+            📅 Pick dates
+          </button>
+          <button className="btn btn-gold btn-sm" onClick={() => startPull()} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
             {pulling ? 'Pulling…' : '⟳ Pull new notes'}
           </button>
         </div>
@@ -1954,6 +2058,10 @@ function QueueTab() {
               renderNote={note => <NoteRow key={note.id} note={note} />} />
           )}
         </div>
+      )}
+
+      {datePicker && (
+        <DatePickerModal onClose={() => setDatePicker(false)} onPull={dates => startPull(dates)} />
       )}
 
       <NoteModal
