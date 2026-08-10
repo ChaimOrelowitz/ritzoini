@@ -10,7 +10,10 @@
 //     runtime, because _parseNote collapses all whitespace before parsing
 
 const assert = require('assert');
-const { splitSections, sectionByLabel, findHeadings } = require('../utils/peerSupervisorEngine');
+const {
+  splitSections, sectionByLabel, findHeadings,
+  htmlToStructuredText, InsyncCoSignEngine,
+} = require('../utils/peerSupervisorEngine');
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -148,6 +151,93 @@ test('8. "Treatment Plan" wins over the "Plan" inside it', () => {
   const labels = findHeadings(text).map(h => h.label);
   assert.ok(labels.includes('Treatment Plan'), `got: ${JSON.stringify(labels)}`);
   assert.ok(!labels.includes('Plan'), 'bare "Plan" must not also match inside "Treatment Plan"');
+});
+
+// ── Structured (line-preserving) pipeline ────────────────────────────────────
+// Fixture mirrors the real InSync markup: the Diagnosis heading is an <a> inside
+// <b> inside a report_subheader <td>; Treatment Plan is <li><b>…</b>; the "Plan:"
+// heading is a bold <span> inside a <label>; narrative sits in a plain <span> —
+// and that narrative deliberately contains "Plan:" mid-sentence.
+const NARRATIVE = 'The client stated: Plan: continue using the checklist when overwhelmed. We also reviewed his diagnosis and the plan for next week.';
+const HTML = `<html><body>
+<table><tr><td class='report_subheader'><b><a href='#'>Note of Session</a></b></td></tr>
+<tr><td class='report_tbltext'>
+  <label><span class="bold">Focus of the meeting:</span><span class="required">*</span></label>
+  <span>Building routine.</span>
+  <label><span class="bold">Patient's Response/Content:</span><span class="required">*</span></label>
+  <span>${NARRATIVE}</span>
+  <label><span class="bold">Plan:</span><span class="required">*</span></label>
+  <span>Continue the routine work.</span>
+</td></tr>
+<tr><td class='report_subheader'><b><a href='#'>Diagnosis</a></b></td></tr>
+<tr><td class='report_tbltext'><ul><li>F41.1 - Generalized anxiety disorder</li></ul></td></tr>
+<tr><td class='report_subheader'><b><a href='#'>Plan / Visit Codes</a></b></td></tr>
+<tr><td class='report_tbltext'><ul><li>Visit Codes: H0038 - Peer Support</li></ul></td></tr>
+<ul><li><b>Treatment Plan</b><ul><li><b>Anxiety</b> (Last Review Date: 01/01/2026)</li></ul></li></ul>
+<div>Electronically Signed by Chaim Paneth on 07/21/2026</div>
+<div>Provider NPI 1111111111</div>
+</body></html>`;
+
+const engine = new InsyncCoSignEngine({ username: 'x', password: 'x', anthropicKey: 'x' });
+const parsed = engine._parseNote(HTML, { eid: '1', pid: '1', visitDatetime: '08/10/2026 9:00 AM' });
+
+test('9. Structured text puts every real heading on its own line', () => {
+  const lines = htmlToStructuredText(HTML).split('\n');
+  for (const h of ['Diagnosis', 'Treatment Plan']) {
+    assert.ok(lines.some(l => l.trim() === h), `"${h}" should own a line; got ${JSON.stringify(lines.slice(0, 40))}`);
+  }
+  // …while the narrative — including its embedded "Plan:" — stays on one line.
+  assert.ok(lines.some(l => l.includes('The client stated: Plan: continue')), 'narrative must not be split');
+});
+
+test('10. Flat text is exactly the structured text with whitespace collapsed', () => {
+  assert.strictEqual(parsed.fullNoteText, parsed.structuredText.replace(/\s+/g, ' ').trim());
+});
+
+test('11. Mid-line "Plan:" in narrative is not a boundary (the follow-up case)', () => {
+  const secs = splitSections(parsed.structuredText);
+  assert.strictEqual(secs.response, NARRATIVE, `response was: ${JSON.stringify(secs.response)}`);
+  assert.ok(/Plan: continue using the checklist/.test(secs.response), 'the embedded "Plan:" must survive');
+  assert.strictEqual(secs.plan, 'Continue the routine work.', `plan was: ${JSON.stringify(secs.plan)}`);
+});
+
+test('12. Section values stay normalized — no line breaks leak out', () => {
+  const secs = splitSections(parsed.structuredText);
+  for (const [k, v] of Object.entries(secs)) assert.ok(!/[\n\r]/.test(v), `${k} contains a line break`);
+  for (const v of [parsed.diagnosis, parsed.treatmentPlan, parsed.sessionContent, parsed.visitCodes])
+    assert.ok(!/[\n\r]/.test(v), 'parsed field contains a line break');
+});
+
+test('13. Diagnosis / Treatment Plan boundaries hold through the HTML pipeline', () => {
+  assert.strictEqual(parsed.diagnosis, 'F41.1 - Generalized anxiety disorder', `diagnosis: ${JSON.stringify(parsed.diagnosis)}`);
+  assert.ok(!/Visit Codes/i.test(parsed.diagnosis), 'diagnosis must not absorb Visit Codes');
+  assert.ok(parsed.treatmentPlan.startsWith('Problem: Anxiety'), `treatment plan: ${JSON.stringify(parsed.treatmentPlan)}`);
+  assert.ok(!/Electronically Signed|Provider NPI/i.test(parsed.treatmentPlan), 'treatment plan must not absorb the footer');
+  assert.ok(!/Diagnosis/i.test(splitSections(parsed.structuredText).plan), 'plan must not contain "Diagnosis"');
+});
+
+test('14. On an ordinary note, structured and flat parses agree', () => {
+  // The safety property behind this change: for notes that look like real ones,
+  // parsing from structure yields exactly what parsing flat text yielded — so
+  // the ~1,000 notes stored before this change stay comparable to new ones.
+  // (Verified the same way against six live InSync notes.)
+  const plain = HTML.replace(NARRATIVE, 'He engaged well and practised the breathing exercise.');
+  const p = engine._parseNote(plain, { eid: '2', pid: '1', visitDatetime: '08/10/2026 9:00 AM' });
+  const A = splitSections(p.structuredText), B = splitSections(p.fullNoteText);
+  for (const k of Object.keys(A)) assert.strictEqual(A[k], B[k], `${k} differs between structured and flat`);
+  assert.strictEqual(sectionByLabel(p.structuredText, 'Diagnosis'), sectionByLabel(p.fullNoteText, 'Diagnosis'));
+  assert.strictEqual(sectionByLabel(p.structuredText, 'Treatment Plan'), sectionByLabel(p.fullNoteText, 'Treatment Plan'));
+});
+
+test('15. Where they differ, structure is the correct one', () => {
+  // This is the whole reason for the follow-up. Flat text has to guess from
+  // capitalisation, so an embedded "Plan:" truncates the section; structure
+  // knows it is mid-line and keeps going. If someone reverts to flat-only
+  // parsing, this test fails.
+  const fromStructure = splitSections(parsed.structuredText).response;
+  const fromFlat      = splitSections(parsed.fullNoteText).response;
+  assert.strictEqual(fromStructure, NARRATIVE, 'structure must keep the whole sentence');
+  assert.ok(fromFlat.length < fromStructure.length, 'the flat heuristic truncates here — that is the bug being hardened against');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

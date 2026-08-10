@@ -111,45 +111,94 @@ function headingBody(label) {
   return escapeRe(label).replace(/,/g, ',?').replace(/\\ |\s/g, '\\s+');
 }
 
+// Any literal phrase, matched across whatever whitespace separates its words —
+// needed once the text keeps line breaks, since a phrase like "Save as Draft"
+// can now straddle one.
+function loosePhrase(phrase, flags = '') {
+  return new RegExp(escapeRe(phrase).replace(/\\ |\s/g, '\\s+'), flags);
+}
+
+// Block-level elements. InSync wraps every heading in one — the Diagnosis
+// heading is `<td class='report_subheader'><b><a…>Diagnosis</a></b></td>`,
+// Treatment Plan is `<li><b>Treatment Plan</b>`, and narrative text sits inside
+// a `<span>` — so turning these into line breaks puts each real heading on its
+// own line while leaving prose (and any heading word inside it) mid-line.
+const BLOCK_TAGS = 'address|article|aside|blockquote|br|caption|dd|div|dl|dt|fieldset'
+  + '|figcaption|figure|footer|form|h[1-6]|header|hr|label|li|main|nav|ol|p|pre'
+  + '|section|table|tbody|td|tfoot|th|thead|tr|ul';
+
+// HTML → text WITH the document's line structure intact. Inline tags become a
+// space (as before); block tags become a newline. Spaces and tabs are collapsed,
+// newlines are not — so `structuredText.replace(/\s+/g,' ')` reproduces exactly
+// the flat text this parser used to produce.
+function htmlToStructuredText(html) {
+  return String(html || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi,   ' ')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(new RegExp(`<\\s*/?\\s*(?:${BLOCK_TAGS})\\b[^>]*>`, 'gi'), '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')        // collapse spaces/tabs, keep newlines
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .replace(/\n+/g, '\n')
+    .trim();
+}
+
 // Every position in `text` where a recognised heading actually sits, in document
 // order, non-overlapping. Each entry is { label, start, valueStart } — `start` is
 // where the heading begins (where the PREVIOUS section must end) and `valueStart`
 // is where this section's content begins (after the heading and its punctuation).
 function findHeadings(text) {
   if (!text) return [];
+  // Line structure is the reliable signal, so use it whenever it survived. Only
+  // text that has already been flattened — every note stored before the parser
+  // kept line breaks — falls back to the casing heuristics.
+  const structuredInput = /\n/.test(text);
   const hits = [];
 
   for (const { label, colonless, anywhere } of NOTE_HEADINGS) {
     const body = headingBody(label);
 
-    // (a) standalone line and (b) markdown bold — case-insensitive.
-    const structured = new RegExp(
-      `(?:^|\\n)[ \\t]*(?:[*+\\-•]\\s*)?(?:\\*\\*)?[ \\t]*(?:${body})[ \\t]*:?[ \\t]*(?:\\*\\*)?[ \\t]*(?=\\n|$)`
-      + `|\\*\\*[ \\t]*(?:${body})[ \\t]*:?[ \\t]*\\*\\*[ \\t]*:?`,
-      'gi');
-    for (let m; (m = structured.exec(text)) !== null; ) {
-      // Trim the leading newline/indent so `start` points at the heading itself.
-      // The bullet must be followed by whitespace, or the first '*' of a
-      // "**Bold**" heading gets eaten and stranded in the previous section.
-      const lead = /^\s*(?:[*+\-•][ \t]+)?/.exec(m[0])[0].length;
-      hits.push({ label, start: m.index + lead, valueStart: m.index + m[0].length, len: label.length });
-      if (m.index === structured.lastIndex) structured.lastIndex++;
+    if (structuredInput) {
+      // (a) LINE-ANCHORED. A heading owns the start of its line — after an
+      // optional bullet or bold marker — and then either carries a colon, is
+      // alone on the line, or is one of the labels InSync writes bare. The
+      // trailing `*` is InSync's required-field marker ("Plan: *").
+      // This is what makes "The client stated: Plan: continue…" safe: that
+      // "Plan:" is mid-line, so it is prose, not a boundary.
+      const line = new RegExp(
+        `(?:^|\\n)[ \\t]*(?:[*+\\-•][ \\t]+)?(?:\\*\\*)?[ \\t]*(?:${body})(?:\\*\\*)?`
+        + `(?:[ \\t]*:[ \\t]*(?:\\*(?!\\*))?[ \\t]*` + (colonless || anywhere ? `|[ \\t]*(?=\\n|$)|[ \\t]+` : `|[ \\t]*(?=\\n|$)`) + `)`,
+        'gi');
+      for (let m; (m = line.exec(text)) !== null; ) {
+        const lead = /^\s*(?:[*+\-•][ \t]+)?/.exec(m[0])[0].length;
+        hits.push({ label, start: m.index + lead, valueStart: m.index + m[0].length, len: label.length });
+        if (m.index === line.lastIndex) line.lastIndex++;
+      }
     }
 
-    // (c) flat text — canonical casing required, see the note above.
-    //   `colonless` — InSync writes it with no colon, so accept it when what
-    //     follows starts like content (capital / digit / bullet / bracket).
-    //   `anywhere`  — a phrase distinctive enough that it is never narrative, so
-    //     accept it whatever follows. "Electronically Signed" needs this: it is
-    //     always followed by a lower-case "by …" in real notes.
-    const flat = new RegExp(
-      `(?<![A-Za-z])(?:${body})[ \\t]*:`
-      + (anywhere ? `|(?<![A-Za-z])(?:${body})(?![A-Za-z])` : '')
-      + (colonless && !anywhere ? `|(?<![A-Za-z])(?:${body})(?=\\s+[A-Z0-9*\\[•])` : ''),
-      'g');
-    for (let m; (m = flat.exec(text)) !== null; ) {
+    // (b) MARKDOWN BOLD, anywhere — "**Diagnosis**" is never ordinary prose.
+    const bold = new RegExp(`\\*\\*[ \\t]*(?:${body})[ \\t]*:?[ \\t]*\\*\\*[ \\t]*:?`, 'gi');
+    for (let m; (m = bold.exec(text)) !== null; ) {
       hits.push({ label, start: m.index, valueStart: m.index + m[0].length, len: label.length });
-      if (m.index === flat.lastIndex) flat.lastIndex++;
+      if (m.index === bold.lastIndex) bold.lastIndex++;
+    }
+
+    // (c) FLAT-TEXT FALLBACK — legacy input only, where casing is all that is
+    // left to tell "Plan:" the heading from "his plan and finished" the noun.
+    //   `colonless` — InSync writes it bare, so accept it when what follows
+    //     starts like content (capital / digit / bullet / bracket).
+    //   `anywhere`  — distinctive enough never to be narrative. "Electronically
+    //     Signed" needs this: it is always followed by a lower-case "by …".
+    if (!structuredInput) {
+      const flat = new RegExp(
+        `(?<![A-Za-z])(?:${body})[ \\t]*:`
+        + (anywhere ? `|(?<![A-Za-z])(?:${body})(?![A-Za-z])` : '')
+        + (colonless && !anywhere ? `|(?<![A-Za-z])(?:${body})(?=\\s+[A-Z0-9*\\[•])` : ''),
+        'g');
+      for (let m; (m = flat.exec(text)) !== null; ) {
+        hits.push({ label, start: m.index, valueStart: m.index + m[0].length, len: label.length });
+        if (m.index === flat.lastIndex) flat.lastIndex++;
+      }
     }
   }
 
@@ -428,6 +477,13 @@ function bigramSimFromMaps(ma, la, mb, lb) {
 // (3 of 324 stored notes contain a second "Plan:"). Each section ends where the
 // next one begins; the last ends at the first SECTION_TERMINATOR.
 // Returns { focus, activities, interventions, response, plan } — '' when absent.
+// Which text to cut sections from: the line-structured form when the note was
+// parsed by a version that kept it, else the flat text (every note stored
+// before that). findHeadings handles both shapes and yields identical values.
+function sectionSource(note) {
+  return note.structuredText || note.fullNoteText || note.noteText || '';
+}
+
 function splitSections(text) {
   const out = {};
   for (const s of SECTION_LABELS) out[s.key] = '';
@@ -575,7 +631,7 @@ function sessionPreamble(note) {
 // The exact JSON handed to the model as the user message. Never includes another
 // client's note, duplicate-partner text, or any comparison data.
 function buildReviewPayload(note, machineFlags = []) {
-  const secs = splitSections(note.fullNoteText || note.noteText || '');
+  const secs = splitSections(sectionSource(note));
   const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
   return {
     review_version:      REVIEW_VERSION,
@@ -963,12 +1019,12 @@ class InsyncCoSignEngine {
       (_m, name) => `<b>Problem: ${name}</b> `
     );
 
-    let text = marked
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi,   ' ')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+    // Keep the document's line structure through cleanup and section-finding;
+    // it is what lets a heading be recognised by position rather than by
+    // guessing from capitalisation. The flat form is derived at the end, and is
+    // byte-identical to what this parser produced before, so note hashes,
+    // duplicate scores and the scalar field() regexes below are all untouched.
+    let structured = htmlToStructuredText(marked);
 
     // Surgically excise InSync toolbar block from middle of note
     const junkStartMarkers = [
@@ -980,18 +1036,25 @@ class InsyncCoSignEngine {
       'Electronically Signed', 'Provider NPI',
     ];
 
-    let junkStart = text.length;
-    for (const jm of junkStartMarkers) { const i = text.indexOf(jm); if (i !== -1) junkStart = Math.min(junkStart, i); }
+    // Markers are matched across whitespace now that line breaks survive, so a
+    // phrase split over two lines still matches.
+    let junkStart = structured.length;
+    for (const jm of junkStartMarkers) {
+      const m = loosePhrase(jm).exec(structured);
+      if (m) junkStart = Math.min(junkStart, m.index);
+    }
 
-    if (junkStart < text.length) {
+    if (junkStart < structured.length) {
       let resumeAt = null;
       for (const rm of resumeMarkers) {
-        const i = text.indexOf(rm, junkStart);
-        if (i !== -1) resumeAt = resumeAt === null ? i : Math.min(resumeAt, i);
+        const re = loosePhrase(rm, 'g');
+        re.lastIndex = junkStart;
+        const m = re.exec(structured);
+        if (m) resumeAt = resumeAt === null ? m.index : Math.min(resumeAt, m.index);
       }
-      text = resumeAt !== null
-        ? (text.slice(0, junkStart).trim() + ' ' + text.slice(resumeAt)).trim()
-        : text.slice(0, junkStart).trim();
+      structured = resumeAt !== null
+        ? (structured.slice(0, junkStart).trim() + '\n' + structured.slice(resumeAt)).trim()
+        : structured.slice(0, junkStart).trim();
     }
 
     for (const phrase of [
@@ -1000,8 +1063,11 @@ class InsyncCoSignEngine {
       'Add to Document Manager', 'Use Patient’s Pre-captured Signature',
       "Use Patient's Pre-captured Signature",
       'Click to view Encounter Note', 'Re-BindGrid', 'Save as Draft',
-    ]) text = text.split(phrase).join(' ');
-    text = text.replace(/\s+/g, ' ').trim();
+    ]) structured = structured.replace(loosePhrase(phrase, 'g'), '\n');
+    structured = structured.replace(/[ \t]*\n[ \t]*/g, '\n').replace(/\n+/g, '\n').trim();
+
+    // The flat text every downstream consumer already expects.
+    const text = structured.replace(/\s+/g, ' ').trim();
 
     const stopLabels = ['Start Time','End Time','Total Time','Note of Session',
       'Encounter Type','POS','Visit Date','Persons Present',
@@ -1032,16 +1098,16 @@ class InsyncCoSignEngine {
     if (tm) { dur = parseInt(tm[1]) * 60 + parseInt(tm[2] || 0); }
     else { tm = /(\d+)\s*min[s]?/i.exec(totalTime); if (tm) dur = parseInt(tm[1]); }
 
-    const sessionNarrative = this._section(text, 'Note of Session', ['Diagnosis','Plan / Visit Codes','Electronically Signed']);
-    const sessionContent   = this._sessionContent(text);
+    const sessionNarrative = this._section(structured, 'Note of Session');
+    const sessionContent   = this._sessionContent(structured);
     // End labels are no longer passed: every section now ends at the next
     // recognised heading, whatever it happens to be.
-    const diagnosis        = this._section(text, 'Diagnosis');
-    const treatmentPlan    = this._section(text, 'Treatment Plan');
+    const diagnosis        = this._section(structured, 'Diagnosis');
+    const treatmentPlan    = this._section(structured, 'Treatment Plan');
     // Place of service and the billed visit codes — context for the AI's
     // service-type classification, and for spotting a delivery/billing mismatch.
     const pos              = field('POS');
-    const visitCodes       = this._section(text, 'Visit Codes',      ['Start Time','Treatment Plan','Electronically Signed','Provider NPI']);
+    const visitCodes       = this._section(structured, 'Visit Codes');
 
     return {
       ...row,
@@ -1060,6 +1126,9 @@ class InsyncCoSignEngine {
       sessionContent,
       diagnosis, treatmentPlan,
       fullNoteText: text,
+      // Line-structured form, kept so the sections re-derived later (review
+      // payload, duplicate comparison) use structure rather than heuristics.
+      structuredText: structured,
     };
   }
 
@@ -1195,7 +1264,7 @@ class InsyncCoSignEngine {
       patientName: note.patientName || '',
       visitDate:   note.visitDate || (note.visitDatetime || '').split(' ')[0] || '',
       mrn:         note.mrn || '',
-      secs:        prepareSections(note.fullNoteText || note.noteText || '', note.patientName),
+      secs:        prepareSections(sectionSource(note), note.patientName),
     };
   }
 
@@ -1204,7 +1273,7 @@ class InsyncCoSignEngine {
   // network calls of any kind. Returns the strongest match or null.
   // `corpus` items come from prepareDupeEntry().
   findDupe(note, corpus) {
-    const mine = prepareSections(note.fullNoteText || note.noteText || '', note.patientName);
+    const mine = prepareSections(sectionSource(note), note.patientName);
     if (!Object.keys(mine).length) return null;
 
     let best = null;
@@ -1503,7 +1572,7 @@ module.exports = {
   DEFAULT_OFFSITE_PROMPT,
   REVIEW_VERSION,
   OFFSITE_RATIONALE_FROM,
-  dateKeyOf,
+  dateKeyOf, sectionSource, htmlToStructuredText,
   // exported for unit testing of the mechanical duplicate path
   splitSections, prepareSections, compareSections, dupeVerdict,
   // exported for unit testing of heading-boundary parsing

@@ -43,16 +43,15 @@ function decideAction(existing, hash) {
   return 'skip';
 }
 
-// Judge a single new/revised note. Three independent tracks, ALL of which always
-// run — a possible duplicate never suppresses the AI review, and a mechanical
-// failure never suppresses it either:
+// Judging a note runs three independent tracks, ALL of which always run — a
+// possible duplicate never suppresses the AI review, and a mechanical failure
+// never suppresses it either:
 //   1. deterministic machine checks (duration / minor rules)   — 0 AI calls
 //   2. mechanical duplicate awareness vs the pending pool      — 0 AI calls
 //   3. exactly one AI documentation review                     — 1 AI call
-//
-// `priorReview` lets an unchanged note reuse its stored review instead of paying
-// for a new call; pass null (or set `force`) to always review.
-// Exported for testing with a fake engine.
+// judgeNote (below) runs all three; ingestQueue drives them separately so track
+// 3 can be parallelised. Exported for testing with a fake engine.
+
 // Track 3 alone: one AI call, or the stored review when nothing that affects it
 // has changed. Split out of judgeNote so ingestQueue can run this — the only
 // slow, network-bound track — in parallel, while tracks 1 and 2 stay strictly
@@ -191,6 +190,7 @@ async function ingestQueue(engine, { onProgress, dates = null } = {}) {
     patientName:  r.note_data?.patientName || r.patient_name || '',
     visitDate:    r.note_data?.visitDate   || r.visit_date   || '',
     fullNoteText: r.note_data?.fullNoteText || '',
+    structuredText: r.note_data?.structuredText || '',
   }));
 
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
