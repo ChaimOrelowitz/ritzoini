@@ -11,6 +11,11 @@ const { reflectZohoCancellations } = require('./routes/sessions');
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// Render terminates TLS in front of this process; without this req.ip is the
+// proxy and req.protocol is always http, which would defeat both the private
+// contact routes' rate limiting and their HTTPS check.
+app.set('trust proxy', 1);
+
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:3000',
@@ -24,6 +29,14 @@ app.use(cors({
 // Scoped ahead of the global parser so the raw bytes are available for Zoom's
 // webhook signature verification (body-parser no-ops on the second json() call).
 app.use('/api/zoom/webhook', express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
+// Private, read-only CardDAV address books for iPhone Contacts. Mounted ahead
+// of the JSON parser because PROPFIND/REPORT bodies are XML, and the router
+// brings its own text parser plus Basic-auth, HTTPS and rate-limit guards.
+const carddav = require('./routes/carddav');
+app.use('/.well-known/carddav', carddav.wellKnown);
+app.use('/carddav', carddav);
+app.propfind('/', carddav.rootDiscovery);
+
 app.use(express.json({ limit: '5mb' }));
 
 // Routes
@@ -45,6 +58,7 @@ app.use('/api/settings',         require('./routes/settings'));
 app.use('/api/zoom',             require('./routes/zoomWebhooks'));
 app.use('/api/ps',               require('./routes/peerSupervision'));
 app.use('/api/ps/payroll',       require('./routes/psPayroll'));
+app.use('/api/dsc',              require('./routes/dscRecipients'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

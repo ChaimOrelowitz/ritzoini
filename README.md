@@ -204,6 +204,21 @@ redeploy.
 
 ---
 
+## Private iPhone Contacts & "Message DSC"
+
+Two read-only surfaces that put the peer-supervision caseload on a phone: a
+**CardDAV** server that syncs `DSC Peers` and `Ritzoini Instructors` into
+iPhone Contacts, and an authenticated recipient feed for a **Message DSC**
+Apple Shortcut that opens a separate native Messages conversation per peer (no
+Twilio, no group chat). Both require their own credentials, refuse every write,
+and fail closed when unconfigured.
+
+Setup, the exact iPhone account fields, and the step-by-step Shortcut build are
+in **[`backend/docs/PRIVATE_CONTACTS.md`](backend/docs/PRIVATE_CONTACTS.md)**.
+Generate the credentials with `node backend/scripts/make-contact-credentials.js`.
+
+---
+
 ## Need Help?
 
 This codebase is well-structured and developer-friendly. Any React or Node.js developer can pick it up quickly. Key things to share with a developer:
