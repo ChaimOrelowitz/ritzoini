@@ -9,6 +9,7 @@ function EditUserModal({ user, onClose, onSaved }) {
     role: user.role || 'supervisor',
     ps_payroll_only: user.ps_payroll_only === true,
     ps_cosign: user.ps_cosign === true,
+    portal_only: user.portal_only === true,
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -77,6 +78,21 @@ function EditUserModal({ user, onClose, onSaved }) {
                   <strong>Payroll report only</strong> — restrict this account to viewing the
                   Peer Management → Payroll Report screen. Everything else in the app is hidden and
                   blocked. Overrides the role above.
+                </span>
+              </label>
+            </div>
+            <div className="form-group" style={{ marginTop: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.portal_only}
+                  onChange={e => set('portal_only', e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span style={{ fontSize: '0.82rem', color: 'var(--gray-600)' }}>
+                  <strong>Portal POC only</strong> — restrict this account to the Portal POC
+                  screen (upload portal notes, review, run them into InSync). Everything else in
+                  the app is hidden and blocked at the API. Overrides the role above.
                 </span>
               </label>
             </div>
@@ -267,6 +283,11 @@ export default function AdminUsersPage() {
                       {user.ps_payroll_only && (
                         <span className="badge badge-scheduled" style={{ marginLeft: 6 }} title="Restricted to the Payroll Report screen">
                           payroll only
+                        </span>
+                      )}
+                      {user.portal_only && (
+                        <span className="badge badge-scheduled" style={{ marginLeft: 6 }} title="Restricted to the Portal POC screen">
+                          portal only
                         </span>
                       )}
                       {user.ps_cosign && user.role !== 'admin' && (

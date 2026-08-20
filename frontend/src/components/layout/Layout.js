@@ -6,6 +6,7 @@ const SECTIONS = [
   { key: 'ritzoini',   label: 'Ritzoini' },
   { key: 'one-on-one', label: 'One-On-One' },
   { key: 'peer-sup',   label: 'Peer Management' },
+  { key: 'portal',     label: 'Portal POC' },
 ];
 
 function getInitialSection() {
@@ -25,6 +26,12 @@ export default function Layout() {
     return <Navigate to="/ps" replace />;
   }
 
+  // Portal-only accounts live entirely on /portalPOC — same fence, one screen.
+  const portalOnly = profile?.portal_only === true && profile?.role !== 'admin';
+  if (portalOnly && location.pathname !== '/portalPOC') {
+    return <Navigate to="/portalPOC" replace />;
+  }
+
   async function handleSignOut() {
     await signOut();
     navigate('/login');
@@ -39,6 +46,7 @@ export default function Layout() {
     if (key === 'ritzoini')   navigate('/');
     if (key === 'one-on-one') navigate('/oo');
     if (key === 'peer-sup')   navigate('/ps');
+    if (key === 'portal')     navigate('/portalPOC');
   }
 
   const fullName = `${profile?.first_name || ''} ${profile?.last_name || ''}`.trim();
@@ -46,6 +54,8 @@ export default function Layout() {
     .filter(Boolean).join('').toUpperCase() || '?';
   const isAdmin = profile?.role === 'admin';
   const canCoSign = isAdmin || profile?.ps_cosign === true;
+  const canPortal = isAdmin || profile?.portal_only === true;
+  const visibleSections = SECTIONS.filter(s => s.key !== 'portal' || canPortal);
 
   const navLinks = {
     ritzoini: (
@@ -114,6 +124,13 @@ export default function Layout() {
         )}
       </>
     ),
+    portal: (
+      <>
+        <NavLink to="/portalPOC" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+          <span className="nav-icon">📥</span> Portal POC
+        </NavLink>
+      </>
+    ),
     'peer-sup': (
       <>
         <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
@@ -147,7 +164,11 @@ export default function Layout() {
             <NavLink to="/ps" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
               <span className="nav-icon">💰</span> Payroll Report
             </NavLink>
-          ) : navLinks[section]}
+          ) : portalOnly ? (
+            <NavLink to="/portalPOC" end className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+              <span className="nav-icon">📥</span> Portal POC
+            </NavLink>
+          ) : (navLinks[section] || navLinks.ritzoini)}
         </nav>
 
         <div className="sidebar-footer">
@@ -163,15 +184,15 @@ export default function Layout() {
       </aside>
 
       <main className="main-content">
-        {/* Section switcher — hidden for payroll-only accounts */}
-        {!payrollOnly && (
+        {/* Section switcher — hidden for single-screen restricted accounts */}
+        {!payrollOnly && !portalOnly && (
         <div style={{
           display: 'flex', justifyContent: 'center', gap: 28,
           padding: '12px 0 10px',
           borderBottom: '1px solid var(--gray-100)',
           marginBottom: 0,
         }}>
-          {SECTIONS.map(s => (
+          {visibleSections.map(s => (
             <button
               key={s.key}
               onClick={() => switchSection(s.key)}

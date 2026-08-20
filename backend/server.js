@@ -64,6 +64,7 @@ app.use('/api/zoom',             require('./routes/zoomWebhooks'));
 app.use('/api/ps',               require('./routes/peerSupervision'));
 app.use('/api/ps/payroll',       require('./routes/psPayroll'));
 app.use('/api/dsc',              require('./routes/dscRecipients'));
+app.use('/api/portal',           require('./routes/portalPoc'));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Ritzoini API' });

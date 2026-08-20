@@ -22,14 +22,19 @@ import OOTranscriptsPage from './pages/OOTranscriptsPage';
 import OOPeerNotesPage from './pages/OOPeerNotesPage';
 import PeerManagementPage from './pages/PeerManagementPage';
 import PSCoSignPage from './pages/PSCoSignPage';
+import PortalPOCPage from './pages/PortalPOCPage';
 
-function PrivateRoute({ children, adminOnly = false, coSignOnly = false }) {
+function PrivateRoute({ children, adminOnly = false, coSignOnly = false, portalOnly = false }) {
   const { user, profile, loading } = useAuth();
   if (loading) return <div className="loading-screen"><div className="spinner" /></div>;
   if (!user) return <Navigate to="/login" replace />;
   if (adminOnly && profile?.role !== 'admin') return <Navigate to="/" replace />;
   // Co-Sign Review: admins, plus non-admins flagged ps_cosign.
   if (coSignOnly && profile?.role !== 'admin' && profile?.ps_cosign !== true) {
+    return <Navigate to="/" replace />;
+  }
+  // Portal POC: admins, plus the restricted accounts flagged portal_only.
+  if (portalOnly && profile?.role !== 'admin' && profile?.portal_only !== true) {
     return <Navigate to="/" replace />;
   }
   return children;
@@ -82,6 +87,11 @@ export default function App() {
           <Route path="ps" element={<PeerManagementPage />} />
           <Route path="ps/cosign" element={
             <PrivateRoute coSignOnly><PSCoSignPage /></PrivateRoute>
+          } />
+
+          {/* Portal POC — peer note transcription into InSync */}
+          <Route path="portalPOC" element={
+            <PrivateRoute portalOnly><PortalPOCPage /></PrivateRoute>
           } />
         </Route>
       </Routes>

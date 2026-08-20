@@ -73,6 +73,28 @@ Key files: `routes/{ooClients,ooAppointments,zoomWebhooks}.js`,
 `utils/{insync,noteGenerator,zoomTranscripts}.js`, pages `OOClientsPage`,
 `OOClientDetailPage`, `OOCallsPage`, `OOTranscriptsPage`.
 
+## Domain 3: Portal POC (peer note transcription)
+`/portalPOC` — takes finished peer-support notes exported from an external CRM
+(`portal.linksnetwork.com`) and transcribes them into InSync as billable
+encounters, **logging in as each peer** to create, close and sign. Transcription
+only: clinical text is copied verbatim, never generated. Two InSync logins by
+design — the admin login resolves names→IDs (read-only), each peer's own login
+executes, because only that session sees the peer's calendar and can sign as
+them. A mandatory human review screen sits between the two.
+
+Key files: `routes/portalPoc.js`, `utils/{portalCrypto,portalMatch,portalPayload,portalExecute,insyncPortal}.js`,
+`db/portal_poc.sql`, `scripts/extract-insync-captures.js`, page `PortalPOCPage`.
+**Full doc: `backend/docs/PORTAL_POC.md`** — read it before touching this domain.
+
+Two things that bite:
+- The write chain replays HAR-derived payload templates stored in
+  `portal_capture_templates` (scrubbed by the extractor script — the raw `.har`
+  files carry live cookies and PHI and are never committed). The
+  `StartEncounter` / `AddEditStartEncounter` captures are **missing** from this
+  repo, so live execution is blocked and dry runs are not.
+- `profiles.portal_only` fences an account to this one screen (same pattern as
+  `ps_payroll_only`), enforced in `middleware/auth.js` and `Layout.js`.
+
 ## Conventions
 - **Auth**: `middleware/auth.js` — `requireAuth` verifies the Supabase JWT and
   merges the `profiles` row onto `req.user`; `requireAdmin` checks
@@ -81,8 +103,11 @@ Key files: `routes/{ooClients,ooAppointments,zoomWebhooks}.js`,
 - **Errors**: routes uniformly `try/catch` → `res.status(500).json({ error:
   err.message })`; frontend catches with `alert(ex.message)`.
 - **Env vars**: backend uses bare names (`SUPABASE_URL`, `ZOOM_*`,
-  `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `CRON_SECRET`...); frontend requires
-  CRA's `REACT_APP_` prefix.
+  `ANTHROPIC_API_KEY`, `RESEND_API_KEY`, `CRON_SECRET`, `PORTAL_CRED_KEY`...);
+  frontend requires CRA's `REACT_APP_` prefix.
+- **Migrations**: `backend/db/*.sql` are applied BY HAND in the Supabase SQL
+  editor — there is no migration runner and no direct Postgres connection from
+  this repo, so a new table does not exist until someone pastes the file in.
 - **Email**: real send via Resend (`utils/mailer.js`), gated by a DB-backed
   `email_enabled` toggle (per-user `profiles.email_enabled`, or global via
   `app_settings`) — not the old simulated/SMTP path `services/email.js`
