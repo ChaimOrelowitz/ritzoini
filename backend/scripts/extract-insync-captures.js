@@ -58,8 +58,16 @@ const ANSWER_CONTROLS = [
 const IDENTITY_CONTROLS = ['ControlId_12', 'ControlId_13'];
 const SCRUB_CONTROLS = [...ANSWER_CONTROLS, ...IDENTITY_CONTROLS];
 
-const IDENTITY_NUMERIC = /(^|\.)(patientid|sepatientid|patientdelegateid|subpatientformid)(\.|$)/i;
+// Any field whose last segment ENDS in "patientid" — PatientId, SEPatientId and
+// the short non-model-bound sPatientID that StartEncounter uses. Matching the
+// exact names instead let a real patient id through on the `start` step.
+const IDENTITY_NUMERIC = /(^|\.)[a-z]*patientid(\.|$)|(^|\.)(patientdelegateid|subpatientformid)(\.|$)/i;
 const IDENTITY_TEXT = /(^|\.)(patientfullname|sepatientname|patientname|firstname|lastname|dob|mrnnumber|note|bookcomment)(\.|$)/i;
+
+// The captured CLINICIAN's display name. Not patient data, but the stored pack
+// should identify nobody, and preparePayloads overwrites these with the acting
+// peer's name on every run anyway.
+const IDENTITY_PROVIDER = /(^|\.)(provider|providername|seprovidername|resourcename)(\.|$)/i;
 
 function decodeKey(k) { try { return decodeURIComponent(k); } catch { return k; } }
 function decodeVal(v) { try { return decodeURIComponent(String(v).replace(/\+/g, ' ')); } catch { return v; } }
@@ -102,8 +110,24 @@ function capturedVisitType(params) {
   return null;
 }
 
+// InSync stores the rendered controls entity-ESCAPED inside the payload, so the
+// element patterns below only match after unescaping — scrubbing the raw string
+// silently does nothing and leaves every answer in place. Unescape, scrub, and
+// re-escape to the shape it arrived in, which is also what patchDynamicHtml
+// does at run time.
+function htmlUnescape(s) {
+  return String(s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;|&apos;/g, "'").replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+}
+function htmlEscape(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#x27;');
+}
+
 function scrubDynamicHtml(html) {
-  let out = String(html);
+  const wasEscaped = /&lt;|&gt;|&quot;/.test(String(html));
+  let out = wasEscaped ? htmlUnescape(html) : String(html);
   for (const cid of SCRUB_CONTROLS) {
     const id = cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     out = out.replace(
@@ -114,10 +138,34 @@ function scrubDynamicHtml(html) {
       (_m, a, b) => a + b);
   }
   // The interventions multi-select renders its selection into sibling hidden
-  // inputs rather than into the control element itself.
+  // inputs AND into a bare <label> between them that carries no id to target —
+  // the same element patchDynamicHtml rewrites at run time.
   out = out.replace(/(<input[^>]*id="hdnField(?:Text|Val)_\d+"[^>]*value=")[^"]*(")/gi, (_m, a, b) => a + b);
+  out = out.replace(
+    /(id="hdnFieldText_\d+"[^>]*>\s*<label class="full-width has-no-control textAlign-left">)[\s\S]*?(<\/label>)/gi,
+    (_m, a, b) => a + b);
   out = out.replace(/data-encid="[^"]*"/gi, 'data-encid="0"');
-  return out;
+  return wasEscaped ? htmlEscape(out) : out;
+}
+
+// Read an answer back out of a rendered blob — used only to PROVE the scrub
+// worked, never to write anything.
+function renderedValues(html) {
+  const dh = htmlUnescape(html);
+  const found = [];
+  for (const cid of SCRUB_CONTROLS) {
+    const m = dh.match(new RegExp(`<(?:label|div|textarea)[^>]*\\sid="${cid}"[^>]*>([\\s\\S]{0,200}?)</(?:label|div|textarea)>`, 'i'));
+    const inner = m ? m[1].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : '';
+    if (inner) found.push(`${cid}="${inner.slice(0, 40)}"`);
+  }
+  for (const m of dh.matchAll(/id="hdnField(?:Text|Val)_(\d+)"[^>]*value="([^"]+)"/gi)) {
+    found.push(`hdnField_${m[1]}="${m[2].slice(0, 40)}"`);
+  }
+  for (const m of dh.matchAll(/id="hdnFieldText_(\d+)"[^>]*>\s*<label class="full-width has-no-control textAlign-left">([\s\S]{1,120}?)<\/label>/gi)) {
+    const inner = m[2].replace(/<[^>]+>/g, '').trim();
+    if (inner) found.push(`multiselect_${m[1]} label="${inner.slice(0, 40)}"`);
+  }
+  return found;
 }
 
 // Values that identify the captured patient leak into places no field name
@@ -129,7 +177,7 @@ function identifierLiterals(params) {
     const b = bareKey(k);
     const val = String(v || '').trim();
     if (!val) continue;
-    if (/(^|\.)(patientid|sepatientid)$/.test(b) && /^\d{3,}$/.test(val)) lits.add(val);
+    if (/(^|\.)[a-z]*patientid$/.test(b) && /^\d{3,}$/.test(val)) lits.add(val);
     if (/(^|\.)(patientfullname|sepatientname|patientname)$/.test(b) && val.length >= 3) lits.add(val);
     if (/controlid_12$/.test(b) && val.length >= 3) lits.add(val);
   }
@@ -168,7 +216,8 @@ function scrub(params) {
       out[key] = blankLiterals(mirror, literals); removed.push(key); continue;
     }
     if (IDENTITY_NUMERIC.test(b)) { out[key] = '0'; removed.push(key); continue; }
-    if (IDENTITY_TEXT.test(b))    { out[key] = ''; removed.push(key); continue; }
+    if (IDENTITY_TEXT.test(b))     { out[key] = ''; removed.push(key); continue; }
+    if (IDENTITY_PROVIDER.test(b)) { out[key] = ''; removed.push(key); continue; }
     // Never store a signing PIN, even the captured one.
     if (/\bepin\b/i.test(b))      { out[key] = ''; removed.push(key); continue; }
 
@@ -188,6 +237,14 @@ function assertClean(step, params, raw) {
   }
   for (const lit of identifierLiterals(raw)) {
     if (blob.includes(lit)) leaks.push(`the captured patient identifier ${JSON.stringify(lit)} survives`);
+  }
+  // Look INSIDE the rendered blob, not just at the parameters. The answers live
+  // in both places, and checking only the parameters is what let a whole note's
+  // worth of rendered text through.
+  for (const [k, v] of Object.entries(params)) {
+    if (!/dynamichtml/i.test(bareKey(k))) continue;
+    const rendered = renderedValues(v);
+    if (rendered.length) leaks.push(`rendered controls still hold values: ${rendered.join(', ')}`);
   }
   if (leaks.length) throw new Error(`Capture "${step}" failed the scrub check: ${leaks.join('; ')}`);
 }

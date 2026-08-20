@@ -177,9 +177,25 @@ guessing from a filename.
 
 It pulls the POST parameter shapes, **scrubs** every answer-bearing ControlId,
 the identity controls (12 = patient name, 13 = provider name), the
-`DataBaseValueCollection` mirror, the rendered values inside `DynamicHTML`, every
-literal occurrence of the captured patient's ID/name anywhere in the payload, and
-any EPIN — then refuses to store a pack that fails its own scrub check.
+`DataBaseValueCollection` mirror, the rendered values inside `DynamicHTML`, the
+captured clinician's display name, every literal occurrence of the captured
+patient's ID/name anywhere in the payload, and any EPIN — then refuses to store a
+pack that fails its own scrub check.
+
+Three things the scrub gets wrong if you rewrite it:
+
+- **`DynamicHTML` arrives entity-escaped.** Element patterns must run against the
+  unescaped string and the result re-escaped, or the scrub silently matches
+  nothing and every answer in the rendered form survives.
+- **`StartEncounter` uses short field names** (`sPatientID`, not `PatientId`), so
+  identity matching has to be a suffix rule, not a list of exact names.
+- **The interventions multi-select renders into a bare `<label>` with no `id`,**
+  between the two `hdnField*_20` hidden inputs. There is nothing to target it by
+  except that structure.
+
+Each of those let real data through when first written, so `assertClean` now
+looks *inside* the rendered blob rather than only at the parameters, and there
+are regression tests for the first two.
 
 ### Current status: complete
 

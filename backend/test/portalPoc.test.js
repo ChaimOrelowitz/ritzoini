@@ -226,6 +226,41 @@ test('AppText name matching covers calendars with no Participants', () => {
   assert.strictEqual(hit.visitId, '9');
 });
 
+console.log('\ncapture scrubbing (regressions found against the real captures)');
+test('the DynamicHTML scrub survives entity-escaped markup', () => {
+  // InSync stores the rendered controls escaped. Scrubbing the raw string
+  // silently matched nothing and left a whole note's answers in place.
+  const escaped = '&lt;label id="ControlId_3"&gt;PRIOR ANSWER&lt;/label&gt;';
+  const unesc = X.unescHtml(escaped);
+  assert.ok(unesc.includes('<label id="ControlId_3">'), 'unescape must expose the element');
+  const patched = X.patchDynamicHtml(unesc, { ControlId_3: 'new value' }, '1');
+  assert.ok(!patched.includes('PRIOR ANSWER'));
+  assert.ok(patched.includes('new value'));
+});
+test('the acting peer\'s name replaces the captured clinician\'s in display fields', () => {
+  // ProviderID mappings do not touch these, so a booking made as one peer used
+  // to carry the captured clinician's name.
+  const templates = { note: { url: 'u', params: {} }, appointment: { url: 'u', params: {
+    'objBookAppointmentss[Provider]': 'Captured, Clinician (P)',
+    'objBookAppointmentss[ResourceId]': '2317',
+    'SEEncounterDetails.SEProviderName': 'Captured, Clinician, LCSW',
+  } } };
+  const out = X.preparePayloads({
+    templates,
+    ctx: {
+      patientId: '1', patientName: 'P', providerId: '2401', providerName: 'Brand, Shmuel',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: '2026-08-17', sessionStartMinutes: 840, duration: 180, noteFields: {},
+    },
+    visitId: '0', encounterId: '0', signingPin: '',
+  });
+  const p = out.appointment.params;
+  assert.strictEqual(p['objBookAppointmentss[Provider]'], 'Brand, Shmuel');
+  assert.strictEqual(p['SEEncounterDetails.SEProviderName'], 'Brand, Shmuel');
+  assert.strictEqual(p['objBookAppointmentss[ResourceId]'], '2401');
+  assert.ok(!JSON.stringify(p).includes('Captured, Clinician'));
+});
+
 console.log('\ncredential crypto');
 test('round-trips, and two encryptions of one secret differ', () => {
   const a = C.encrypt('hunter2'), b = C.encrypt('hunter2');

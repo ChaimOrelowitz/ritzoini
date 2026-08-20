@@ -205,6 +205,12 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin }) {
     setFields(params, ctx.patientId, 'PatientId', 'SEPatientId');
     if (ctx.patientName) setFields(params, ctx.patientName, 'PatientFullName', 'SEPatientName');
     setFields(params, ctx.providerId, 'ProviderID', 'ProviderId', 'ResourceId', 'SEProviderID');
+    // The captured provider's NAME rides along in display fields that no id
+    // mapping touches, so without this a booking made as one peer would carry
+    // the captured clinician's name.
+    if (ctx.providerName) {
+      setFields(params, ctx.providerName, 'Provider', 'ProviderName', 'SEProviderName', 'ResourceName');
+    }
     setFields(params, ctx.visitTypeId, 'EncounterTypeID', 'VisitTypeID', 'SEEncounterTypeID', 'SEVisitTypeID', 'CurrentVisitTypeId');
     setFields(params, ctx.visitTypeName, 'EncounterType', 'VisitTypeDescription', 'SEEncounterType', 'CurrentVisitType');
     setFields(params, visitId, 'VisitID', 'SEVisitID');
