@@ -16,26 +16,6 @@ const PORT = process.env.PORT || 4000;
 // contact routes' rate limiting and their HTTPS check.
 app.set('trust proxy', 1);
 
-// ── TEMPORARY DIAGNOSTIC — DELETE AFTER THE PROPFIND REACHABILITY TEST ───────
-// Answers one question: does a PROPFIND/REPORT from the public internet reach
-// this Node process at all, or does Render's edge answer 405 on its own?
-//
-// First middleware in the stack, so it sees every request before any router,
-// parser or auth check. It records the METHOD ONLY — never a path (card URLs
-// embed a peer's record id), never a header, body, credential or contact field.
-// The counter endpoint returns method tallies and nothing else.
-const __davProbe = Object.create(null);
-app.use((req, res, next) => {
-  const method = String(req.method).toUpperCase().replace(/[^A-Z-]/g, '').slice(0, 20);
-  __davProbe[method] = (__davProbe[method] || 0) + 1;
-  console.log(`[dav-probe] DAVPROBE1 method=${method}`);
-  next();
-});
-app.get('/api/__dav-probe', (req, res) => {
-  res.set('Cache-Control', 'no-store').json({ marker: 'DAVPROBE1', methods_since_boot: __davProbe });
-});
-// ── END TEMPORARY DIAGNOSTIC ────────────────────────────────────────────────
-
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:3000',
