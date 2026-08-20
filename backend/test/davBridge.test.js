@@ -376,6 +376,27 @@ async function run() {
     assert.ok(matchRoute('/carddav/addressbooks/dsc/dsc-peers/'));
   });
 
+  // Regression: /carddav/../api/health starts with the CardDAV prefix, so a
+  // naive startsWith() admitted it and left matchRoute as the only guard.
+  await test('isCarddavPath rejects traversal, not just foreign prefixes', () => {
+    for (const p of [
+      '/carddav/../api/health',
+      '/carddav/../../etc/passwd',
+      '/carddav//addressbooks/dsc/dsc-peers/',
+      '/carddav\\addressbooks',
+      '/carddav/addressbooks/dsc/../../../api',
+    ]) {
+      assert.ok(!isCarddavPath(p), `${p} must be rejected at the bridge, not merely 404 later`);
+    }
+  });
+
+  await test('the bridge refuses traversal outright rather than 404ing inside', async () => {
+    for (const path of ['/carddav/../api/health', '/carddav//addressbooks/dsc/dsc-peers/']) {
+      const r = await post(makeEnvelope({ path, davHeaders: { depth: '0' } }));
+      assert.strictEqual(r.status, 403, `${path} answered ${r.status}`);
+    }
+  });
+
   await test('isCarddavPath admits only the CardDAV tree', () => {
     for (const p of ['/', '/carddav', '/carddav/', '/carddav/addressbooks/dsc/', '/.well-known/carddav']) {
       assert.ok(isCarddavPath(p), `${p} should be allowed`);

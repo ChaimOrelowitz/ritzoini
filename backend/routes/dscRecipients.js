@@ -71,13 +71,18 @@ function menuFor(audiences) {
 
 // Exact match against the cohorts actually present — an arbitrary query
 // fragment can never reach a filter.
+//
+// Nothing is trimmed or case-folded. "cohort:A " once resolved to cohort A,
+// which is lenient matching dressed up as exact matching: the key the Shortcut
+// sends must be one the audiences endpoint published, byte for byte, or the
+// send is refused outright.
 function resolveAudience(raw, contacts) {
-  const key = String(raw ?? ALL).trim();
+  const key = String(raw ?? ALL);
   if (key === ALL) return { key, label: 'All active DSC peers', contacts };
 
   const m = key.match(/^cohort:(.+)$/);
   if (m) {
-    const wanted = m[1].trim();
+    const wanted = m[1];
     if (cohortsOf(contacts).includes(wanted)) {
       return {
         key:      cohortKey(wanted),

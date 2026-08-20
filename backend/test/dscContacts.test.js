@@ -467,6 +467,25 @@ async function dscTests() {
     }
   });
 
+  // Regression: "cohort:A " once trimmed to "A" and returned that cohort, which
+  // is lenient matching wearing an exact-matching label.
+  await test('audience keys must match byte for byte', async () => {
+    for (const bad of ['cohort:A ', ' cohort:A', 'cohort: A', 'COHORT:A', 'Cohort:A', 'all ', ' all']) {
+      const r = await req('GET', `/api/dsc/recipients?audience=${encodeURIComponent(bad)}`, { auth: bearer() });
+      assert.strictEqual(r.status, 400, `${JSON.stringify(bad)} was accepted`);
+      assert.deepStrictEqual(leaks(r.text), []);
+    }
+  });
+
+  await test('every published menu key still resolves exactly', async () => {
+    const menu = JSON.parse((await req('GET', '/api/dsc/audiences', { auth: bearer() })).text);
+    for (const label of menu.labels) {
+      const key = menu.keys_by_label[label];
+      const r = await req('GET', `/api/dsc/recipients?audience=${encodeURIComponent(key)}`, { auth: bearer() });
+      assert.strictEqual(r.status, 200, `published key ${key} was rejected`);
+    }
+  });
+
   await test('a repeated audience parameter is refused', async () => {
     const r = await req('GET', '/api/dsc/recipients?audience=all&audience=cohort:A', { auth: bearer() });
     assert.strictEqual(r.status, 400);

@@ -240,12 +240,20 @@ function matchRoute(rawPath) {
   return null;
 }
 
-// The only paths the bridge may carry. Anything else is refused before a
-// signature is even considered relevant.
-const isCarddavPath = path =>
-  path === '/' ||
-  path === '/.well-known/carddav' || path === '/.well-known/carddav/' ||
-  path === ROOT || path.startsWith(`${ROOT}/`);
+// The only paths the bridge may carry.
+//
+// Traversal is rejected HERE as well as in matchRoute. "/carddav/../api/health"
+// starts with the CardDAV prefix, so a naive prefix test admits it and leaves
+// matchRoute as the only thing standing between the bridge and the rest of the
+// app. That is one layer where the design calls for two.
+const isCarddavPath = path => {
+  const p = String(path || '');
+  if (p.includes('..') || p.includes('//') || p.includes('\\')) return false;
+  if (!/^[A-Za-z0-9/._~%-]*$/.test(p)) return false;
+  return p === '/' ||
+    p === '/.well-known/carddav' || p === '/.well-known/carddav/' ||
+    p === ROOT || p.startsWith(`${ROOT}/`);
+};
 
 // ── loading ──────────────────────────────────────────────────────────────────
 
