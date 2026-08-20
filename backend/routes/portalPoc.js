@@ -101,53 +101,16 @@ function capturedType(caps) {
   return appt?.captured_visit_type_id || null;
 }
 
-// Which of `typeIds` may be written live? The captured type is trusted because
-// it is the one proven end to end; anything else needs a human to have run the
-// payload diff and said so.
-async function unverifiedTypes(typeIds) {
-  const { data: caps } = await supabase.from('portal_capture_templates')
-    .select('step, captured_visit_type_id');
-  const captured = capturedType(caps);
-  const { data: verified } = await supabase.from('portal_verified_types').select('insync_visit_type_id');
-  const okSet = new Set([captured, ...(verified || []).map(v => v.insync_visit_type_id)].filter(Boolean));
-  return [...new Set(typeIds.filter(Boolean).map(String))].filter(t => !okSet.has(t));
-}
-
-// --- the payload-diff gate -------------------------------------------------
+// Retained as audit history: rows recorded while live runs were gated on a
+// human payload diff. Billing is now resolved per type from InSync, so nothing
+// reads this to decide anything — it is kept because deleting a record of what
+// somebody verified buys nothing.
 
 router.get('/verified-types', ...guard, async (req, res) => {
   try {
     const { data, error } = await supabase.from('portal_verified_types').select('*').order('insync_visit_type_id');
     if (error) throw new Error(error.message);
     ok(res, data || []);
-  } catch (err) { fail(res, err); }
-});
-
-// Records that a human compared this type's prepared payloads against a real
-// manual capture of the same type and accepted them. Nothing else unlocks a
-// type for live use.
-router.post('/verified-types', ...guard, async (req, res) => {
-  try {
-    const { insync_visit_type_id, insync_visit_type_name, note } = req.body;
-    if (!insync_visit_type_id) return res.status(400).json({ error: 'insync_visit_type_id is required' });
-    const { data, error } = await supabase.from('portal_verified_types').upsert({
-      insync_visit_type_id: String(insync_visit_type_id),
-      insync_visit_type_name: insync_visit_type_name || null,
-      verified_by: req.user.id,
-      verified_at: new Date().toISOString(),
-      note: note || null,
-    }, { onConflict: 'insync_visit_type_id' }).select().single();
-    if (error) throw new Error(error.message);
-    ok(res, data);
-  } catch (err) { fail(res, err); }
-});
-
-router.delete('/verified-types/:id', ...guard, async (req, res) => {
-  try {
-    const { error } = await supabase.from('portal_verified_types')
-      .delete().eq('insync_visit_type_id', req.params.id);
-    if (error) throw new Error(error.message);
-    ok(res, { ok: true });
   } catch (err) { fail(res, err); }
 });
 
@@ -234,7 +197,8 @@ router.get('/providers', ...guard, async (req, res) => {
 
 router.get('/visit-types', ...guard, async (req, res) => {
   try {
-    const all = await IP.getVisitTypes(await adminCookie());
+    const templates = await captureTemplates();
+    const all = await IP.getVisitTypes(await adminCookie(), { template: templates.visittypes?.params });
     ok(res, all.filter(t => M.isPeerIndividualType(t.VisitType))
       .map(t => ({ ...t, offsite: M.parseInsyncTypeName(t.VisitType).offsite }))
       .sort((a, b) => a.VisitType.localeCompare(b.VisitType)));
@@ -271,7 +235,7 @@ router.post('/clients', ...guard, async (req, res) => {
     if (!portal_client_name || !portal_client_dob || !insync_patient_id) {
       return res.status(400).json({ error: 'portal_client_name, portal_client_dob and insync_patient_id are required' });
     }
-    const { data, error } = await supabase.from('portal_client_map').upsert({
+    const row = {
       portal_client_name, portal_client_dob,
       insync_patient_id: String(insync_patient_id),
       insync_patient_name: insync_patient_name || null,
@@ -279,7 +243,22 @@ router.post('/clients', ...guard, async (req, res) => {
       confirmed_by: req.user.id,
       confirmed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'portal_client_name,portal_client_dob' }).select().single();
+    };
+
+    // The uniqueness rule is a FUNCTIONAL index -- lower(portal_client_name)
+    // plus dob -- which ON CONFLICT cannot target by column name, so an upsert
+    // here fails with "no unique or exclusion constraint matching". Match the
+    // index's own semantics instead: find case-insensitively, then update or
+    // insert.
+    const { data: existing, error: findErr } = await supabase.from('portal_client_map')
+      .select('id').ilike('portal_client_name', portal_client_name)
+      .eq('portal_client_dob', portal_client_dob).maybeSingle();
+    if (findErr) throw new Error(findErr.message);
+
+    const q = existing
+      ? supabase.from('portal_client_map').update(row).eq('id', existing.id)
+      : supabase.from('portal_client_map').insert(row);
+    const { data, error } = await q.select().single();
     if (error) throw new Error(error.message);
     ok(res, data);
   } catch (err) { fail(res, err); }
@@ -301,15 +280,13 @@ const REQUIRED_NOTE_KEYS = ['portalNoteId', 'peerName', 'clientName', 'clientDat
 // after the operator fixes a peer binding or confirms a client.
 async function resolveRun(runId) {
   const cookie = await adminCookie();
-  const [visitTypes, providers, peers, clientMap, caps, verified] = await Promise.all([
-    IP.getVisitTypes(cookie),
+  const packForTypes = await captureTemplates();
+  const [visitTypes, providers, peers, clientMap] = await Promise.all([
+    IP.getVisitTypes(cookie, { template: packForTypes.visittypes?.params }),
     IP.getProviderDirectory(cookie),
     supabase.from('portal_peers').select('*').then(r => r.data || []),
     supabase.from('portal_client_map').select('*').then(r => r.data || []),
-    supabase.from('portal_capture_templates').select('step, captured_visit_type_id').then(r => r.data || []),
-    supabase.from('portal_verified_types').select('insync_visit_type_id').then(r => r.data || []),
   ]);
-  const verifiedTypes = new Set([capturedType(caps), ...verified.map(v => v.insync_visit_type_id)].filter(Boolean));
 
   const peerByName = new Map(peers.map(p => [M.normalizeName(p.portal_peer_name), p]));
   const clientByKey = new Map(clientMap.map(c => [`${M.normalizeName(c.portal_client_name)}|${c.portal_client_dob}`, c]));
@@ -361,12 +338,17 @@ async function resolveRun(runId) {
       resolution.client_map_id = null;
       let candidates = [];
       try {
-        const rows = await IP.searchPatients(cookie, { text: note.clientName });
+        // InSync matches on "Last, First" and returns NOTHING for the portal's
+        // "First Last" — searching the portal string verbatim found zero
+        // patients for every client tested. Fall back to the bare surname for
+        // first-name drift ("Chana Englard" is "Chana Rochel" in her own notes).
+        let rows = [];
+        for (const q of M.patientQueries(note.clientName)) {
+          rows = await IP.searchPatients(cookie, { text: q });
+          if (rows.some(r => r.dob === note.clientDateOfBirth)) break;
+        }
         const byDob = rows.filter(r => r.dob === note.clientDateOfBirth);
-        const byName = (byDob.length ? byDob : rows)
-          .filter(r => M.normalizeName(r.name) === M.normalizeName(note.clientName)
-                    || M.editDistance(M.normalizeName(r.name), M.normalizeName(note.clientName)) <= 2);
-        candidates = (byName.length ? byName : rows).slice(0, 10)
+        candidates = (byDob.length ? byDob : rows).slice(0, 10)
           .map(r => ({ ...r, dob_matches: r.dob === note.clientDateOfBirth }));
       } catch (e) {
         flags.push({ field: 'client', message: `Patient search failed: ${e.message}` });
@@ -384,10 +366,16 @@ async function resolveRun(runId) {
 
     // -- encounter type. An operator override always wins over the auto-match.
     const match = M.matchEncounterType(note, visitTypes);
-    resolution.type_candidates = match.candidates.map(t => ({
-      VisitTypeID: t.VisitTypeID, VisitType: t.VisitType, Duration: t.Duration,
-      offsite: M.parseInsyncTypeName(t.VisitType).offsite,
-    }));
+    // Offsite types are switched off by policy — the portal has no field for the
+    // justification their template requires, so they are not offerable at all.
+    // Filtering here (rather than only guarding execution) keeps the dropdown
+    // honest about what can actually be run.
+    resolution.type_candidates = match.candidates
+      .filter(t => !M.parseInsyncTypeName(t.VisitType).offsite)
+      .map(t => ({
+        VisitTypeID: t.VisitTypeID, VisitType: t.VisitType, Duration: t.Duration,
+        offsite: false,
+      }));
     resolution.dimensions = match.dimensions;
 
     const overrideId = prev.visit_type_override || null;
@@ -400,18 +388,6 @@ async function resolveRun(runId) {
       resolution.visit_type_name = chosen.VisitType;
       resolution.visit_type_offsite = M.parseInsyncTypeName(chosen.VisitType).offsite;
       resolution.visit_type_auto = !overrideId;
-      // Non-blocking on purpose: a dry run is how you PRODUCE the payloads to
-      // diff, so this must not hold the row back from one. Live execution
-      // enforces it.
-      resolution.visit_type_verified = verifiedTypes.has(chosen.VisitTypeID);
-      if (!resolution.visit_type_verified) {
-        flags.push({
-          field: 'encounter_type', blocking: false,
-          message: `Encounter type ${chosen.VisitTypeID} has not been payload-verified — dry-run it, ` +
-                   `compare the prepared payloads against a real capture of this type, then mark it verified. ` +
-                   `Live execution is blocked until then.`,
-        });
-      }
     } else {
       resolution.visit_type_id = null;
       resolution.visit_type_name = null;
@@ -629,9 +605,28 @@ router.get('/runs/:runId/notes/:noteId/payloads', ...guard, async (req, res) => 
     const r = row.resolution || {};
     if (!r.visit_type_id) return res.status(400).json({ error: 'This note has no encounter type selected yet' });
 
+    // Resolve billing live so the preview shows the numbers that would really be
+    // sent, not the captured type's.
+    let billing = null;
+    if (r.patient_id) {
+      try {
+        billing = await IP.resolveBilling(await adminCookie(), {
+          template: templates.schedulercalendar?.params,
+          patientId: r.patient_id, providerId: r.provider_id,
+          dateIso: row.note.sessionDate, visitTypeId: r.visit_type_id,
+        });
+      } catch (e) {
+        return res.status(400).json({ error: `Could not resolve billing for this type: ${e.message}` });
+      }
+    }
+    const { data: caps } = await supabase.from('portal_capture_templates')
+      .select('step, captured_visit_type_id');
+
     const prepared = X.preparePayloads({
       templates: X.templatesFor(templates, !!r.visit_type_offsite),
+      capturedVisitTypeId: capturedType(caps),
       ctx: {
+        billing,
         patientId: r.patient_id || '<patient>', patientName: r.patient_name || row.note.clientName,
         providerId: r.provider_id || '<provider>', providerName: r.provider_name || row.note.peerName,
         visitTypeId: r.visit_type_id, visitTypeName: r.visit_type_name,
@@ -642,7 +637,7 @@ router.get('/runs/:runId/notes/:noteId/payloads', ...guard, async (req, res) => 
       // Never render a real PIN into a diff artifact.
       signingPin: '<peer PIN>',
     });
-    ok(res, { visit_type: r.visit_type_name, payloads: prepared });
+    ok(res, { visit_type: r.visit_type_name, billing, payloads: prepared });
   } catch (err) { fail(res, err); }
 });
 
@@ -654,6 +649,8 @@ router.get('/runs/:runId/notes/:noteId/payloads', ...guard, async (req, res) => 
 async function executeRun(runId, { mode, sign, noteIds }) {
   const live = mode === 'live';
   const templates = await captureTemplates();
+  const { data: caps } = await supabase.from('portal_capture_templates')
+    .select('step, captured_visit_type_id');
 
   await supabase.from('portal_job_runs').update({
     status: 'executing', last_execution_mode: live ? 'live' : 'dry_run',
@@ -729,9 +726,36 @@ async function executeRun(runId, { mode, sign, noteIds }) {
             : `No matching appointment on ${note.sessionDate} at minute ${note.sessionStartMinutes} — one will be created`);
         }
 
+        // Everything that follows from the chosen encounter type — CPT, modifier,
+        // units, POS — plus this patient's program enrolment, asked of InSync
+        // rather than replayed from the capture. Resolved per note because the
+        // program is per patient and the CPT map is per type.
+        const billing = await IP.resolveBilling(cookie || await adminCookie(), {
+          template: templates.schedulercalendar?.params,
+          patientId: r.patient_id,
+          providerId: r.provider_id,
+          dateIso: note.sessionDate,
+          visitTypeId: r.visit_type_id,
+        });
+        if (!billing.programManagementDetailId) {
+          throw new X.StepError('billing',
+            billing.programCount > 1
+              ? `${note.clientName} has ${billing.programCount} program enrolments in InSync ` +
+                `(${billing.programNames.join(', ')}). Which one this encounter belongs to is a human ` +
+                `decision — pick it in InSync, or run this note by hand.`
+              : `InSync returned no program enrolment for ${note.clientName}. Refusing to book with ` +
+                `another patient's program — check the client's program in InSync.`);
+        }
+        await log('info', 'billing',
+          `Type ${r.visit_type_id}: CPT ${billing.cptCode} map ${billing.cptMapId}` +
+          `${billing.m1 ? ` modifier ${billing.m1}` : ' no modifier'}` +
+          `, ${billing.units} unit(s), POS ${billing.posCode}, program ${billing.programManagementDetailId}`);
+
         const result = await X.executeNote({
           templates,
+          capturedVisitTypeId: capturedType(caps),
           ctx: {
+            billing,
             patientId: r.patient_id, patientName: r.patient_name || note.clientName,
             providerId: r.provider_id, providerName: r.provider_name || note.peerName,
             visitTypeId: r.visit_type_id, visitTypeName: r.visit_type_name,
@@ -805,25 +829,6 @@ router.post('/runs/:id/execute', ...guard, async (req, res) => {
         return res.status(400).json({ error: 'A live run must be confirmed explicitly' });
       }
 
-      // The payload-diff gate. Every write template comes from one proven
-      // session against a single encounter type; running a different type
-      // replays that type's CPT / modifier / POS mapping with only the
-      // VisitTypeID changed, which can bill wrongly. Refuse until a human has
-      // diffed that type's payloads and marked it verified.
-      let q = supabase.from('portal_staged_notes').select('resolution').eq('run_id', req.params.id).eq('status', 'ready');
-      if (Array.isArray(req.body?.note_ids) && req.body.note_ids.length) q = q.in('id', req.body.note_ids);
-      const { data: readyRows } = await q;
-      const unverified = await unverifiedTypes((readyRows || []).map(r => r.resolution?.visit_type_id));
-      if (unverified.length) {
-        const names = (readyRows || [])
-          .filter(r => unverified.includes(String(r.resolution?.visit_type_id)))
-          .map(r => `${r.resolution?.visit_type_name} [${r.resolution?.visit_type_id}]`);
-        return res.status(400).json({
-          error: `Live execution is blocked for encounter type(s) not yet payload-verified: ` +
-                 `${[...new Set(names)].join('; ')}. Dry-run those rows, open "View prepared payloads", ` +
-                 `compare against a real manual capture of the same type, then mark the type verified.`,
-        });
-      }
     }
 
     const { data: run } = await supabase.from('portal_job_runs').select('id, status').eq('id', req.params.id).maybeSingle();

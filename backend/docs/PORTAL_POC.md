@@ -218,26 +218,88 @@ rather than being stitched together from partial captures.
 
 ---
 
-## The payload-diff gate — why it is enforced, not advisory
+## Per-type billing — resolved live, never replayed
 
-Every write template above was captured against **encounter type 1273**. Those
-payloads carry that type's CPT / modifier / POS / copay scaffolding
-(`H0038`, `U4`, CPT-map `418`, POS `99`). Preparing a *different* type swaps the
-`VisitTypeID` and leaves the rest — which for a billable Medicaid encounter could
-mean billing the wrong thing.
+The captured payloads came from one session against encounter type **1273**, and
+carried that type's billing mapping hardcoded in **eighteen** places across three
+steps: CPT map `418`, modifier `338` (U4), POS `99`, plus the captured *patient's*
+program enrolment `6519` / `18`.
 
-`app.py` handled this by hard-blocking live mode to 1273 only. SPEC softens that
-to "other types share the same flow but should be diff-validated once each before
-bulk live use." This implements that as a real gate:
+That mapping is per type, and wrong for any other:
 
-- `portal_verified_types` records that a human diffed a type's prepared payloads
-  against a real manual capture of the **same** type and accepted them.
-- A **live** run refuses any encounter type that is neither the captured type nor
-  in that table, naming the offending types.
-- A **dry** run is never blocked — a dry run is how you produce the payloads to
-  diff in the first place. The review screen shows
-  `⚠ not payload-verified — live blocked` on the row and offers
-  "Mark this type payload-verified" beside "View prepared payloads".
+| Type | CPT map | Modifier | POS |
+|---|---|---|---|
+| 1246 English – outside the clinic | 394 | — | 99 |
+| 1252 Lang-other – outside the clinic | 400 | 338 | 99 |
+| **1253 English – In-person at Home** | **401** | **—** | **12** |
+| 1273 Lang-other – outside clinic Offsite | 418 | 338 | 99 |
+| 1241 English – In the clinic | — | — | 11 |
+
+A typical upload is dominated by 1253, so replaying the capture would bill POS 99
+instead of 12 and attach a "language other than English" modifier to English
+encounters. So none of it is taken from the capture. `resolveBilling()` in
+[utils/insyncPortal.js](../utils/insyncPortal.js) asks InSync, per run:
+
+- **CPT / modifiers / units / map id** — `POST /Scheduler/GetSchedulerCalendar`,
+  read from `AdditionalDetails.lstCPT` (keyed by `EncounterTypeID`, covering every
+  peer type). The same call the browser makes to fill the booking form's CPT grid.
+- **Place of service** — `POST /EncounterDetail/GetPosCodeByEncSpaceFacilityId`
+  with a JSON body `{EncounterTypeId:'<id>', VisitId:'null'}`.
+- **Program enrolment** — `POST /ProgramManagement/ProgramManagementSearch`, per
+  patient. Every patient has their own (5996, 5309, 3604 for the first three
+  checked). More than one enrolment blocks the note: which program an encounter
+  belongs to is a human decision.
+
+The extractor blanks all eighteen fields, so a regression fails loudly rather
+than quietly billing the captured type's numbers.
+
+### Three things the rewrite has to get right
+
+- **`SEEncounterDetails_SECPTCode` uses an underscore.** `keyMatches()` normalises
+  `[ ]` to dots and matches the last dot-segment, so that key is a *single*
+  segment and `setFields(…, 'SECPTCode')` can never reach it. It is assigned
+  directly.
+- **Three fields are composites**, rebuilt rather than substituted:
+  - `SECPTCode` = `<CPT>#*#&*&<mapId>`
+  - `SECPTModifiers` = `<CPT>#*#&*&<mapId>,<M1>,<M2>,<M3>,<M4>,<Units>,&*%^1,&*%^1`
+  - `SECPTDescription` = `<CPT>#*#&*&<mapId> -  <description>`
+- **`assertBilling()` runs before anything is sent.** It refuses a payload whose
+  billing is incomplete (a blank CPT map id would otherwise sail through, because
+  blank matches blank), whose written values disagree with what InSync returned,
+  or in which the captured encounter type still appears.
+
+`portal_verified_types` survives as audit history of the old manual gate; nothing
+reads it to decide anything.
+
+---
+
+## Offsite is switched off
+
+The portal has no field for the "Justification for Offsite Delivery" that an
+Offsite type's note template requires, so an Offsite encounter could only ever be
+signed with that field blank. Automatic routing already ignores the portal's
+`isOffsite` flag; on top of that, Offsite types are **filtered out of the review
+dropdown** and **refused at execution**.
+
+The two-template machinery (`note` / `note_offsite`, `noteStepFor`,
+`templatesFor`, the `ControlId_27` handling) is untouched and still tested. This
+is a policy switch: re-enabling means deleting the dropdown filter in
+`resolveRun` and the guard at the top of `executeNote`, then pointing
+`parsePortalNote` back at `note.isOffsite`.
+
+---
+
+## Admin InSync login
+
+Phase A resolution runs under the practice-wide InSync login stored in
+`app_settings.insync_username` / `insync_password` — the same one the One-On-One
+and Co-Sign sections use, set from either of those screens. It is deliberately
+**not** duplicated onto this screen: a `portal_only` account uses it but cannot
+see or change it, and changing it here would silently alter what the other two
+domains run under.
+
+If it is missing or expired, `/api/portal/status` reports
+`admin_insync_configured: false` and the page says so.
 
 ---
 
@@ -247,7 +309,8 @@ bulk live use." This implements that as a real gate:
 |---|---|
 | Never hardcode type / peer / client IDs | `utils/portalMatch.js`, `utils/insyncPortal.js` — everything resolves live |
 | Dry-run before live | `POST /runs/:id/execute` defaults to `dry_run`; live also requires `confirm: true` and two browser confirmations |
-| Payload-diff gate before bulk live on a new type | `GET /runs/:runId/notes/:noteId/payloads` gives the exact bodies (PIN redacted); `portal_verified_types` + the live-run check make it a gate rather than a suggestion |
+| Billing is right for the type being written | `resolveBilling()` asks InSync per type/patient; `assertBilling()` refuses to send an incomplete or mismatched payload |
+| Inspect what would be sent | `GET /runs/:runId/notes/:noteId/payloads` — the exact bodies, with live-resolved billing shown first and the PIN redacted |
 | Client-match ambiguity BLOCKS | `resolveRun` never auto-binds; a binding is always an explicit human confirm written to `portal_client_map` |
 | Credentials encrypted, never logged | `utils/portalCrypto.js` + `peerView()` + `scrub()` |
 | Only portal-authored content is written | `NOTE_FIELDS` maps each control to a named portal field; the two fields with no portal source are typed by the operator, never inferred |
@@ -292,9 +355,8 @@ Admins also see the screen (a fourth "Portal POC" section tab).
 5. Add each peer on the Peers tab: portal name, "Look up" their provider ID,
    InSync username, password, signing PIN.
 6. Upload an export, work the review screen, **dry run**, read the log.
-7. For the first live encounter of any encounter type other than the captured
-   one, use "View prepared payloads", diff against a real manual capture of that
-   type, then "Mark this type payload-verified". Live runs refuse until you do.
+7. Use "View prepared payloads" on a dry run and check the billing block against
+   the encounter type you expect — CPT map, modifier, POS.
 8. Run live without signing first, then with signing.
 
 ## Tests

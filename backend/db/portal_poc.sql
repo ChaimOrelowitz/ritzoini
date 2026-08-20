@@ -68,7 +68,11 @@ create table if not exists portal_client_map (
   updated_at             timestamptz not null default now()
 );
 
--- Name+DOB is the portal's identity for a client, so it is the map key.
+-- Name+DOB is the portal's identity for a client, so it is the map key. NOTE:
+-- this is a FUNCTIONAL index, which ON CONFLICT cannot target by column name --
+-- an upsert keyed on (portal_client_name, portal_client_dob) fails with "no
+-- unique or exclusion constraint matching". routes/portalPoc.js matches the
+-- index's own semantics instead: find case-insensitively, then update or insert.
 create unique index if not exists portal_client_map_uniq
   on portal_client_map (lower(portal_client_name), portal_client_dob);
 
@@ -207,18 +211,20 @@ alter table portal_capture_templates
 
 
 -- ---------------------------------------------------------------------------
--- The payload-diff gate
+-- Historical: the payload-diff gate (no longer enforced)
 -- ---------------------------------------------------------------------------
 --
--- SPEC: "Go live per type only after a payload-diff check." Every write template
--- currently comes from one proven session against VisitTypeID 1273. Running any
--- other type replays that type's billing scaffolding with only the VisitTypeID
--- swapped, which could bill wrongly. A live run therefore refuses to touch an
--- encounter type that is neither the captured type nor recorded here.
+-- Live runs once refused any encounter type other than the captured one until a
+-- human had diffed its payloads and recorded the type here. That existed only
+-- because the write templates carried ONE type's billing mapping hardcoded.
 --
--- A row means: a human prepared this type's payloads (dry run -> "View prepared
--- payloads"), compared them against a real manual capture of the same type, and
--- accepted them.
+-- They no longer do: utils/insyncPortal.js resolveBilling asks InSync for the
+-- selected type's CPT code, modifiers, units and place of service on every run
+-- (GetSchedulerCalendar's CPT map + GetPosCodeByEncSpaceFacilityId), so the
+-- mapping is right by construction rather than by manual attestation.
+--
+-- Nothing reads this table to decide anything now. It is kept because deleting
+-- the record of what somebody verified, and when, buys nothing.
 
 create table if not exists portal_verified_types (
   insync_visit_type_id   text primary key,

@@ -36,6 +36,14 @@ const ENDPOINTS = {
   generate:    '/EncounterNote/GenerateEncounterNote',
   close:       '/ENDEncounter/SaveEndEncounter',
   calendar:    '/Scheduler/LoadCalendarView',
+  // GetVisitTypes refuses to return the catalog without an objbookAppointment
+  // context (ScheduleID + FacilityId above all). Capture that shell; the date
+  // is swapped for today's at call time.
+  visittypes:  '/Scheduler/GetVisitTypes',
+  // Carries AdditionalDetails.lstCPT — the whole practice's CPT map keyed by
+  // EncounterTypeID. This is how the write chain gets the SELECTED type's CPT /
+  // modifier / units instead of replaying the captured type's.
+  schedulercalendar: '/Scheduler/GetSchedulerCalendar',
 };
 
 // Every control a human types into. Blanked here and repopulated at run time
@@ -68,6 +76,17 @@ const IDENTITY_TEXT = /(^|\.)(patientfullname|sepatientname|patientname|firstnam
 // should identify nobody, and preparePayloads overwrites these with the acting
 // peer's name on every run anyway.
 const IDENTITY_PROVIDER = /(^|\.)(provider|providername|seprovidername|resourcename)(\.|$)/i;
+
+// Every field that mirrors the captured encounter type's billing mapping. The
+// underscore variant `SEEncounterDetails_SECPTCode` is deliberate: it is a
+// SINGLE dot-segment, so a suffix rule keyed on ".secptcode" never sees it.
+const BILLING_PER_TYPE = new RegExp([
+  '(^|\\.)objcpt\\.\\d+\\.(encountertypecptmapid|cpt_code|cptcode|cpt_description|m1|m2|m3|m4|units|cptmaptypeid)$',
+  '(^|\\.)(poscode|poscodedescription|procedurecodedescription)$',
+  '(^|\\.)(secptcode|secptmodifiers|secptdescription|seposcode|seposdescription)$',
+  '(^|\\.)oldseencountertypeid$',
+  '^seencounterdetails_secptcode$',
+].join('|'), 'i');
 
 function decodeKey(k) { try { return decodeURIComponent(k); } catch { return k; } }
 function decodeVal(v) { try { return decodeURIComponent(String(v).replace(/\+/g, ' ')); } catch { return v; } }
@@ -215,6 +234,17 @@ function scrub(params) {
       }
       out[key] = blankLiterals(mirror, literals); removed.push(key); continue;
     }
+    // The captured patient's program enrolment (6519 / 18). Replaying it would
+    // attach someone else's program to a billable encounter, and on
+    // GetVisitTypes it also narrows the catalog to that program's types. Both
+    // ids are resolved per patient at run time; blanking them here means a
+    // regression fails loudly instead of silently reusing the captured one.
+    if (/programmanagement(detail)?id$/.test(b)) { out[key] = ''; removed.push(key); continue; }
+    // Billing that follows from the ENCOUNTER TYPE, not from this patient. The
+    // capture carries type 1273's mapping (map 418, modifier 338, POS 99);
+    // preparePayloads rewrites all of it per selected type, so store it blank
+    // and let a regression fail loudly rather than bill 1273's numbers.
+    if (BILLING_PER_TYPE.test(b)) { out[key] = ''; removed.push(key); continue; }
     if (IDENTITY_NUMERIC.test(b)) { out[key] = '0'; removed.push(key); continue; }
     if (IDENTITY_TEXT.test(b))     { out[key] = ''; removed.push(key); continue; }
     if (IDENTITY_PROVIDER.test(b)) { out[key] = ''; removed.push(key); continue; }

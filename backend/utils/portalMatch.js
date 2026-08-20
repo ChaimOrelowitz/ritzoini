@@ -37,6 +37,31 @@ function normalizeName(raw) {
   return tokens.map(t => t.toLowerCase().replace(/[^a-z]/g, '')).filter(Boolean).join(' ');
 }
 
+// Split a portal "First Last" into parts for an InSync patient search.
+//
+// This matters more than it looks: InSync's patient search matches on
+// "Last, First" and returns NOTHING for "First Last". Searching the portal's
+// string verbatim found zero patients for every client tested.
+//
+// Everything before the final token is the first/middle name, which is the right
+// call for "Chana Rochel Englard" and harmless for the common two-token case.
+// Hyphenated surnames stay one token.
+function splitName(raw) {
+  const parts = String(raw || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return { first: '', last: '' };
+  if (parts.length === 1) return { first: '', last: parts[0] };
+  return { first: parts.slice(0, -1).join(' '), last: parts[parts.length - 1] };
+}
+
+// The query strings to try, in order. "Last, First" is what InSync actually
+// wants; the bare surname is the fallback for first-name drift — the portal's
+// "Chana Englard" is "Chana Rochel" throughout her own note text.
+function patientQueries(fullName) {
+  const { first, last } = splitName(fullName);
+  if (!last) return [];
+  return first ? [`${last}, ${first}`, last] : [last];
+}
+
 // Cheap edit distance, capped — enough to tolerate the spelling drift between
 // the portal and InSync ("Segelbaum" / "Siegelbaum") without matching strangers.
 function editDistance(a, b) {
@@ -206,7 +231,7 @@ function matchEncounterType(note, visitTypes) {
 }
 
 module.exports = {
-  normalizeName, matchName, editDistance,
+  normalizeName, splitName, patientQueries, matchName, editDistance,
   isPeerIndividualType, parseInsyncTypeName, parsePortalNote, matchEncounterType,
   LANG, MODE, LOC,
 };

@@ -89,15 +89,16 @@ Key files: `routes/portalPoc.js`, `utils/{portalCrypto,portalMatch,portalPayload
 Three things that bite:
 - The write chain replays HAR-derived payload templates stored in
   `portal_capture_templates` (scrubbed by the extractor script — the raw `.har`
-  files carry live cookies and PHI and are never committed). All were captured
-  against **encounter type 1273**, so they carry that type's CPT/POS mapping;
-  `portal_verified_types` gates live runs on any other type until a human diffs
-  its payloads. Dry runs are never gated.
-- The portal's `isOffsite` flag is **deliberately ignored** — the portal has no
-  offsite-justification field yet, so honouring it would route to an Offsite
-  type whose required field can only be blank. The machinery still works if an
-  Offsite type is picked manually (there are two note forms, `note` and
-  `note_offsite`, with different InSync TemplateIds).
+  files carry live cookies and PHI and are never committed). They were captured
+  against encounter type 1273, so **all billing is blanked at extraction and
+  resolved live per type/patient** — CPT map, modifiers, units, POS and program
+  enrolment (`resolveBilling` in `utils/insyncPortal.js`). Never hardcode or
+  replay a CPT/POS value; `assertBilling` refuses payloads that do.
+- Offsite is **switched off end to end** — the portal's `isOffsite` is ignored,
+  Offsite types are filtered from the review dropdown, and `executeNote` refuses
+  them. The portal has no offsite-justification field, so such an encounter could
+  only be signed with `ControlId_27` blank. The two-form machinery (`note` /
+  `note_offsite`, different InSync TemplateIds) is intact for when it returns.
 - `profiles.portal_only` fences an account to this one screen (same pattern as
   `ps_payroll_only`), enforced in `middleware/auth.js` and `Layout.js`.
 

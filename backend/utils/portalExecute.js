@@ -143,6 +143,134 @@ function reEsc(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
 function two(n) { return String(n).padStart(2, '0'); }
 
+// --- billing ---------------------------------------------------------------
+//
+// Every field below mirrors the SELECTED encounter type's billing mapping, which
+// InSync supplies per type (utils/insyncPortal resolveBilling). The captured
+// payloads carried type 1273's numbers -- CPT map 418, modifier 338 (U4), POS 99
+// -- in eighteen places across three steps. 1253 is map 401, no modifier, POS 12,
+// so replaying the capture bills the wrong thing. The extractor blanks all of
+// them; this writes all of them.
+
+// InSync packs the code and its map-row id into one string.
+function cptComposite(b) { return `${b.cptCode}#*#&*&${b.cptMapId}`; }
+
+// "<CPT>#*#&*&<mapId>,<M1>,<M2>,<M3>,<M4>,<Units>,&*%^1,&*%^1"
+function cptModifiers(b) {
+  return [cptComposite(b), b.m1 || '', b.m2 || '', b.m3 || '', b.m4 || '', b.units, '&*%^1', '&*%^1'].join(',');
+}
+
+function modifierLabels(b) {
+  return [b.m1, b.m2, b.m3, b.m4].filter(Boolean).join(', ');
+}
+
+function applyBilling(result, b) {
+  const composite = cptComposite(b);
+  const mods = modifierLabels(b);
+  const procedureDesc = `${b.cptCode} - ${b.cptDescription}`
+    + (mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`) + ' |';
+
+  for (const { params } of Object.values(result)) {
+    // The booking grid's CPT row.
+    setFields(params, b.cptMapId,      'EncounterTypeCPTMapID');
+    setFields(params, b.cptCode,       'CPT_Code', 'CPTCode');
+    setFields(params, b.cptDescription,'CPT_Description');
+    setFields(params, b.m1,            'M1');
+    setFields(params, b.m2,            'M2');
+    setFields(params, b.m3,            'M3');
+    setFields(params, b.m4,            'M4');
+    setFields(params, b.units,         'Units');
+    setFields(params, b.cptMapTypeId,  'CPTMapTypeID');
+
+    // Place of service.
+    setFields(params, b.posCode,        'POSCode', 'SEPOSCode');
+    setFields(params, b.posDescription, 'POSCodeDescription');
+    setFields(params, b.posDescription.replace(/^\s*\d+\s*-\s*/, ''), 'SEPOSDescription');
+    setFields(params, procedureDesc,    'ProcedureCodeDescription');
+
+    // The encounter form's composites.
+    setFields(params, composite,           'SECPTCode');
+    setFields(params, cptModifiers(b),     'SECPTModifiers');
+    setFields(params, `${composite} -  ${b.cptDescription}`, 'SECPTDescription');
+
+    // Not reachable by suffix: this key has no bracket or dot, so it normalises
+    // to ONE segment and `setFields(…, 'SECPTCode')` can never see it.
+    if ('SEEncounterDetails_SECPTCode' in params) params.SEEncounterDetails_SECPTCode = composite;
+
+    // The type id InSync echoes back as the previous selection.
+    setFields(params, b.visitTypeId, 'OldSEEncounterTypeID');
+
+    // The patient's program enrolment, resolved per patient.
+    setFields(params, b.programManagementDetailId, 'ProgramManagementDetailID');
+    setFields(params, b.programManagementId,       'ProgramManagementID');
+  }
+}
+
+// Refuse to send a payload whose billing does not match what InSync said for the
+// selected type. Catches both a field we forgot to write and a stale value that
+// survived from the capture.
+function assertBilling(result, b, forbidden = []) {
+  const problems = [];
+
+  // Completeness first. Comparing written-against-expected alone would happily
+  // pass a blank CPT map id through, because blank matches blank — InSync would
+  // then book a billable encounter with no mapping.
+  for (const [name, value] of Object.entries({
+    'CPT map id': b.cptMapId, 'CPT code': b.cptCode, units: b.units,
+    'place of service': b.posCode, 'program enrolment': b.programManagementDetailId,
+  })) {
+    if (!String(value ?? '').trim()) problems.push(`${name} is missing`);
+  }
+  if (problems.length) {
+    throw new StepError('billing',
+      `Refusing to send: billing does not match InSync's mapping for encounter type ` +
+      `${b.visitTypeId} — ${problems.join('; ')}.`);
+  }
+
+  const composite = cptComposite(b);
+
+  const expect = {
+    EncounterTypeCPTMapID: b.cptMapId,
+    SECPTCode: composite,
+    SECPTModifiers: cptModifiers(b),
+    POSCode: b.posCode,
+    SEPOSCode: b.posCode,
+  };
+  for (const { params } of Object.values(result)) {
+    for (const [name, want] of Object.entries(expect)) {
+      for (const [k, v] of Object.entries(params)) {
+        if (!keyMatchesName(k, name)) continue;
+        if (String(v) !== String(want)) problems.push(`${k} is ${JSON.stringify(String(v))}, expected ${JSON.stringify(String(want))}`);
+      }
+    }
+    if ('SEEncounterDetails_SECPTCode' in params && params.SEEncounterDetails_SECPTCode !== composite) {
+      problems.push(`SEEncounterDetails_SECPTCode is ${JSON.stringify(params.SEEncounterDetails_SECPTCode)}`);
+    }
+  }
+
+  // Anything identifying the CAPTURED encounter/patient must be gone.
+  const blob = JSON.stringify(Object.fromEntries(
+    Object.entries(result).map(([step, { params }]) => [step, params])));
+  for (const bad of forbidden) {
+    if (!bad || String(bad) === String(b.visitTypeId)) continue;
+    if (new RegExp(`(^|[^0-9])${String(bad)}([^0-9]|$)`).test(blob)) {
+      problems.push(`the captured encounter type ${bad} still appears in the payload`);
+    }
+  }
+
+  if (problems.length) {
+    throw new StepError('billing',
+      `Refusing to send: billing does not match InSync's mapping for encounter type ` +
+      `${b.visitTypeId}. ${problems.slice(0, 6).join('; ')}`);
+  }
+}
+
+function keyMatchesName(key, name) {
+  const k = String(key).replace(/[[\]]+/g, '.').replace(/\.+$/, '').toLowerCase();
+  const n = name.toLowerCase();
+  return k === n || k.endsWith('.' + n);
+}
+
 // The portal gives a date and a minute-of-day; everything InSync wants is a
 // formatting of those two. Built without Date so a server TZ can never shift a
 // clinical appointment by a day.
@@ -193,7 +321,7 @@ function patchDynamicHtml(rendered, fields, encounterId) {
 
 // Build every request body for one note. `templates` is the capture pack keyed
 // by step: { step: { url, params } }.
-function preparePayloads({ templates, ctx, visitId, encounterId, signingPin }) {
+function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, capturedVisitTypeId }) {
   const result = {};
   for (const [step, tpl] of Object.entries(templates)) {
     result[step] = { url: tpl.url, params: { ...tpl.params } };
@@ -307,6 +435,16 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin }) {
     }
   }
 
+  // Everything that follows from the chosen encounter type — CPT, modifiers,
+  // units, POS — plus the patient's program enrolment. Written LAST so no
+  // earlier pass can leave a captured value behind, then asserted before the
+  // payload is allowed out.
+  if (ctx.billing) {
+    const b = { ...ctx.billing, visitTypeId: ctx.visitTypeId };
+    applyBilling(result, b);
+    assertBilling(result, b, [capturedVisitTypeId].filter(Boolean));
+  }
+
   return result;
 }
 
@@ -336,7 +474,19 @@ async function send(prepared, step, cookie, log) {
 //
 // Any unexpected result throws — the caller records the failure against THIS
 // note and moves to the next rather than plowing on through a bad state.
-async function executeNote({ templates: pack, ctx, cookie, existing, signingPin, allowSign, dryRun, log }) {
+async function executeNote({ templates: pack, ctx, cookie, existing, signingPin, allowSign, dryRun, log, capturedVisitTypeId }) {
+  // Offsite is switched OFF by policy: the portal has no field for the
+  // justification the Offsite template requires (ControlId_27), so an Offsite
+  // encounter could only ever be signed with that field blank. The review screen
+  // hides these types; this is the backstop for a staged row that still carries
+  // one. The two-template machinery below stays intact — re-enabling is deleting
+  // this guard and the dropdown filter.
+  if (ctx.offsite || /\boffsite\b/i.test(String(ctx.visitTypeName || ''))) {
+    throw new StepError('encounter_type',
+      `Offsite encounter types are not enabled: "${ctx.visitTypeName}" requires an offsite ` +
+      `justification the portal does not yet capture. Pick the non-Offsite type instead.`);
+  }
+
   const templates = templatesFor(pack, !!ctx.offsite);
   const missingSteps = REQUIRED_STEPS.filter(s => !templates[s]);
   if (missingSteps.length && !(existing && missingSteps.length === 1 && missingSteps[0] === 'appointment')) {
@@ -347,7 +497,7 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
 
   if (dryRun) {
     const prepared = preparePayloads({
-      templates, ctx,
+      templates, ctx, capturedVisitTypeId,
       visitId: existing ? existing.visitId : '<created visit>',
       encounterId: '<created encounter>',
       signingPin: allowSign ? '<peer PIN>' : '',
@@ -371,14 +521,14 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
   if (visitId) {
     await log('info', 'appointment', `Reusing existing appointment VisitID ${visitId}`);
   } else {
-    const prep = preparePayloads({ templates, ctx, visitId: '0', encounterId: '0', signingPin: '' });
+    const prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId: '0', encounterId: '0', signingPin: '' });
     const { body } = await send(prep, 'appointment', cookie, log);
     visitId = appointmentResult(body);
     await log('info', 'appointment', `Created appointment VisitID ${visitId}`);
   }
 
   // 3. Open/create the encounter.
-  let prep = preparePayloads({ templates, ctx, visitId, encounterId: '0', signingPin: '' });
+  let prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId, encounterId: '0', signingPin: '' });
   await send(prep, 'start', cookie, log);
   const encRes = await send(prep, 'encounter', cookie, log);
   const encounterId = responseId(encRes.body, encRes.text, 'EncounterId', 'EncounterID', 'eid');
@@ -386,7 +536,7 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
   await log('info', 'encounter', `Created encounter ${encounterId}`);
 
   // 4. Fill the note.
-  prep = preparePayloads({ templates, ctx, visitId, encounterId, signingPin: allowSign ? signingPin : '' });
+  prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId, encounterId, signingPin: allowSign ? signingPin : '' });
   const noteRes = await send(prep, 'note', cookie, log);
   if (!noteRes.body || noteRes.body.Status !== 1) {
     throw new StepError('note', 'InSync did not confirm the peer-note save with Status=1');

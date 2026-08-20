@@ -46,9 +46,18 @@ const VISIT_TYPES = [
 ].map(([VisitTypeID, VisitType]) => ({ VisitTypeID: String(VisitTypeID), VisitType, Duration: 60, IsBillable: true }));
 
 let passed = 0;
+const pending = [];
 function test(name, fn) {
-  try { fn(); passed++; console.log(`  ✓ ${name}`); }
-  catch (e) { console.error(`  ✗ ${name}\n    ${e.message}`); process.exitCode = 1; }
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') {
+      pending.push(r.then(
+        () => { passed++; console.log(`  ✓ ${name}`); },
+        e => { console.error(`  ✗ ${name}\n    ${e.message}`); process.exitCode = 1; }));
+      return;
+    }
+    passed++; console.log(`  ✓ ${name}`);
+  } catch (e) { console.error(`  ✗ ${name}\n    ${e.message}`); process.exitCode = 1; }
 }
 
 console.log('\nname normalization');
@@ -261,6 +270,164 @@ test('the acting peer\'s name replaces the captured clinician\'s in display fiel
   assert.ok(!JSON.stringify(p).includes('Captured, Clinician'));
 });
 
+console.log('\nper-type billing (the whole mapping, at every occurrence)');
+
+// A stand-in for the stored pack, carrying type 1273's billing in all eighteen
+// places the real capture does -- including the underscore variant that a
+// dot-segment suffix rule structurally cannot reach.
+function packWith1273() {
+  return {
+    appointment: { url: 'u', params: {
+      'objCpt[0][EncounterTypeCPTMapID]': '418', 'objCpt[0][CPT_Code]': 'H0038',
+      'objCpt[0][CPT_Description]': 'Self-help/peer svc per 15min',
+      'objCpt[0][M1]': '338', 'objCpt[0][M2]': '', 'objCpt[0][M3]': '', 'objCpt[0][M4]': '',
+      'objCpt[0][Units]': '1', 'objCpt[0][CPTMapTypeID]': '1',
+      'objBookAppointmentss[POSCode]': '99',
+      'objBookAppointmentss[POSCodeDescription]': '99 - Other Place of Service',
+      'objBookAppointmentss[ProcedureCodeDescription]': 'H0038 - Self-help (Modifiers: U4; Units: 1.00) |',
+      'objBookAppointmentss[ProgramManagementDetailID]': '6519',
+      'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': '6519',
+      'objBookAppointmentss[VisitTypeID]': '1273',
+    } },
+    encounter: { url: 'u', params: {
+      'SEEncounterDetails.SECPTCode': 'H0038#*#&*&418',
+      'SEEncounterDetails_SECPTCode': 'H0038#*#&*&418',
+      'SEEncounterDetails.SECPTModifiers': 'H0038#*#&*&418,338,,,,1.00,&*%^1,&*%^1',
+      'SEEncounterDetails.SECPTDescription': 'H0038#*#&*&418 -  Self-help/peer svc per 15min',
+      'SEEncounterDetails.SEPOSCode': '99',
+      'SEEncounterDetails.SEPOSDescription': 'Other Place of Service',
+      'SEEncounterDetails.SEEncounterTypeID': '1273',
+      'SEEncounterDetails.OldSEEncounterTypeID': '1273',
+      'SEEncounterDetails.ProgramManagementDetailID': '6519',
+      'SEEncounterDetails.ProgramManagementID': '18',
+    } },
+    close: { url: 'u', params: {
+      'SaveEndEncounter[EncounterTypeID]': '1273',
+      'SaveEndEncounter[ProgramManagementDetailID]': '6519',
+    } },
+    note: { url: 'u', params: { 'data[ControlId_3]': '', 'data[ControlId_24]': '', 'data[ControlId_5]': '',
+      'data[ControlId_22]': '', 'data[ControlId_7]': '', 'data[ControlId_20]': '', 'data[ControlId_9]': '',
+      'data[ControlId_11]': '', 'data[ControlId_12]': '', 'data[ControlId_13]': '', 'data[TemplateId]': '973' } },
+  };
+}
+
+// What InSync actually returns for 1253 (verified live).
+const BILLING_1253 = {
+  cptMapId: '401', cptCode: 'H0038', cptDescription: 'Self-help/peer svc per 15min',
+  m1: '', m2: '', m3: '', m4: '', units: '1.00', cptMapTypeId: '1',
+  posCode: '12', posId: '2', posDescription: '12 - Home',
+  programManagementDetailId: '5996', programManagementId: '30',
+};
+
+function prepared1253() {
+  const { fields } = X.buildNoteFields(n1, {});
+  return X.preparePayloads({
+    templates: packWith1273(),
+    capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253,
+      patientId: '622616', patientName: 'Nissim Gadayev',
+      providerId: '2620', providerName: 'Brand, Shmuel',
+      visitTypeId: '1253',
+      visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: n1.sessionDate, sessionStartMinutes: n1.sessionStartMinutes,
+      duration: n1.durationMinutes, noteFields: fields,
+    },
+    visitId: '0', encounterId: '99', signingPin: '',
+  });
+}
+
+test('no value belonging to the captured type survives anywhere', () => {
+  const blob = JSON.stringify(prepared1253());
+  for (const bad of ['418', '338', '6519', '1273', '99 - Other Place of Service']) {
+    assert.ok(!blob.includes(bad), `${bad} (the captured type's) survived into the payload`);
+  }
+});
+
+test('the appointment CPT grid carries 1253 mapping, not 1273', () => {
+  const p = prepared1253().appointment.params;
+  assert.strictEqual(p['objCpt[0][EncounterTypeCPTMapID]'], '401');
+  assert.strictEqual(p['objCpt[0][CPT_Code]'], 'H0038');
+  assert.strictEqual(p['objCpt[0][M1]'], '', 'English at-home must carry NO modifier');
+  assert.strictEqual(p['objCpt[0][Units]'], '1.00');
+  assert.strictEqual(p['objCpt[0][CPTMapTypeID]'], '1');
+  assert.strictEqual(p['objBookAppointmentss[POSCode]'], '12');
+  assert.strictEqual(p['objBookAppointmentss[POSCodeDescription]'], '12 - Home');
+  assert.ok(!/Modifiers/.test(p['objBookAppointmentss[ProcedureCodeDescription]']));
+  assert.strictEqual(p['objBookAppointmentss[VisitTypeID]'], '1253');
+});
+
+test('the encounter composites are rebuilt, including the underscore variant', () => {
+  const p = prepared1253().encounter.params;
+  assert.strictEqual(p['SEEncounterDetails.SECPTCode'], 'H0038#*#&*&401');
+  assert.strictEqual(p['SEEncounterDetails_SECPTCode'], 'H0038#*#&*&401',
+    'the underscore key is one dot-segment; a suffix rule cannot reach it');
+  assert.strictEqual(p['SEEncounterDetails.SECPTModifiers'], 'H0038#*#&*&401,,,,,1.00,&*%^1,&*%^1');
+  assert.strictEqual(p['SEEncounterDetails.SECPTDescription'], 'H0038#*#&*&401 -  Self-help/peer svc per 15min');
+  assert.strictEqual(p['SEEncounterDetails.SEPOSCode'], '12');
+  assert.strictEqual(p['SEEncounterDetails.SEPOSDescription'], 'Home');
+  assert.strictEqual(p['SEEncounterDetails.SEEncounterTypeID'], '1253');
+  assert.strictEqual(p['SEEncounterDetails.OldSEEncounterTypeID'], '1253');
+});
+
+test("the patient's own program replaces the captured one, everywhere", () => {
+  const r = prepared1253();
+  assert.strictEqual(r.appointment.params['objBookAppointmentss[ProgramManagementDetailID]'], '5996');
+  assert.strictEqual(r.appointment.params['objBookAppointmentss[PMAlertData][ProgramManagementDetailID]'], '5996');
+  assert.strictEqual(r.encounter.params['SEEncounterDetails.ProgramManagementDetailID'], '5996');
+  assert.strictEqual(r.encounter.params['SEEncounterDetails.ProgramManagementID'], '30');
+  assert.strictEqual(r.close.params['SaveEndEncounter[ProgramManagementDetailID]'], '5996');
+});
+
+test('the base note form is used, with no offsite justification field', () => {
+  const p = prepared1253().note.params;
+  assert.strictEqual(p['data[TemplateId]'], '973');
+  assert.ok(!Object.keys(p).some(k => /ControlId_27/.test(k)));
+  assert.strictEqual(p['data[ControlId_12]'], 'Nissim Gadayev');
+  assert.strictEqual(p['data[ControlId_13]'], 'Brand, Shmuel');
+});
+
+test('a half-written billing pass is refused rather than sent', () => {
+  // Simulate a field the writer missed: assertBilling must catch the mismatch.
+  const templates = packWith1273();
+  templates.encounter.params['SEEncounterDetails.SECPTCodeX'] = 'unused';
+  const bad = { ...BILLING_1253, cptMapId: '' };
+  const { fields } = X.buildNoteFields(n1, {});
+  assert.throws(() => X.preparePayloads({
+    templates, capturedVisitTypeId: '1273',
+    ctx: { billing: bad, patientId: '1', patientName: 'p', providerId: '2', providerName: 'q',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: n1.sessionDate, sessionStartMinutes: n1.sessionStartMinutes,
+      duration: 180, noteFields: fields },
+    visitId: '0', encounterId: '0', signingPin: '',
+  }), /billing does not match/);
+});
+
+console.log('\nOffsite is switched off');
+test('executing an Offsite type is refused', async () => {
+  let threw = null;
+  try {
+    await X.executeNote({
+      templates: packWith1273(), dryRun: true, log: async () => {},
+      ctx: { offsite: true, visitTypeId: '1271',
+        visitTypeName: 'Peer Support - Individual - English - In-person outside the clinic - Offsite' },
+    });
+  } catch (e) { threw = e; }
+  assert.ok(threw && /Offsite encounter types are not enabled/.test(threw.message));
+});
+
+console.log('\npatient search name forms');
+test('portal "First Last" becomes InSync "Last, First", surname as fallback', () => {
+  assert.deepStrictEqual(M.splitName('Yitzchok Hornstein'), { first: 'Yitzchok', last: 'Hornstein' });
+  assert.deepStrictEqual(M.patientQueries('Yitzchok Hornstein'), ['Hornstein, Yitzchok', 'Hornstein']);
+  // middle names ride with the first name
+  assert.deepStrictEqual(M.patientQueries('Chana Rochel Englard'), ['Englard, Chana Rochel', 'Englard']);
+  // single-token and hyphenated surnames stay intact
+  assert.deepStrictEqual(M.patientQueries('Madonna'), ['Madonna']);
+  assert.strictEqual(M.splitName('Anne-Marie Dyke').last, 'Dyke');
+  assert.deepStrictEqual(M.patientQueries(''), []);
+});
+
 console.log('\ncredential crypto');
 test('round-trips, and two encryptions of one secret differ', () => {
   const a = C.encrypt('hunter2'), b = C.encrypt('hunter2');
@@ -347,4 +514,6 @@ test('the interventions multi-select is patched into the rendered HTML as labels
   assert.ok(!out.includes('OLD'));
 });
 
-console.log(`\n${passed} assertions passed${process.exitCode ? ' (with failures above)' : ''}\n`);
+Promise.all(pending).then(() => {
+  console.log(`\n${passed} assertions passed${process.exitCode ? ' (with failures above)' : ''}\n`);
+});

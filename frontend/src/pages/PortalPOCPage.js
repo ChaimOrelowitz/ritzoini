@@ -66,8 +66,17 @@ const td = { padding: '8px', fontSize: '0.82rem', verticalAlign: 'top', borderTo
 // InSync patient. Ambiguity must never resolve itself.
 // ---------------------------------------------------------------------------
 
+// InSync matches patients on "Last, First" and returns nothing for "First Last",
+// so the manual search has to start where resolution starts — otherwise typing
+// the name straight off the row finds nobody.
+function lastFirst(full) {
+  const parts = String(full || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return parts.join(' ');
+  return `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`;
+}
+
 function ClientConfirmModal({ note, resolution, onClose, onConfirmed }) {
-  const [q, setQ] = useState(note.clientName || '');
+  const [q, setQ] = useState(lastFirst(note.clientName));
   const [rows, setRows] = useState(resolution.client_candidates || []);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -215,11 +224,7 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient }) {
               ? `${r.visit_type_auto ? 'auto-matched' : 'overridden'}${r.visit_type_offsite ? ' · OFFSITE form' : ''}`
               : (flagFor('encounter_type')[0]?.message || 'not matched')}
           </div>
-          {r.visit_type_id && (
-            r.visit_type_verified
-              ? <div style={{ color: '#166534', fontSize: '0.72rem', fontWeight: 700 }}>✓ payload-verified</div>
-              : <div style={{ color: '#991b1b', fontSize: '0.72rem', fontWeight: 700 }}>⚠ not payload-verified — live blocked</div>
-          )}
+
         </td>
         <td style={{ ...td, color: 'var(--gray-400)', fontSize: '0.75rem' }}>checked on run</td>
         <td style={td}><Pill status={row.status} /></td>
@@ -298,6 +303,11 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient }) {
                 try {
                   const p = await api.get(`/portal/runs/${runId}/notes/${row.id}/payloads`);
                   const w = window.open('', '_blank');
+                  if (p.billing) {
+                    w.document.write('<h3>Billing resolved live from InSync</h3><pre>'
+                      + JSON.stringify(p.billing, null, 2).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                      + '</pre><hr>');
+                  }
                   w.document.write('<pre>' + JSON.stringify(p, null, 2)
                     .replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</pre>');
                   w.document.title = `Payloads — ${note.clientName} ${note.sessionDate}`;
@@ -306,27 +316,6 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient }) {
               View prepared payloads (payload-diff gate)
             </button>
 
-            {r.visit_type_id && !r.visit_type_verified && (
-              <button className="btn btn-outline"
-                style={{ fontSize: '0.72rem', padding: '2px 8px', marginTop: 4, marginLeft: 8, color: '#991b1b' }}
-                onClick={async () => {
-                  if (!window.confirm(
-                    `Mark encounter type ${r.visit_type_id} as payload-verified?\n\n` +
-                    `${r.visit_type_name}\n\n` +
-                    `Only do this after comparing this type's prepared payloads against a real ` +
-                    `manual capture of the SAME type. The stored templates carry the captured ` +
-                    `type's CPT / modifier / POS mapping, so an unverified type can bill wrongly.`)) return;
-                  try {
-                    await api.post('/portal/verified-types', {
-                      insync_visit_type_id: r.visit_type_id,
-                      insync_visit_type_name: r.visit_type_name,
-                    });
-                    await onChanged();
-                  } catch (ex) { alert(ex.message); }
-                }}>
-                Mark this type payload-verified
-              </button>
-            )}
           </td>
         </tr>
       )}
@@ -611,14 +600,11 @@ export default function PortalPOCPage() {
       )}
       {status && status.captured_visit_type_id && (
         <Banner tone="info">
-          The write templates were captured against encounter type{' '}
-          <strong>{status.captured_visit_type_id}</strong>, and carry that type's CPT / modifier /
-          POS mapping. Any other type must be payload-verified before it can run live —{' '}
-          {status.verified_types?.length
-            ? <>verified so far: <strong>{status.verified_types.map(v => v.insync_visit_type_id).join(', ')}</strong>.</>
-            : <>none verified yet.</>}
-          {!status.offsite_form_available &&
-            ' No Offsite note form is stored, so Offsite encounter types are blocked; base types are unaffected.'}
+          CPT code, modifiers, units and place of service are read from InSync for whichever
+          encounter type each note resolves to — they are never taken from the stored request
+          templates (captured against type <strong>{status.captured_visit_type_id}</strong>).
+          Offsite types are switched off: the portal has no field for the justification their
+          note form requires.
         </Banner>
       )}
       {status && status.missing_captures?.length > 0 && (
