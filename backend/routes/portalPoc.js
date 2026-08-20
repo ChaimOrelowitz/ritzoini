@@ -93,6 +93,43 @@ router.get('/status', ...guard, async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// Turn a row's flags into the short list of things somebody has to DO to make it
+// runnable. The flags carry the diagnosis; this is the instruction. Computed
+// here rather than in the page so the review screen and any future report agree.
+function neededActions(resolution, flags, note) {
+  const r = resolution || {};
+  const has = field => (flags || []).some(f => f.field === field);
+  const needs = [];
+
+  if (!r.peer_id)            needs.push(`Add peer "${note?.peerName || '?'}"`);
+  else if (!r.provider_id)   needs.push(`Set ${r.peer_name || 'peer'}'s InSync provider ID`);
+  if (r.peer_id && (flags || []).some(f => f.field === 'peer' && /no stored InSync login/.test(f.message))) {
+    needs.push(`Add ${r.peer_name || 'peer'}'s InSync login`);
+  }
+  if (r.peer_id && (flags || []).some(f => f.field === 'peer' && /inactive/.test(f.message))) {
+    needs.push(`${r.peer_name || 'Peer'} is inactive`);
+  }
+
+  if (!r.patient_id) {
+    const one = (r.client_candidates || []).find(c => c.dob_matches);
+    needs.push(one
+      ? `Bind patient — ${one.name}${one.mrn ? ` (MRN ${one.mrn})` : ''}`
+      : (r.client_candidates || []).length
+        ? `Pick the right patient (${r.client_candidates.length} candidates)`
+        : `Find patient "${note?.clientName || '?'}" in InSync`);
+  }
+
+  if (!r.visit_type_id)      needs.push('Pick an encounter type');
+  if (!r.duration)           needs.push('Portal note has no session duration');
+
+  for (const f of flags || []) {
+    if (f.field === 'note' && f.blocking) needs.push(f.message);
+  }
+  if (has('dedupe')) needs.push('Already processed — will be skipped');
+
+  return needs;
+}
+
 // The encounter type the WRITE templates were captured against. Those payloads
 // carry that type's CPT / modifier / POS / copay scaffolding, so any other type
 // is replaying someone else's billing setup with the id swapped.
@@ -414,6 +451,7 @@ async function resolveRun(runId) {
     const blocking = flags.filter(f => f.blocking !== false);
     const ready = !!(resolution.provider_id && resolution.patient_id && resolution.visit_type_id
                      && resolution.duration && blocking.length === 0);
+    resolution.needs = ready ? [] : neededActions(resolution, flags, note);
 
     updates.push({
       id: row.id, resolution, flags,
@@ -573,6 +611,7 @@ router.patch('/runs/:runId/notes/:noteId', ...guard, async (req, res) => {
 
     const ready = !!(resolution.provider_id && resolution.patient_id && resolution.visit_type_id
                      && resolution.duration && flags.filter(f => f.blocking !== false).length === 0);
+    resolution.needs = ready ? [] : neededActions(resolution, flags, row.note);
 
     const patch = { resolution, flags, updated_at: new Date().toISOString() };
     if (req.body.status === 'skipped') patch.status = 'skipped';

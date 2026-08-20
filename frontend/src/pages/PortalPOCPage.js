@@ -163,7 +163,7 @@ function ClientConfirmModal({ note, resolution, onClose, onConfirmed }) {
 // One staged note on the review screen.
 // ---------------------------------------------------------------------------
 
-function ReviewRow({ runId, row, onChanged, onConfirmClient }) {
+function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, signOnRun }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const r = row.resolution || {};
@@ -227,11 +227,36 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient }) {
 
         </td>
         <td style={{ ...td, color: 'var(--gray-400)', fontSize: '0.75rem' }}>checked on run</td>
-        <td style={td}><Pill status={row.status} /></td>
-        <td style={{ ...td, textAlign: 'right' }}>
+        <td style={td}>
+          <Pill status={row.status} />
+          {(r.needs || []).length > 0 && (
+            <ul style={{ margin: '5px 0 0', paddingLeft: 15, listStyle: 'disc' }}>
+              {r.needs.map((n, i) => (
+                <li key={i} style={{ fontSize: '0.72rem', color: '#991b1b', lineHeight: 1.35 }}>{n}</li>
+              ))}
+            </ul>
+          )}
+        </td>
+        <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
+          {row.status === 'ready' && (
+            <>
+              {/* Per-note execution. The batch GO runs everything Ready; this
+                  runs exactly this row, which is how you do the first live one. */}
+              <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
+                disabled={busy || running} onClick={() => onRunOne(row, 'dry_run')}>
+                Dry run
+              </button>
+              <br />
+              <button className="btn btn-gold" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
+                disabled={busy || running} onClick={() => onRunOne(row, 'live')}>
+                {signOnRun ? 'Run live + sign' : 'Run live'}
+              </button>
+              <br />
+            </>
+          )}
           {row.status !== 'done' && (
             <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
-              disabled={busy}
+              disabled={busy || running}
               onClick={() => patch({ status: row.status === 'skipped' ? 'needs_attention' : 'skipped' })}>
               {row.status === 'skipped' ? 'Unskip' : 'Skip'}
             </button>
@@ -461,6 +486,9 @@ export default function PortalPOCPage() {
   const [busy, setBusy] = useState('');
   const [editingPeer, setEditingPeer] = useState(null);
   const [confirmingClient, setConfirmingClient] = useState(null);
+  // Whether a run signs. Shared by the batch GO and the per-note buttons so the
+  // two can never mean different things.
+  const [signOnRun, setSignOnRun] = useState(false);
   const fileRef = useRef(null);
   const lastEventId = useRef(0);
   const pollRef = useRef(null);
@@ -537,6 +565,30 @@ export default function PortalPOCPage() {
     setBusy('resolve');
     try { await api.post(`/portal/runs/${current.run.id}/resolve`, {}); await refreshCurrent(); }
     catch (ex) { alert(ex.message); }
+    finally { setBusy(''); }
+  }
+
+  // Run exactly one note. Same endpoint as the batch, scoped by note_ids — which
+  // is how you send the first live encounter without committing to all of them.
+  async function runOne(row, mode) {
+    const who = `${row.note.clientName} — ${fmtDate(row.note.sessionDate)} ${row.note.sessionStartClock || ''}`;
+    if (mode === 'live') {
+      if (!window.confirm(
+        `LIVE — ONE NOTE\n\n${who}\n${row.resolution.visit_type_name}\n\n` +
+        `This creates and closes a real encounter in InSync as ${row.resolution.peer_name || row.note.peerName}` +
+        `${signOnRun ? ', and signs it with their PIN' : ', without signing'}.\n\nContinue?`)) return;
+      if (signOnRun && !window.confirm(
+        `SIGNING\n\nThis commits a billable clinical note under ${row.resolution.peer_name || row.note.peerName}'s ` +
+        `credentials.\n\nSign it?`)) return;
+    }
+    setBusy('execute');
+    try {
+      await api.post(`/portal/runs/${current.run.id}/execute`, {
+        mode, sign: mode === 'live' && signOnRun, confirm: mode === 'live', note_ids: [row.id],
+      });
+      setEvents([]); lastEventId.current = 0;
+      setCurrent(c => ({ ...c, run: { ...c.run, status: 'executing' } }));
+    } catch (ex) { alert(ex.message); }
     finally { setBusy(''); }
   }
 
@@ -691,20 +743,21 @@ export default function PortalPOCPage() {
             <button className="btn btn-outline" onClick={() => execute('dry_run', false)} disabled={busy || running}>
               Dry run
             </button>
-            <button className="btn btn-outline" onClick={() => execute('live', false)}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' }}>
+              <input type="checkbox" checked={signOnRun} onChange={e => setSignOnRun(e.target.checked)} />
+              Sign after closing
+            </label>
+            <button className="btn btn-gold" onClick={() => execute('live', signOnRun)}
               disabled={busy || running || !status?.live_ready}>
-              Run live (no signing)
-            </button>
-            <button className="btn btn-gold" onClick={() => execute('live', true)}
-              disabled={busy || running || !status?.live_ready}>
-              GO — run live &amp; sign
+              GO — run all Ready {signOnRun ? '& sign' : 'live'}
             </button>
           </div>
 
           <Banner tone="info">
-            Only rows marked <strong>Ready</strong> run. Everything else is held until you resolve it.
-            Whether an appointment already exists can only be checked once signed in as the peer,
-            so it resolves during the run.
+            Only rows marked <strong>Ready</strong> run. Everything else lists what it needs in the
+            Status column. Each Ready row can be dry-run or sent live on its own — start with one —
+            or use GO to run every Ready row. Whether an appointment already exists is only knowable
+            once signed in as the peer, so it resolves during the run.
           </Banner>
 
           <div style={{ ...card, overflowX: 'auto' }}>
@@ -718,7 +771,8 @@ export default function PortalPOCPage() {
                 {notes.map(row => (
                   <ReviewRow key={row.id} runId={current.run.id} row={row}
                     onChanged={refreshCurrent}
-                    onConfirmClient={setConfirmingClient} />
+                    onConfirmClient={setConfirmingClient}
+                    onRunOne={runOne} running={running} signOnRun={signOnRun} />
                 ))}
               </tbody>
             </table>
