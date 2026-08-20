@@ -20,6 +20,7 @@ const {
 } = require('./privateAccess');
 const { fetchActiveCaseload, fetchInstructors } = require('./psCaseload');
 const { renderBook } = require('./vcard');
+const { MAX_BODY_BYTES } = require('./davEnvelope');
 
 const ROOT       = '/carddav';
 const PRINCIPAL  = `${ROOT}/principals/dsc/`;
@@ -281,10 +282,227 @@ async function loadBook(slug) {
   return { slug, book, cards, ctag };
 }
 
-const hrefsIn = xml => [...String(xml || '')
-  .matchAll(/<[\w-]*:?href\s*>([\s\S]*?)<\/[\w-]*:?href\s*>/gi)]
-  .map(m => m[1].trim())
-  .filter(Boolean);
+const XML_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?$/;
+const MAX_MULTIGET_HREFS = 1000;
+const MAX_HREF_CHARS = 2048;
+
+class MultigetXmlError extends Error {
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function xmlEntityDecode(value) {
+  let out = '';
+  for (let i = 0; i < value.length;) {
+    if (value[i] !== '&') {
+      out += value[i++];
+      continue;
+    }
+
+    const end = value.indexOf(';', i + 1);
+    if (end < 0) throw new MultigetXmlError('unterminated entity');
+    const entity = value.slice(i + 1, end);
+    const named = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+    let decoded = named[entity];
+    let numeric = null;
+
+    if (decoded === undefined && /^#\d+$/.test(entity)) {
+      numeric = Number(entity.slice(1));
+    } else if (decoded === undefined && /^#x[0-9a-f]+$/i.test(entity)) {
+      numeric = parseInt(entity.slice(2), 16);
+    } else if (decoded === undefined) {
+      throw new MultigetXmlError('unsupported entity');
+    }
+
+    const cp = numeric === null ? decoded.codePointAt(0) : numeric;
+    if (cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ||
+        (cp < 0x20 && cp !== 0x09 && cp !== 0x0a && cp !== 0x0d)) {
+      throw new MultigetXmlError('invalid XML character');
+    }
+    if (numeric !== null) decoded = String.fromCodePoint(numeric);
+    out += decoded;
+    i = end + 1;
+  }
+  return out;
+}
+
+function splitQName(name) {
+  if (!XML_NAME.test(name)) throw new MultigetXmlError('invalid XML name');
+  const colon = name.indexOf(':');
+  return colon < 0
+    ? { prefix: '', local: name }
+    : { prefix: name.slice(0, colon), local: name.slice(colon + 1) };
+}
+
+function parseStartTag(source) {
+  let text = source.trim();
+  const selfClosing = text.endsWith('/');
+  if (selfClosing) text = text.slice(0, -1).trimEnd();
+
+  const nameMatch = text.match(/^([^\s]+)([\s\S]*)$/);
+  if (!nameMatch) throw new MultigetXmlError('missing XML name');
+  const name = nameMatch[1];
+  splitQName(name);
+
+  const attrs = [];
+  const seen = new Set();
+  let rest = nameMatch[2];
+  while (rest.length) {
+    const ws = rest.match(/^\s+/);
+    if (!ws) throw new MultigetXmlError('malformed attributes');
+    rest = rest.slice(ws[0].length);
+    if (!rest.length) break;
+
+    const attr = rest.match(/^([^\s=]+)\s*=\s*(["'])([\s\S]*?)\2/);
+    if (!attr) throw new MultigetXmlError('malformed attribute');
+    splitQName(attr[1]);
+    if (seen.has(attr[1])) throw new MultigetXmlError('duplicate attribute');
+    seen.add(attr[1]);
+    attrs.push([attr[1], xmlEntityDecode(attr[3])]);
+    rest = rest.slice(attr[0].length);
+  }
+  return { name, attrs, selfClosing };
+}
+
+function tagEnd(xml, start) {
+  let quote = null;
+  for (let i = start; i < xml.length; i++) {
+    const ch = xml[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '>') {
+      return i;
+    }
+  }
+  throw new MultigetXmlError('unterminated tag');
+}
+
+// A deliberately narrow XML parser for CardDAV multiget. There is no XML
+// dependency in this service. This accepts Apple's namespace declarations on
+// each href, but only collects DAV:href elements that are direct children of a
+// CardDAV addressbook-multiget root. Nested/unrelated href elements cannot be
+// mistaken for requested cards. DTDs and custom entities are never interpreted.
+function multigetHrefs(xml) {
+  const body = typeof xml === 'string' ? xml : '';
+  if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
+    throw new MultigetXmlError('body too large', 413);
+  }
+
+  const stack = [];
+  const hrefs = [];
+  let rootSeen = false;
+  let rootClosed = false;
+  let hrefText = null;
+
+  for (let i = 0; i < body.length;) {
+    if (body[i] !== '<') {
+      const next = body.indexOf('<', i);
+      const end = next < 0 ? body.length : next;
+      const chunk = body.slice(i, end);
+      if (hrefText !== null) hrefText += chunk;
+      else if (!stack.length && chunk.trim()) throw new MultigetXmlError('text outside root');
+      i = end;
+      continue;
+    }
+
+    if (body.startsWith('<!--', i)) {
+      const end = body.indexOf('-->', i + 4);
+      if (end < 0) throw new MultigetXmlError('unterminated comment');
+      if (hrefText !== null) throw new MultigetXmlError('markup inside href');
+      i = end + 3;
+      continue;
+    }
+    if (body.startsWith('<?', i)) {
+      const end = body.indexOf('?>', i + 2);
+      if (end < 0) throw new MultigetXmlError('unterminated processing instruction');
+      if (hrefText !== null) throw new MultigetXmlError('markup inside href');
+      i = end + 2;
+      continue;
+    }
+    if (body.startsWith('<!', i)) throw new MultigetXmlError('declarations are not allowed');
+
+    const end = tagEnd(body, i + 1);
+    const raw = body.slice(i + 1, end);
+    if (raw.startsWith('/')) {
+      const closeName = raw.slice(1).trim();
+      splitQName(closeName);
+      const current = stack[stack.length - 1];
+      if (!current || current.name !== closeName) throw new MultigetXmlError('mismatched closing tag');
+
+      if (current.isHref) {
+        const href = xmlEntityDecode(hrefText).trim();
+        if (!href || href.length > MAX_HREF_CHARS) throw new MultigetXmlError('invalid href');
+        hrefs.push(href);
+        if (hrefs.length > MAX_MULTIGET_HREFS) throw new MultigetXmlError('too many hrefs', 413);
+        hrefText = null;
+      }
+      stack.pop();
+      if (!stack.length) rootClosed = true;
+      i = end + 1;
+      continue;
+    }
+
+    if (rootClosed) throw new MultigetXmlError('multiple root elements');
+    if (hrefText !== null) throw new MultigetXmlError('markup inside href');
+
+    const tag = parseStartTag(raw);
+    const parentNs = stack.length ? stack[stack.length - 1].nsMap : new Map();
+    const nsMap = new Map(parentNs);
+    for (const [name, value] of tag.attrs) {
+      if (name === 'xmlns') nsMap.set('', value);
+      else if (name.startsWith('xmlns:')) nsMap.set(name.slice(6), value);
+    }
+    const qname = splitQName(tag.name);
+    const ns = nsMap.get(qname.prefix);
+    if (ns === undefined) throw new MultigetXmlError('undeclared namespace prefix');
+
+    if (!rootSeen) {
+      if (qname.local !== 'addressbook-multiget' ||
+          ns !== 'urn:ietf:params:xml:ns:carddav') {
+        throw new MultigetXmlError('wrong root element');
+      }
+      rootSeen = true;
+    }
+
+    const isHref = stack.length === 1 && qname.local === 'href' && ns === 'DAV:';
+    const entry = { name: tag.name, nsMap, isHref };
+    if (tag.selfClosing) {
+      if (isHref) throw new MultigetXmlError('empty href');
+      if (!stack.length) rootClosed = true;
+    } else {
+      stack.push(entry);
+      if (isHref) hrefText = '';
+    }
+    i = end + 1;
+  }
+
+  if (!rootSeen || !rootClosed || stack.length) throw new MultigetXmlError('incomplete XML');
+  return hrefs;
+}
+
+function filenameFromMultigetHref(href, slug) {
+  let url;
+  try {
+    url = new URL(href, `https://carddav.invalid${bookHref(slug)}`);
+  } catch {
+    return null;
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.search || url.hash) return null;
+
+  const prefix = bookHref(slug);
+  if (!url.pathname.startsWith(prefix)) return null;
+  const encoded = url.pathname.slice(prefix.length);
+  if (!encoded || encoded.includes('/')) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
+}
 
 const tokenIn = xml => {
   const m = String(xml || '').match(/<[\w-]*:?sync-token\s*>([\s\S]*?)<\/[\w-]*:?sync-token\s*>/i);
@@ -454,7 +672,17 @@ async function dispatch({ route, method, headers, body, depth }) {
 
     // addressbook-multiget — only the hrefs the client names
     if (/<[\w-]*:?addressbook-multiget[\s>]/i.test(body)) {
-      const wanted = new Set(hrefsIn(body).map(h => decodeURIComponent(h.split('/').pop())));
+      let hrefs;
+      try {
+        hrefs = multigetHrefs(body);
+      } catch (err) {
+        const status = err instanceof MultigetXmlError ? err.status : 400;
+        console.warn(`[carddav] REPORT multiget book:${loaded.slug} invalid XML ${status}`);
+        return davError(status, '<D:valid-request/>');
+      }
+      const wanted = new Set(hrefs
+        .map(h => filenameFromMultigetHref(h, loaded.slug))
+        .filter(Boolean));
       const hit = loaded.cards.filter(c => wanted.has(c.filename));
       console.log(`[carddav] REPORT multiget book:${loaded.slug} asked=${wanted.size} sent=${hit.length} 207`);
       return multistatus(hit.map(emit));
