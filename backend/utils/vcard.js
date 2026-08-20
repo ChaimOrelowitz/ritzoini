@@ -113,7 +113,10 @@ const etagFor = body => `"${hash(body).slice(0, 32)}"`;
 //       adopted it as a sync baseline without having received the members it
 //       stood for, and then correctly concluded nothing had changed. Bumping
 //       invalidates every token already handed out that way.
-const COLLECTION_SCHEMA = 3;
+// Bump whenever a protocol change requires clients to discard a previously
+// cached collection representation. Schema 4 forces iOS clients that cached
+// the pre-fix empty multiget result to perform a fresh member sync.
+const COLLECTION_SCHEMA = 4;
 
 // One value that changes whenever any member changes — serves as both the
 // collection CTag and the sync-token payload.
