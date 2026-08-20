@@ -97,6 +97,7 @@ const {
 } = require('../utils/contactDirectory');
 const { isCurrentPeriod, selectActiveCaseload } = require('../utils/psCaseload');
 const { buildVCard, renderBook, etagFor, fold } = require('../utils/vcard');
+const { handleDav } = require('../utils/carddavCore');
 const carddav = require('../routes/carddav');
 const dscRoutes = require('../routes/dscRecipients');
 
@@ -773,6 +774,78 @@ async function carddavTests() {
     assert.strictEqual(r.status, 207);
     assert.ok(r.text.includes('ritzoini-peer-recA.vcf'));
     assert.ok(!r.text.includes('ritzoini-peer-recB.vcf'), 'multiget returned an unrequested card');
+  });
+
+  // Exact shape captured from iPhone Contacts: the href prefix is declared on
+  // each href element. The old extractor required `>` immediately after the
+  // tag name, counted zero hrefs, and returned an empty 207 forever.
+  await test('Apple multiget href namespace attributes return every requested card', async () => {
+    const body = '<?xml version="1.0" encoding="utf-8"?>' +
+      '<A:addressbook-multiget xmlns:A="urn:ietf:params:xml:ns:carddav">' +
+      '<A:prop><A:address-data/></A:prop>' +
+      '<A:href xmlns:A="DAV:">/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recA.vcf</A:href>' +
+      '<B:href xmlns:B="DAV:">https://ritzoini-contacts.example.test/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recB.vcf</B:href>' +
+      '<D:href xmlns:D="DAV:">ritzoini-peer-recC.vcf</D:href>' +
+      '</A:addressbook-multiget>';
+    const r = await req('REPORT', '/carddav/addressbooks/dsc/dsc-peers/',
+      { auth: basic(), headers: { Depth: '1', 'Content-Type': 'text/xml' }, body });
+    assert.strictEqual(r.status, 207);
+    assert.strictEqual((r.text.match(/<D:response>/g) || []).length, 3);
+    assert.strictEqual((r.text.match(/<C:address-data>/g) || []).length, 3);
+    for (const id of ['recA', 'recB', 'recC']) assert.ok(r.text.includes(`ritzoini-peer-${id}.vcf`));
+  });
+
+  await test('multiget decodes XML entities but ignores nested, foreign and cross-book hrefs', async () => {
+    const body = '<?xml version="1.0"?>' +
+      '<C:addressbook-multiget xmlns:C="urn:ietf:params:xml:ns:carddav" xmlns:D="DAV:" xmlns:X="urn:not-dav">' +
+      '<D:prop><D:href>/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recB.vcf</D:href></D:prop>' +
+      '<X:href>/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recB.vcf</X:href>' +
+      '<D:href>/carddav/addressbooks/dsc/instructors/ritzoini-peer-recB.vcf</D:href>' +
+      '<D:href>&#47;carddav&#47;addressbooks&#47;dsc&#47;dsc-peers&#47;ritzoini-peer-rec&#x41;.vcf</D:href>' +
+      '</C:addressbook-multiget>';
+    const r = await req('REPORT', '/carddav/addressbooks/dsc/dsc-peers/',
+      { auth: basic(), headers: { Depth: '1', 'Content-Type': 'text/xml' }, body });
+    assert.strictEqual(r.status, 207);
+    assert.strictEqual((r.text.match(/<D:response>/g) || []).length, 1);
+    assert.ok(r.text.includes('ritzoini-peer-recA.vcf'));
+    assert.ok(!r.text.includes('ritzoini-peer-recB.vcf'));
+  });
+
+  await test('malformed Apple multiget is rejected instead of becoming an empty 207', async () => {
+    const body = '<A:addressbook-multiget xmlns:A="urn:ietf:params:xml:ns:carddav">' +
+      '<A:href xmlns:A="DAV:">ritzoini-peer-recA.vcf</A:addressbook-multiget>';
+    const r = await req('REPORT', '/carddav/addressbooks/dsc/dsc-peers/',
+      { auth: basic(), headers: { Depth: '1', 'Content-Type': 'text/xml' }, body });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.text.includes('valid-request'));
+    assert.ok(!r.text.includes('address-data'));
+  });
+
+  await test('oversized multiget XML is rejected at the core boundary', async () => {
+    const body = '<A:addressbook-multiget xmlns:A="urn:ietf:params:xml:ns:carddav">' +
+      ' '.repeat(256 * 1024) + '</A:addressbook-multiget>';
+    const r = await handleDav({
+      method: 'REPORT',
+      path: '/carddav/addressbooks/dsc/dsc-peers/',
+      headers: { authorization: basic(), depth: '1', 'content-type': 'text/xml' },
+      body,
+    });
+    assert.strictEqual(r.status, 413);
+    assert.ok(!r.body.includes('address-data'));
+  });
+
+  await test('Apple multiget remains authenticated and the books remain read-only', async () => {
+    const body = '<A:addressbook-multiget xmlns:A="urn:ietf:params:xml:ns:carddav">' +
+      '<A:href xmlns:A="DAV:">ritzoini-peer-recA.vcf</A:href></A:addressbook-multiget>';
+    const unauthenticated = await req('REPORT', '/carddav/addressbooks/dsc/dsc-peers/',
+      { headers: { Depth: '1', 'Content-Type': 'text/xml' }, body });
+    assert.strictEqual(unauthenticated.status, 401);
+    assert.deepStrictEqual(leaks(unauthenticated.text), []);
+
+    const write = await req('PUT',
+      '/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recA.vcf',
+      { auth: basic(), body: 'BEGIN:VCARD\r\nEND:VCARD\r\n' });
+    assert.strictEqual(write.status, 403);
   });
 
   await test('addressbook-query returns the book', async () => {
