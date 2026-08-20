@@ -41,7 +41,9 @@ async function main() {
   }
 
   if (!profile) {
-    const frontendUrl = process.env.FRONTEND_URL || 'https://ritzoini.corsolutions.io';
+    // Same fallback as routes/users.js, so an invite and a later password reset
+    // never point at different hosts. Set FRONTEND_URL and neither is guessed.
+    const frontendUrl = process.env.FRONTEND_URL || 'https://ritzoini.vercel.app';
     console.log(`No account for ${email} — sending an invite…`);
     const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
       data: { first_name: first || '', last_name: last || '', role: 'supervisor' },
