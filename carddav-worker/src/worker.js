@@ -42,6 +42,45 @@ const isCarddavPath = p =>
   p === '/.well-known/carddav' || p === '/.well-known/carddav/' ||
   p === '/carddav' || p.startsWith('/carddav/');
 
+// ── privacy-safe diagnostics ─────────────────────────────────────────────────
+//
+// Everything below emits labels and integers ONLY. No request or response body,
+// no URL, no record id, no credential, no name, number or address ever reaches
+// a log line. A card's filename is its record id, which is why routes are
+// classified rather than printed.
+
+function routeLabel(p) {
+  if (p === '/' || p === '') return 'root';
+  if (p.startsWith('/.well-known/carddav')) return 'well-known';
+  if (p === '/carddav' || p === '/carddav/') return 'root-collection';
+  if (/^\/carddav\/principals\//.test(p)) return 'principal';
+  if (/^\/carddav\/addressbooks\/dsc\/?$/.test(p)) return 'home';
+  const book = p.match(/^\/carddav\/addressbooks\/dsc\/([A-Za-z0-9_-]+)\/?$/);
+  if (book) return `book:${book[1]}`;
+  const card = p.match(/^\/carddav\/addressbooks\/dsc\/([A-Za-z0-9_-]+)\/[^/]+$/);
+  if (card) return `card-in:${card[1]}`;   // the filename is a record id — never logged
+  return 'other';
+}
+
+// Which REPORT this is. Reads the body but emits only the label.
+function reportKind(text) {
+  if (/<[\w-]*:?sync-collection[\s>]/i.test(text))       return 'sync-collection';
+  if (/<[\w-]*:?addressbook-multiget[\s>]/i.test(text))  return 'multiget';
+  if (/<[\w-]*:?addressbook-query[\s>]/i.test(text))     return 'query';
+  return 'unknown';
+}
+
+const countOf = (text, re) => (text.match(re) || []).length;
+
+// Which Apple daemon is asking — the version string is dropped.
+function agentLabel(ua) {
+  if (!ua) return 'none';
+  if (/dataaccessd/i.test(ua)) return 'ios-dataaccessd';
+  if (/accountsd/i.test(ua))   return 'ios-accountsd';
+  if (/CardDAV|Contacts/i.test(ua)) return 'ios-contacts';
+  return 'other';
+}
+
 const plain = (status, message, extra = {}) =>
   new Response(message, {
     status,
@@ -84,7 +123,12 @@ export default {
       if (inm) headers.set('if-none-match', inm);
 
       const upstream = await fetch(`${origin}${url.pathname}${url.search}`, { method, headers });
-      console.log(`bridge passthrough method=${method} status=${upstream.status}`);
+      console.log('bridge passthrough ' + [
+        `method=${method}`,
+        `route=${routeLabel(url.pathname)}`,
+        `status=${upstream.status}`,
+        `ua=${agentLabel(request.headers.get('user-agent'))}`,
+      ].join(' '));
 
       const out = new Headers(upstream.headers);
       for (const [k, v] of Object.entries(PRIVATE_HEADERS)) out.set(k, v);
@@ -158,7 +202,29 @@ export default {
       ? Uint8Array.from(atob(payload.body_b64), c => c.charCodeAt(0))
       : null;
 
-    console.log(`bridge method=${method} status=${payload.status}`);
+    // Diagnostics: labels and integers only. The bodies are read here to be
+    // classified and counted, and neither is logged.
+    {
+      const reqText = new TextDecoder().decode(raw);
+      const resText = body ? new TextDecoder().decode(body) : '';
+      const parts = [
+        `method=${method}`,
+        `route=${routeLabel(url.pathname)}`,
+        `depth=${request.headers.get('depth') ?? 'none'}`,
+        `status=${payload.status}`,
+        `ua=${agentLabel(request.headers.get('user-agent'))}`,
+      ];
+      if (method === 'REPORT') {
+        parts.push(`report=${reportKind(reqText)}`);
+        // How many cards the client named vs how many came back.
+        parts.push(`hrefs_requested=${countOf(reqText, /<[\w-]*:?href[\s>]/gi)}`);
+      }
+      parts.push(`responses=${countOf(resText, /<[\w-]*:?response[\s>]/gi)}`);
+      parts.push(`address_data=${countOf(resText, /<[\w-]*:?address-data[\s>]/gi)}`);
+      parts.push(`sync_token=${/<[\w-]*:?sync-token[\s>]/i.test(resText) ? 1 : 0}`);
+      parts.push(`bytes=${resText.length}`);
+      console.log('bridge ' + parts.join(' '));
+    }
 
     // The origin's exact status and DAV headers reach the phone — including
     // 401 with WWW-Authenticate, without which Contacts never prompts.

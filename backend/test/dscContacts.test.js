@@ -670,6 +670,33 @@ async function carddavTests() {
     assert.ok(self.includes('<CS:getctag>'), 'and still carry a ctag');
   });
 
+  // Regression: iPhone Contacts read DAV:sync-token off a PROPFIND, adopted it
+  // as a baseline it had never received members for, and every subsequent
+  // sync-collection honestly answered "no changes" — leaving the phone at zero
+  // contacts indefinitely, with no error anywhere.
+  await test('a collection must not advertise DAV:sync-token as a property', async () => {
+    for (const book of ['dsc-peers', 'instructors']) {
+      const r = await req('PROPFIND', `/carddav/addressbooks/dsc/${book}/`,
+        { auth: basic(), headers: { Depth: '0' }, body: PROPFIND_ALL });
+      const self = r.text.split('</D:response>')[0];
+      assert.ok(!self.includes('<D:sync-token>'),
+        `${book}: a baseline must never be obtainable without the members it accounts for`);
+      assert.ok(self.includes('<CS:getctag>'),
+        `${book}: getctag must remain — it signals change without being a baseline`);
+    }
+  });
+
+  await test('a sync-token is only ever issued alongside the members it covers', async () => {
+    const body = '<?xml version="1.0"?><D:sync-collection xmlns:D="DAV:"><D:sync-token/>' +
+                 '<D:prop><D:getetag/></D:prop></D:sync-collection>';
+    const r = await req('REPORT', '/carddav/addressbooks/dsc/dsc-peers/',
+      { auth: basic(), headers: { Depth: '1' }, body });
+    assert.strictEqual(r.status, 207);
+    const members = (r.text.match(/\.vcf<\/D:href>/g) || []).length;
+    assert.ok(members > 0, 'an initial sync must deliver members, not just a token');
+    assert.ok(r.text.includes('<D:sync-token>'), 'and must deliver the token with them');
+  });
+
   await test('cards — unlike collections — do carry a content type', async () => {
     const r = await req('PROPFIND', '/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recA.vcf',
       { auth: basic(), body: PROPFIND_ALL });

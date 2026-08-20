@@ -109,7 +109,11 @@ const etagFor = body => `"${hash(body).slice(0, 32)}"`;
 //   2 — dropped getcontenttype and quota-used-bytes from address-book
 //       collections; both were wrong for a collection and getcontenttype in
 //       particular described the book as though it were itself a vCard file
-const COLLECTION_SCHEMA = 2;
+//   3 — stopped advertising DAV:sync-token as a collection property. Clients
+//       adopted it as a sync baseline without having received the members it
+//       stood for, and then correctly concluded nothing had changed. Bumping
+//       invalidates every token already handed out that way.
+const COLLECTION_SCHEMA = 3;
 
 // One value that changes whenever any member changes — serves as both the
 // collection CTag and the sync-token payload.

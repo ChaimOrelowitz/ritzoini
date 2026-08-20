@@ -171,7 +171,19 @@ const bookProps = (slug, book, ctag) => ({
   displayname:               xmlEsc(book.displayName),
   'addressbook-description': xmlEsc(book.description),
   getctag:                   xmlEsc(ctag),
-  'sync-token':              xmlEsc(syncToken(ctag)),
+  // DAV:sync-token is deliberately NOT advertised as a collection property.
+  //
+  // RFC 6578 permits it, but handing a client the current token as plain
+  // metadata lets it adopt that token as a sync baseline without ever having
+  // received the members it stands for. iPhone Contacts does exactly that: it
+  // read the token off a PROPFIND, then asked "anything new since this?", and
+  // the honest answer — nothing — left it permanently synced to a checkpoint
+  // whose contents it never fetched. Zero contacts, no errors, forever.
+  //
+  // A client now learns its baseline the only way that is safe: from the
+  // sync-token returned INSIDE a sync-collection REPORT, alongside the members
+  // that token accounts for. getctag stays — it signals "something changed"
+  // and is not usable as a baseline.
   'supported-report-set':    SUPPORTED_REPORTS,
   'supported-address-data':  '<C:address-data-type content-type="text/vcard" version="3.0"/>',
   'max-resource-size':       '102400',
