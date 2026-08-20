@@ -1,0 +1,4 @@
+# Browser captures. These carry live InSync session cookies and real patient
+# charts -- they are the SOURCE for portal_capture_templates, never committed.
+# Rebuild the pack with backend/scripts/extract-insync-captures.js instead.
+*.har
