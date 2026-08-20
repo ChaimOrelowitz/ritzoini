@@ -1,0 +1,15 @@
+{
+  "name": "ritzoini-carddav-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only CardDAV bridge: relays PROPFIND/REPORT to Ritzoini, which Render's edge refuses to forward",
+  "scripts": {
+    "test": "node test/envelope.test.js && node test/integration.test.js",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

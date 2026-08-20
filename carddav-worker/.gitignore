@@ -1,0 +1,5 @@
+node_modules/
+.wrangler/
+# Real config: holds the origin URL and is what `wrangler deploy` reads.
+# Secrets never live here (they go in `wrangler secret put`), but keep it local.
+wrangler.toml

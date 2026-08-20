@@ -33,9 +33,14 @@ app.use('/api/zoom/webhook', express.json({ verify: (req, res, buf) => { req.raw
 // of the JSON parser because PROPFIND/REPORT bodies are XML, and the router
 // brings its own text parser plus Basic-auth, HTTPS and rate-limit guards.
 const carddav = require('./routes/carddav');
-app.use('/.well-known/carddav', carddav.wellKnown);
+app.use('/.well-known/carddav', carddav);
 app.use('/carddav', carddav);
-app.propfind('/', carddav.rootDiscovery);
+app.propfind('/', carddav.discovery);
+
+// Signed relay for the DAV methods Render's edge refuses to forward. Mounted
+// beside CardDAV because it serves the same handler; it is not a bypass — the
+// handler still demands CardDAV credentials on top of a valid signature.
+app.use('/internal/dav-bridge', require('./routes/davBridge'));
 
 app.use(express.json({ limit: '5mb' }));
 

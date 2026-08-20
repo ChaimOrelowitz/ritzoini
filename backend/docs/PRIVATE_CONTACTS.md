@@ -8,6 +8,13 @@ giving the phone any way to write back:
 | CardDAV address books | `/carddav/…` | iPhone **Contacts** |
 | DSC recipient feed | `/api/dsc/…` | Apple **Shortcuts** |
 
+> **Transport note.** Render's edge answers **405 to `PROPFIND` and `REPORT`
+> before Node sees them** — measured with an in-process method counter, not
+> inferred from a `server: cloudflare` header. Those methods therefore arrive
+> through a Cloudflare Worker that relays them as a signed `POST`. See
+> [`carddav-worker/README.md`](../../carddav-worker/README.md). `GET`/`HEAD` and
+> the whole `/api/dsc` feed are unaffected and reach Render directly.
+
 Neither is reachable without a credential, and nothing here sends a message —
 the recipient feed answers *who* to message and the iPhone opens each
 conversation itself through Apple Messages. No Twilio, no A2P registration,
@@ -76,6 +83,7 @@ replayed as a login. Put them in a password manager.
 | `CARDDAV_PASSWORD_SALT` | 16-byte hex salt |
 | `CARDDAV_PASSWORD_HASH` | scrypt verifier of the CardDAV password |
 | `DSC_SHORTCUT_TOKEN` | Bearer token for `/api/dsc/*` (min 24 chars) |
+| `DAV_BRIDGE_SECRET` | HMAC key shared with the Cloudflare Worker; set identically in both places |
 
 **Fail-closed:** if any CardDAV variable is missing or malformed, every
 `/carddav` route answers `503` and never queries Supabase. Same for
@@ -108,7 +116,7 @@ Add CardDAV Account**
 | Field | Value |
 |---|---|
 | **Account type** | CardDAV (under "Other", *not* iCloud/Google/Exchange) |
-| **Server** | `ritzoini.onrender.com` |
+| **Server** | `ritzoini-contacts.<your-subdomain>.workers.dev` |
 | **User Name** | the `CARDDAV_USERNAME` value (`ritzoini` by default) |
 | **Password** | the password printed by `make-contact-credentials.js` |
 | **Description** | `Ritzoini` |
@@ -117,10 +125,14 @@ Add CardDAV Account**
 | **Account URL** | leave blank; discovery handles it |
 
 Enter the hostname alone — no scheme, no path. iOS discovers the rest by
-requesting `/.well-known/carddav`, which redirects to `/carddav/`, then walking
-`current-user-principal` → `addressbook-home-set` → the two books. If a build
-of iOS insists on a full path, set **Advanced Settings → Account URL** to
-`https://ritzoini.onrender.com/carddav/principals/dsc/`.
+requesting `/.well-known/carddav`, which answers **directly rather than
+redirecting** (authenticated CardDAV clients handle redirects poorly), then
+walking `current-user-principal` → `addressbook-home-set` → the two books. If a
+build of iOS insists on a full path, set **Advanced Settings → Account URL** to
+`https://ritzoini-contacts.<your-subdomain>.workers.dev/carddav/principals/dsc/`.
+
+`ritzoini.onrender.com` will **not** work as the Server value: its edge blocks
+the DAV methods discovery depends on.
 
 After **Next** verifies the account, make sure **Contacts** is toggled on. Two
 new groups appear in Contacts → Groups: **DSC Peers** and
@@ -275,6 +287,16 @@ step 7 at a cohort you know is small, before running against **All**.
 - **No-store.** Every response carries
   `Cache-Control: no-store, no-cache, must-revalidate, private`, plus
   `nosniff` and `no-referrer`.
+- **The bridge is not an authorisation.** `POST /internal/dav-bridge` verifies
+  the Worker's HMAC signature and then calls the same handler as any other
+  request — which performs the CardDAV Basic-auth check itself. A validly signed
+  envelope with no credentials still gets a `401`, and swapping different
+  credentials into a captured envelope invalidates it, because the signature
+  binds a hash of the `Authorization` header.
+- **The read-only allowlist is enforced twice**, independently: once at the
+  Worker edge and once at the bridge route, so neither layer is the only thing
+  preventing a write.
+- **Replays and stale envelopes are refused** — single-use nonce, ±300s window.
 - **Privacy-safe logs.** Log lines carry method, book slug, member counts and
   status — never a credential, an `Authorization` header, a phone number, an
   email address, a vCard body or a card URL (card URLs embed a peer's record
@@ -288,6 +310,14 @@ step 7 at a cohort you know is small, before running against **All**.
 cd backend
 npm test        # existing parser suite + this feature's suite
 ```
+
+`test/davBridge.test.js` covers the signed relay: forwarding, tampering with
+every signed field, missing/wrong signatures, stale and future timestamps,
+replays, path traversal, paths outside the CardDAV prefix, write methods, body
+size, and — most importantly — that the bridge cannot be used as an
+authentication bypass. `carddav-worker/npm test` additionally proves the Worker
+and backend produce byte-identical signatures, and runs the real Worker source
+against a real backend end to end.
 
 `test/dscContacts.test.js` stubs Supabase through `require.cache` and exercises
 the real routers over a real HTTP listener: missing/invalid auth, missing

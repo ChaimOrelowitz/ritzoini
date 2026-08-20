@@ -112,9 +112,9 @@ async function test(name, fn) {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use('/.well-known/carddav', carddav.wellKnown);
+app.use('/.well-known/carddav', carddav);
 app.use('/carddav', carddav);
-app.propfind('/', carddav.rootDiscovery);
+app.propfind('/', carddav.discovery);
 app.use('/api/dsc', dscRoutes);
 
 let base;
@@ -550,10 +550,12 @@ async function carddavTests() {
 
   console.log('\nCardDAV — discovery');
 
-  await test('/.well-known/carddav redirects to the DAV root', async () => {
+  await test('/.well-known/carddav answers directly, without a redirect', async () => {
     const r = await req('PROPFIND', '/.well-known/carddav', { auth: basic(), body: PROPFIND_ALL });
-    assert.strictEqual(r.status, 301);
-    assert.strictEqual(r.headers.get('location'), '/carddav/');
+    assert.strictEqual(r.status, 207, 'must not redirect — iOS handles authenticated redirects poorly');
+    assert.ok(!r.headers.get('location'), 'no Location header should be sent');
+    assert.ok(r.text.includes('/carddav/principals/dsc/'));
+    assert.deepStrictEqual(leaks(r.text), []);
   });
 
   await test('/.well-known/carddav still requires credentials', async () => {

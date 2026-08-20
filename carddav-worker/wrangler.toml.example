@@ -1,0 +1,13 @@
+# Copy to wrangler.toml and adjust. NO SECRETS IN THIS FILE — DAV_BRIDGE_SECRET
+# is set with `wrangler secret put DAV_BRIDGE_SECRET`, never as a [vars] entry.
+
+name = "ritzoini-contacts"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+# Publishes https://ritzoini-contacts.<your-subdomain>.workers.dev — no zone,
+# no DNS record, no change to corsolutions.io.
+workers_dev = true
+
+[vars]
+ORIGIN_BASE_URL = "https://ritzoini.onrender.com"

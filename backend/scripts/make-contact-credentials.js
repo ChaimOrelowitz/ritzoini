@@ -20,6 +20,7 @@ const password = token(24);
 const salt     = crypto.randomBytes(16).toString('hex');
 const hash     = scryptHex(password, salt);
 const shortcut = token(32);
+const bridge   = token(32);
 
 console.log(`
 Add these to the backend environment (Render → Environment):
@@ -28,11 +29,18 @@ CARDDAV_USERNAME=${username}
 CARDDAV_PASSWORD_SALT=${salt}
 CARDDAV_PASSWORD_HASH=${hash}
 DSC_SHORTCUT_TOKEN=${shortcut}
+DAV_BRIDGE_SECRET=${bridge}
+
+Set the SAME bridge secret on the Cloudflare Worker (it is never stored in
+wrangler.toml):
+
+  cd carddav-worker && wrangler secret put DAV_BRIDGE_SECRET
+  # paste: ${bridge}
 
 iPhone → Settings → Apps → Contacts → Contacts Accounts → Add Account →
 Other → Add CardDAV Account:
 
-  Server:      ritzoini.onrender.com
+  Server:      ritzoini-contacts.<your-subdomain>.workers.dev
   User Name:   ${username}
   Password:    ${password}
   Description: Ritzoini
