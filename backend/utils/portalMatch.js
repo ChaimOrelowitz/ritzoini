@@ -148,7 +148,20 @@ function parsePortalNote(note) {
                  : /CLINIC/.test(rawLoc) ? LOC.IN_CLINIC
                  : null;
 
-  return { language, mode, location, offsite: note.isOffsite === true };
+  // The portal's own `isOffsite` is deliberately IGNORED. It exists in the
+  // export but means nothing yet: the portal has no field for the offsite
+  // justification the Offsite note template requires, and the encounter types
+  // actually in use pull the base note form, which has no such field. Honouring
+  // the flag would route notes to an Offsite twin whose required field can only
+  // ever be blank.
+  //
+  // The offsite MACHINERY stays intact and is exercised whenever the selected
+  // encounter type is an Offsite one — the review screen's dropdown can still
+  // pick one, and doing so switches to the offsite note form and demands the
+  // justification. To re-enable automatic routing once the portal grows that
+  // field, change this to `note.isOffsite === true` and map the new portal field
+  // onto ControlId_27 in portalExecute's NOTE_FIELDS.
+  return { language, mode, location, offsite: false, portalIsOffsite: note.isOffsite === true };
 }
 
 // Pick the InSync type expressing the same dimensions. `visitTypes` is the live

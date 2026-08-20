@@ -76,20 +76,31 @@ A new peer, a new client or a new encounter type therefore needs no code change.
 
 ### The Offsite dimension
 
-InSync's peer types come in pairs: a base type and an "Offsite" twin whose note
-template carries one extra field, **"Justification for Offsite Delivery"
-(ControlId_27)**. The selected type determines the template shape — offsite is
-detected from the *name*, never from an ID list.
+InSync's peer types come in pairs: a base type and an "Offsite" twin. They are
+**two different note forms with different InSync TemplateIds** — the Offsite form
+adds one field, **"Justification for Offsite Delivery" (ControlId_27)**. The
+capture pack therefore stores both note shapes (`note` and `note_offsite`), and
+the **selected encounter type** picks which one is replayed. Offsite is detected
+from the type *name*, never from an ID list.
 
-The portal export **does** carry an `isOffsite` boolean (the original spec said
-it did not; the current export shape has it, and two of the three sample notes
-set it to `true`). So offsite routing is live, not dormant.
+**The portal's `isOffsite` flag is deliberately ignored** (`parsePortalNote`
+returns `offsite: false` unconditionally). The flag exists in the export, but it
+means nothing yet: the portal has no field for the justification text, and the
+encounter types actually in use pull the base note form, which has no such
+field. Honouring the flag would route notes to an Offsite twin whose required
+field could only ever be blank. The flag is still surfaced as
+`dimensions.portalIsOffsite` so the reason stays visible.
 
-**But the portal has no field for the justification text itself.** That field is
-therefore typed by the operator on the review screen and blocks the row until it
-is filled. It is deliberately *not* inferred from the narrative — several sample
-notes bury a rationale inside `activitiesSummary`, and extracting it would be
-this system inventing clinical text.
+The offsite **machinery is intact and exercised** whenever the selected type is
+an Offsite one: the review screen's dropdown can still pick one, which switches
+to the offsite note form and blocks the row until the justification is typed. To
+re-enable automatic routing once the portal grows that field, flip the flag in
+`parsePortalNote` and map the new portal field onto ControlId_27 in
+`portalExecute`'s `NOTE_FIELDS`.
+
+The justification is never inferred from the narrative — several sample notes
+bury a rationale inside `activitiesSummary`, and extracting it would be this
+system inventing clinical text.
 
 ---
 
@@ -149,9 +160,20 @@ neither committed nor deployed. `scripts/extract-insync-captures.js` does the
 equivalent once, on a trusted machine:
 
 ```bash
-node scripts/extract-insync-captures.js "/path/to/har/dir"        # writes
-node scripts/extract-insync-captures.js "/path/to/har/dir" --dry  # shows only
+node --max-old-space-size=8192 scripts/extract-insync-captures.js         # writes
+node --max-old-space-size=8192 scripts/extract-insync-captures.js --dry   # shows only
+node --max-old-space-size=8192 scripts/extract-insync-captures.js <dir> … # elsewhere
 ```
+
+With no arguments it scans the repo root and `portal_POC/`. The heap flag is not
+optional — the unified capture is 86MB of JSON.
+
+It picks, per step, the capture from the HAR that covers the **most** of the
+chain, preferring one whose payload names a peer-support encounter type. That
+matters: the standalone scheduler HAR books a completely different service, and
+its CPT / POS / copay scaffolding is wrong for a peer encounter. The two note
+forms are split by reading the payload for `ControlId_27` rather than by
+guessing from a filename.
 
 It pulls the POST parameter shapes, **scrubs** every answer-bearing ControlId,
 the identity controls (12 = patient name, 13 = provider name), the
@@ -159,25 +181,47 @@ the identity controls (12 = patient name, 13 = provider name), the
 literal occurrence of the captured patient's ID/name anywhere in the payload, and
 any EPIN — then refuses to store a pack that fails its own scrub check.
 
-### Current status: two captures are missing
+### Current status: complete
 
-From the HARs in this repo the extractor recovers **appointment, note, generate,
-close, calendar**. It does **not** find:
+With `portal_POC/InSync Apointment Note Close Encounter.har` in place, all eight
+steps resolve:
 
-- `/Scheduler/StartEncounter`
-- `/EncounterDetail/AddEditStartEncounter`
+| Step | Source | Captured against |
+|---|---|---|
+| appointment | unified HAR | type 1273 |
+| start | unified HAR | — |
+| encounter | unified HAR | — |
+| close | unified HAR | type 1273 |
+| generate | unified HAR | — |
+| calendar | unified HAR | — |
+| `note` (base form) | `InSync Save Peer Encounter Note.har` | TemplateId 973 |
+| `note_offsite` | unified HAR | TemplateId 1028 |
 
-Those live in the POC's own unified capture
-(`InSync Apointment Note Close Encounter.har`), which is not in this repo. Until
-they are supplied, **dry runs work end to end and live execution is blocked** with
-a message naming the missing steps. Drop that HAR beside the others and re-run
-the extractor — no code change needed.
+Every write step now comes from **one coherent session** that worked end to end,
+rather than being stitched together from partial captures.
 
-One more capture gap worth knowing: the note capture in this repo is from a
-**non-offsite** template, so it has no `ControlId_27`. Preparing an offsite note
-against it fails loudly ("The stored note template has no ControlId_27…") rather
-than silently dropping the justification. An offsite note-save capture is needed
-before any offsite type can go live.
+---
+
+## The payload-diff gate — why it is enforced, not advisory
+
+Every write template above was captured against **encounter type 1273**. Those
+payloads carry that type's CPT / modifier / POS / copay scaffolding
+(`H0038`, `U4`, CPT-map `418`, POS `99`). Preparing a *different* type swaps the
+`VisitTypeID` and leaves the rest — which for a billable Medicaid encounter could
+mean billing the wrong thing.
+
+`app.py` handled this by hard-blocking live mode to 1273 only. SPEC softens that
+to "other types share the same flow but should be diff-validated once each before
+bulk live use." This implements that as a real gate:
+
+- `portal_verified_types` records that a human diffed a type's prepared payloads
+  against a real manual capture of the **same** type and accepted them.
+- A **live** run refuses any encounter type that is neither the captured type nor
+  in that table, naming the offending types.
+- A **dry** run is never blocked — a dry run is how you produce the payloads to
+  diff in the first place. The review screen shows
+  `⚠ not payload-verified — live blocked` on the row and offers
+  "Mark this type payload-verified" beside "View prepared payloads".
 
 ---
 
@@ -187,7 +231,7 @@ before any offsite type can go live.
 |---|---|
 | Never hardcode type / peer / client IDs | `utils/portalMatch.js`, `utils/insyncPortal.js` — everything resolves live |
 | Dry-run before live | `POST /runs/:id/execute` defaults to `dry_run`; live also requires `confirm: true` and two browser confirmations |
-| Payload-diff gate before bulk live on a new type | `GET /runs/:runId/notes/:noteId/payloads` — the exact bodies that would be sent, with the PIN redacted |
+| Payload-diff gate before bulk live on a new type | `GET /runs/:runId/notes/:noteId/payloads` gives the exact bodies (PIN redacted); `portal_verified_types` + the live-run check make it a gate rather than a suggestion |
 | Client-match ambiguity BLOCKS | `resolveRun` never auto-binds; a binding is always an explicit human confirm written to `portal_client_map` |
 | Credentials encrypted, never logged | `utils/portalCrypto.js` + `peerView()` + `scrub()` |
 | Only portal-authored content is written | `NOTE_FIELDS` maps each control to a named portal field; the two fields with no portal source are typed by the operator, never inferred |
@@ -228,17 +272,20 @@ Admins also see the screen (a fourth "Portal POC" section tab).
 1. Run `db/portal_poc.sql` in the Supabase SQL editor.
 2. Set `PORTAL_CRED_KEY` in the backend environment.
 3. Confirm `app_settings.insync_username` / `insync_password` hold the admin login.
-4. `node scripts/extract-insync-captures.js "<har-dir>"`.
+4. `node --max-old-space-size=8192 scripts/extract-insync-captures.js`.
 5. Add each peer on the Peers tab: portal name, "Look up" their provider ID,
    InSync username, password, signing PIN.
 6. Upload an export, work the review screen, **dry run**, read the log.
-7. For the first live encounter of any encounter type, use "View prepared
-   payloads" and diff against a real manual capture of that type before running
-   that type in bulk.
+7. For the first live encounter of any encounter type other than the captured
+   one, use "View prepared payloads", diff against a real manual capture of that
+   type, then "Mark this type payload-verified". Live runs refuse until you do.
 8. Run live without signing first, then with signing.
 
 ## Tests
 
-`node test/portalPoc.test.js` (also in `npm test`) — 33 assertions over the
-matching rules, the offsite branch, the appointment-exists rule, the credential
-crypto and the cross-patient contamination guard. No network, no database.
+`node test/portalPoc.test.js` (35 assertions — the matching rules, the ignored
+`isOffsite` flag, the note-form split, the appointment-exists rule, the
+credential crypto, the cross-patient contamination guard) and
+`node test/portalAccess.test.js` (53 assertions — the `portal_only` fence, and
+that it does not leak onto other accounts). Both in `npm test`. No network, no
+database.

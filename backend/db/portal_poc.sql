@@ -180,13 +180,52 @@ create index if not exists portal_run_events_run_idx
 -- answer-bearing ControlId, and upserts them here.
 
 create table if not exists portal_capture_templates (
-  step                   text primary key
-                           check (step in ('appointment', 'start', 'encounter', 'note', 'generate', 'close', 'calendar')),
+  step                   text primary key,
   url                    text not null,
   params                 jsonb not null,
   captured_from          text,
   field_count            int,
   updated_at             timestamptz not null default now()
+);
+
+-- An earlier version of this file pinned `step` with a CHECK that predates the
+-- note/note_offsite split, so drop it before the extractor tries to store one.
+-- Safe to re-run: this whole file is idempotent.
+alter table portal_capture_templates
+  drop constraint if exists portal_capture_templates_step_check;
+
+-- Steps: appointment, start, encounter, note, note_offsite, generate, close,
+-- calendar. The peer note form exists in TWO shapes with different InSync
+-- TemplateIds -- the base form, and the Offsite form that adds ControlId_27 --
+-- so both are stored and the selected encounter type picks which is replayed.
+
+-- Which encounter type the capture was taken against. The write templates carry
+-- that type's CPT / modifier / POS / copay scaffolding, so replaying them for a
+-- DIFFERENT type is exactly what the payload-diff gate below exists to catch.
+alter table portal_capture_templates
+  add column if not exists captured_visit_type_id text;
+
+
+-- ---------------------------------------------------------------------------
+-- The payload-diff gate
+-- ---------------------------------------------------------------------------
+--
+-- SPEC: "Go live per type only after a payload-diff check." Every write template
+-- currently comes from one proven session against VisitTypeID 1273. Running any
+-- other type replays that type's billing scaffolding with only the VisitTypeID
+-- swapped, which could bill wrongly. A live run therefore refuses to touch an
+-- encounter type that is neither the captured type nor recorded here.
+--
+-- A row means: a human prepared this type's payloads (dry run -> "View prepared
+-- payloads"), compared them against a real manual capture of the same type, and
+-- accepted them.
+
+create table if not exists portal_verified_types (
+  insync_visit_type_id   text primary key,
+  insync_visit_type_name text,
+  verified_by            uuid references profiles(id),
+  verified_at            timestamptz not null default now(),
+  note                   text
 );
 
 
@@ -201,6 +240,7 @@ alter table portal_staged_notes      enable row level security;
 alter table portal_processed_notes   enable row level security;
 alter table portal_run_events        enable row level security;
 alter table portal_capture_templates enable row level security;
+alter table portal_verified_types    enable row level security;
 
 revoke all on portal_peers,
               portal_client_map,
@@ -208,5 +248,6 @@ revoke all on portal_peers,
               portal_staged_notes,
               portal_processed_notes,
               portal_run_events,
-              portal_capture_templates
+              portal_capture_templates,
+              portal_verified_types
   from anon, authenticated;

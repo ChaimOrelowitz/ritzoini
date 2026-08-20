@@ -22,6 +22,28 @@ const { parseInsyncTypeName } = require('./portalMatch');
 
 const REQUIRED_STEPS = ['appointment', 'start', 'encounter', 'note', 'generate', 'close'];
 
+// The peer note form exists in two shapes with DIFFERENT InSync TemplateIds:
+// the base form, and the Offsite form that adds ControlId_27. One stored
+// template cannot serve both, so the capture pack holds both and the SELECTED
+// encounter type picks which one is replayed.
+function noteStepFor(offsite) { return offsite ? 'note_offsite' : 'note'; }
+
+// Resolve the templates for one note: the shared steps, plus whichever note
+// form the chosen encounter type calls for, aliased to `note` so the rest of
+// the chain does not care which shape it got.
+function templatesFor(templates, offsite) {
+  const step = noteStepFor(offsite);
+  const note = templates[step];
+  if (!note) {
+    throw new StepError('captures',
+      offsite
+        ? 'No Offsite note-form capture is stored, so Offsite encounter types cannot be written. ' +
+          'Capture a note save on an Offsite type and re-run the capture extractor, or pick the base type.'
+        : 'No base note-form capture is stored. Run scripts/extract-insync-captures.js.');
+  }
+  return { ...templates, note };
+}
+
 // Codes InSync expects for the interventions multi-select, and the labels the
 // portal exports. Matched by label — a portal label with no InSync counterpart
 // flags the row rather than being dropped.
@@ -308,7 +330,8 @@ async function send(prepared, step, cookie, log) {
 //
 // Any unexpected result throws — the caller records the failure against THIS
 // note and moves to the next rather than plowing on through a bad state.
-async function executeNote({ templates, ctx, cookie, existing, signingPin, allowSign, dryRun, log }) {
+async function executeNote({ templates: pack, ctx, cookie, existing, signingPin, allowSign, dryRun, log }) {
+  const templates = templatesFor(pack, !!ctx.offsite);
   const missingSteps = REQUIRED_STEPS.filter(s => !templates[s]);
   if (missingSteps.length && !(existing && missingSteps.length === 1 && missingSteps[0] === 'appointment')) {
     throw new StepError('captures',
@@ -392,5 +415,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
+  noteStepFor, templatesFor,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };

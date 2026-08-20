@@ -68,11 +68,13 @@ async function logEvent(runId, stagedNoteId, level, step, message, detail = null
 // What the page needs to tell the operator whether the system is even usable.
 router.get('/status', ...guard, async (req, res) => {
   try {
-    const { data: caps } = await supabase.from('portal_capture_templates')
-      .select('step, captured_from, field_count, updated_at').order('step');
+    const [{ data: caps }, { data: verified }, { data: settings }] = await Promise.all([
+      supabase.from('portal_capture_templates')
+        .select('step, captured_from, captured_visit_type_id, field_count, updated_at').order('step'),
+      supabase.from('portal_verified_types').select('*').order('insync_visit_type_id'),
+      supabase.from('app_settings').select('key').in('key', ['insync_username', 'insync_password']),
+    ]);
     const have = new Set((caps || []).map(c => c.step));
-    const { data: settings } = await supabase.from('app_settings').select('key')
-      .in('key', ['insync_username', 'insync_password']);
     ok(res, {
       credentials_configured: crypto.isConfigured(),
       admin_insync_configured: (settings || []).length === 2
@@ -80,9 +82,72 @@ router.get('/status', ...guard, async (req, res) => {
       captures: caps || [],
       missing_captures: X.REQUIRED_STEPS.filter(s => !have.has(s)),
       live_ready: X.REQUIRED_STEPS.every(s => have.has(s)),
+      // The Offsite note form is optional — without it, Offsite encounter types
+      // are blocked and base types are unaffected.
+      offsite_form_available: have.has('note_offsite'),
+      captured_visit_type_id: capturedType(caps),
+      verified_types: verified || [],
       note_fields: X.NOTE_FIELDS,
       interventions: X.PEER_INTERVENTIONS.map(([code, label]) => ({ code, label })),
     });
+  } catch (err) { fail(res, err); }
+});
+
+// The encounter type the WRITE templates were captured against. Those payloads
+// carry that type's CPT / modifier / POS / copay scaffolding, so any other type
+// is replaying someone else's billing setup with the id swapped.
+function capturedType(caps) {
+  const appt = (caps || []).find(c => c.step === 'appointment');
+  return appt?.captured_visit_type_id || null;
+}
+
+// Which of `typeIds` may be written live? The captured type is trusted because
+// it is the one proven end to end; anything else needs a human to have run the
+// payload diff and said so.
+async function unverifiedTypes(typeIds) {
+  const { data: caps } = await supabase.from('portal_capture_templates')
+    .select('step, captured_visit_type_id');
+  const captured = capturedType(caps);
+  const { data: verified } = await supabase.from('portal_verified_types').select('insync_visit_type_id');
+  const okSet = new Set([captured, ...(verified || []).map(v => v.insync_visit_type_id)].filter(Boolean));
+  return [...new Set(typeIds.filter(Boolean).map(String))].filter(t => !okSet.has(t));
+}
+
+// --- the payload-diff gate -------------------------------------------------
+
+router.get('/verified-types', ...guard, async (req, res) => {
+  try {
+    const { data, error } = await supabase.from('portal_verified_types').select('*').order('insync_visit_type_id');
+    if (error) throw new Error(error.message);
+    ok(res, data || []);
+  } catch (err) { fail(res, err); }
+});
+
+// Records that a human compared this type's prepared payloads against a real
+// manual capture of the same type and accepted them. Nothing else unlocks a
+// type for live use.
+router.post('/verified-types', ...guard, async (req, res) => {
+  try {
+    const { insync_visit_type_id, insync_visit_type_name, note } = req.body;
+    if (!insync_visit_type_id) return res.status(400).json({ error: 'insync_visit_type_id is required' });
+    const { data, error } = await supabase.from('portal_verified_types').upsert({
+      insync_visit_type_id: String(insync_visit_type_id),
+      insync_visit_type_name: insync_visit_type_name || null,
+      verified_by: req.user.id,
+      verified_at: new Date().toISOString(),
+      note: note || null,
+    }, { onConflict: 'insync_visit_type_id' }).select().single();
+    if (error) throw new Error(error.message);
+    ok(res, data);
+  } catch (err) { fail(res, err); }
+});
+
+router.delete('/verified-types/:id', ...guard, async (req, res) => {
+  try {
+    const { error } = await supabase.from('portal_verified_types')
+      .delete().eq('insync_visit_type_id', req.params.id);
+    if (error) throw new Error(error.message);
+    ok(res, { ok: true });
   } catch (err) { fail(res, err); }
 });
 
@@ -236,12 +301,15 @@ const REQUIRED_NOTE_KEYS = ['portalNoteId', 'peerName', 'clientName', 'clientDat
 // after the operator fixes a peer binding or confirms a client.
 async function resolveRun(runId) {
   const cookie = await adminCookie();
-  const [visitTypes, providers, peers, clientMap] = await Promise.all([
+  const [visitTypes, providers, peers, clientMap, caps, verified] = await Promise.all([
     IP.getVisitTypes(cookie),
     IP.getProviderDirectory(cookie),
     supabase.from('portal_peers').select('*').then(r => r.data || []),
     supabase.from('portal_client_map').select('*').then(r => r.data || []),
+    supabase.from('portal_capture_templates').select('step, captured_visit_type_id').then(r => r.data || []),
+    supabase.from('portal_verified_types').select('insync_visit_type_id').then(r => r.data || []),
   ]);
+  const verifiedTypes = new Set([capturedType(caps), ...verified.map(v => v.insync_visit_type_id)].filter(Boolean));
 
   const peerByName = new Map(peers.map(p => [M.normalizeName(p.portal_peer_name), p]));
   const clientByKey = new Map(clientMap.map(c => [`${M.normalizeName(c.portal_client_name)}|${c.portal_client_dob}`, c]));
@@ -332,6 +400,18 @@ async function resolveRun(runId) {
       resolution.visit_type_name = chosen.VisitType;
       resolution.visit_type_offsite = M.parseInsyncTypeName(chosen.VisitType).offsite;
       resolution.visit_type_auto = !overrideId;
+      // Non-blocking on purpose: a dry run is how you PRODUCE the payloads to
+      // diff, so this must not hold the row back from one. Live execution
+      // enforces it.
+      resolution.visit_type_verified = verifiedTypes.has(chosen.VisitTypeID);
+      if (!resolution.visit_type_verified) {
+        flags.push({
+          field: 'encounter_type', blocking: false,
+          message: `Encounter type ${chosen.VisitTypeID} has not been payload-verified — dry-run it, ` +
+                   `compare the prepared payloads against a real capture of this type, then mark it verified. ` +
+                   `Live execution is blocked until then.`,
+        });
+      }
     } else {
       resolution.visit_type_id = null;
       resolution.visit_type_name = null;
@@ -550,7 +630,7 @@ router.get('/runs/:runId/notes/:noteId/payloads', ...guard, async (req, res) => 
     if (!r.visit_type_id) return res.status(400).json({ error: 'This note has no encounter type selected yet' });
 
     const prepared = X.preparePayloads({
-      templates,
+      templates: X.templatesFor(templates, !!r.visit_type_offsite),
       ctx: {
         patientId: r.patient_id || '<patient>', patientName: r.patient_name || row.note.clientName,
         providerId: r.provider_id || '<provider>', providerName: r.provider_name || row.note.peerName,
@@ -657,6 +737,8 @@ async function executeRun(runId, { mode, sign, noteIds }) {
             visitTypeId: r.visit_type_id, visitTypeName: r.visit_type_name,
             sessionDate: note.sessionDate, sessionStartMinutes: note.sessionStartMinutes,
             duration: r.duration, noteFields: r.note_fields || {},
+            // Drives which note FORM is replayed — base or Offsite.
+            offsite: !!r.visit_type_offsite,
           },
           cookie, existing, signingPin: pin, allowSign: !!(live && sign),
           dryRun: !live, log,
@@ -721,6 +803,26 @@ router.post('/runs/:id/execute', ...guard, async (req, res) => {
       }
       if (req.body?.confirm !== true) {
         return res.status(400).json({ error: 'A live run must be confirmed explicitly' });
+      }
+
+      // The payload-diff gate. Every write template comes from one proven
+      // session against a single encounter type; running a different type
+      // replays that type's CPT / modifier / POS mapping with only the
+      // VisitTypeID changed, which can bill wrongly. Refuse until a human has
+      // diffed that type's payloads and marked it verified.
+      let q = supabase.from('portal_staged_notes').select('resolution').eq('run_id', req.params.id).eq('status', 'ready');
+      if (Array.isArray(req.body?.note_ids) && req.body.note_ids.length) q = q.in('id', req.body.note_ids);
+      const { data: readyRows } = await q;
+      const unverified = await unverifiedTypes((readyRows || []).map(r => r.resolution?.visit_type_id));
+      if (unverified.length) {
+        const names = (readyRows || [])
+          .filter(r => unverified.includes(String(r.resolution?.visit_type_id)))
+          .map(r => `${r.resolution?.visit_type_name} [${r.resolution?.visit_type_id}]`);
+        return res.status(400).json({
+          error: `Live execution is blocked for encounter type(s) not yet payload-verified: ` +
+                 `${[...new Set(names)].join('; ')}. Dry-run those rows, open "View prepared payloads", ` +
+                 `compare against a real manual capture of the same type, then mark the type verified.`,
+        });
       }
     }
 

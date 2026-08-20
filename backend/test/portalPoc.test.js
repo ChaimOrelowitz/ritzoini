@@ -93,20 +93,41 @@ test('English / In Person / Client Home, not offsite -> 1253', () => {
   assert.ok(r.matched, r.reason);
   assert.strictEqual(r.matched.VisitTypeID, '1253');
 });
-test('the portal isOffsite flag routes to the Offsite twin (1271, not 1246)', () => {
+test('the portal isOffsite flag is IGNORED — routes to the base twin, not 1271', () => {
+  assert.strictEqual(n2.isOffsite, true, 'fixture should still carry the flag');
   const r = M.matchEncounterType(n2, VISIT_TYPES);
   assert.ok(r.matched, r.reason);
-  assert.strictEqual(r.matched.VisitTypeID, '1271');
-  assert.strictEqual(M.parseInsyncTypeName(r.matched.VisitType).offsite, true);
-});
-test('clearing isOffsite routes to the base twin (1246)', () => {
-  const r = M.matchEncounterType({ ...n2, isOffsite: false }, VISIT_TYPES);
   assert.strictEqual(r.matched.VisitTypeID, '1246');
+  assert.strictEqual(M.parseInsyncTypeName(r.matched.VisitType).offsite, false);
+  // The flag is still reported, so the reason for ignoring it stays visible.
+  assert.strictEqual(r.dimensions.portalIsOffsite, true);
+  assert.strictEqual(r.dimensions.offsite, false);
 });
-test('Other than English / In Person / Other Location, offsite -> 1273', () => {
+test('Other than English / In Person / Other Location -> base 1252, not offsite 1273', () => {
+  assert.strictEqual(n3.isOffsite, true);
   const r = M.matchEncounterType(n3, VISIT_TYPES);
   assert.ok(r.matched, r.reason);
-  assert.strictEqual(r.matched.VisitTypeID, '1273');
+  assert.strictEqual(r.matched.VisitTypeID, '1252');
+});
+test('an Offsite type is still reachable as an operator override, and still demands ControlId_27', () => {
+  // The machinery has to survive being switched off by default: picking an
+  // Offsite type from the dropdown must switch the template shape.
+  const offsiteType = VISIT_TYPES.find(t => t.VisitTypeID === '1271');
+  assert.strictEqual(M.parseInsyncTypeName(offsiteType.VisitType).offsite, true);
+  const { fields, warnings } = X.buildNoteFields(n2, { offsite: true });
+  assert.ok('ControlId_27' in fields);
+  assert.ok(warnings.some(w => /required by the Offsite template/.test(w)));
+});
+test('the note FORM follows the selected type, not the portal flag', () => {
+  const pack = { note: { url: 'u', params: { base: 1 } }, note_offsite: { url: 'u', params: { offsite: 1 } } };
+  assert.strictEqual(X.noteStepFor(false), 'note');
+  assert.strictEqual(X.noteStepFor(true), 'note_offsite');
+  assert.deepStrictEqual(X.templatesFor(pack, false).note.params, { base: 1 });
+  assert.deepStrictEqual(X.templatesFor(pack, true).note.params, { offsite: 1 });
+});
+test('an Offsite type with no Offsite capture stored refuses rather than replaying the base form', () => {
+  assert.throws(() => X.templatesFor({ note: { url: 'u', params: {} } }, true),
+    /No Offsite note-form capture/);
 });
 test('an unrecognized dimension blocks instead of guessing', () => {
   const r = M.matchEncounterType({ ...n1, sessionMode: 'HOLOGRAM' }, VISIT_TYPES);

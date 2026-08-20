@@ -86,12 +86,18 @@ Key files: `routes/portalPoc.js`, `utils/{portalCrypto,portalMatch,portalPayload
 `db/portal_poc.sql`, `scripts/extract-insync-captures.js`, page `PortalPOCPage`.
 **Full doc: `backend/docs/PORTAL_POC.md`** — read it before touching this domain.
 
-Two things that bite:
+Three things that bite:
 - The write chain replays HAR-derived payload templates stored in
   `portal_capture_templates` (scrubbed by the extractor script — the raw `.har`
-  files carry live cookies and PHI and are never committed). The
-  `StartEncounter` / `AddEditStartEncounter` captures are **missing** from this
-  repo, so live execution is blocked and dry runs are not.
+  files carry live cookies and PHI and are never committed). All were captured
+  against **encounter type 1273**, so they carry that type's CPT/POS mapping;
+  `portal_verified_types` gates live runs on any other type until a human diffs
+  its payloads. Dry runs are never gated.
+- The portal's `isOffsite` flag is **deliberately ignored** — the portal has no
+  offsite-justification field yet, so honouring it would route to an Offsite
+  type whose required field can only be blank. The machinery still works if an
+  Offsite type is picked manually (there are two note forms, `note` and
+  `note_offsite`, with different InSync TemplateIds).
 - `profiles.portal_only` fences an account to this one screen (same pattern as
   `ps_payroll_only`), enforced in `middleware/auth.js` and `Layout.js`.
 
