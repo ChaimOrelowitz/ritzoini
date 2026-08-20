@@ -96,13 +96,28 @@ const hash = s => crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 // Weak-free, quoted, and a pure function of the card body.
 const etagFor = body => `"${hash(body).slice(0, 32)}"`;
 
+// Bumped whenever the SERVER'S REPRESENTATION of a collection changes, even
+// though no card did — property maps, hrefs, vCard shape.
+//
+// A client that has synced and holds a matching ctag stops asking; it has no
+// other way to learn the server now answers differently. Without this, a fix to
+// how collections are advertised can never reach a client that already cached
+// the broken version — it sits there believing it is up to date. Folding the
+// version into the tag makes any such change invalidate every cached view.
+//
+//   1 — initial
+//   2 — dropped getcontenttype and quota-used-bytes from address-book
+//       collections; both were wrong for a collection and getcontenttype in
+//       particular described the book as though it were itself a vCard file
+const COLLECTION_SCHEMA = 2;
+
 // One value that changes whenever any member changes — serves as both the
 // collection CTag and the sync-token payload.
 function collectionTag(cards) {
-  const material = cards
-    .map(c => `${c.uid}:${c.etag}`)
-    .sort()
-    .join('\n');
+  const material = [
+    `schema:${COLLECTION_SCHEMA}`,
+    ...cards.map(c => `${c.uid}:${c.etag}`).sort(),
+  ].join('\n');
   return hash(material).slice(0, 32);
 }
 
@@ -121,4 +136,4 @@ function renderBook(contacts) {
   return { cards, ctag: collectionTag(cards) };
 }
 
-module.exports = { buildVCard, etagFor, collectionTag, renderBook, fold, esc, toRev, CRLF };
+module.exports = { buildVCard, etagFor, collectionTag, renderBook, fold, esc, toRev, CRLF, COLLECTION_SCHEMA };

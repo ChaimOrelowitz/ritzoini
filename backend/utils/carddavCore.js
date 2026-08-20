@@ -159,7 +159,13 @@ const homeProps = () => ({
   displayname:  'Ritzoini Address Books',
 });
 
-const bookProps = (slug, book, ctag, count) => ({
+// An address book is a COLLECTION. It has no content type of its own, and
+// advertising one told clients this resource *is* a vCard file rather than a
+// container of them — a coherent reason for a client to stop before
+// enumerating members. quota-used-bytes was worse: it carried the card count,
+// in a property defined in bytes, with no quota-available-bytes beside it.
+// Neither belongs here; both are gone.
+const bookProps = (slug, book, ctag) => ({
   ...commonProps(),
   resourcetype:              '<D:collection/><C:addressbook/>',
   displayname:               xmlEsc(book.displayName),
@@ -169,8 +175,6 @@ const bookProps = (slug, book, ctag, count) => ({
   'supported-report-set':    SUPPORTED_REPORTS,
   'supported-address-data':  '<C:address-data-type content-type="text/vcard" version="3.0"/>',
   'max-resource-size':       '102400',
-  getcontenttype:            'text/vcard',
-  'quota-used-bytes':        String(count),
 });
 
 const cardProps = card => ({
@@ -362,7 +366,7 @@ async function dispatch({ route, method, headers, body, depth }) {
         for (const slug of Object.keys(BOOKS)) {
           const loaded = await loadBook(slug);
           const p = splitProps(
-            bookProps(slug, loaded.book, loaded.ctag, loaded.cards.length), requested);
+            bookProps(slug, loaded.book, loaded.ctag), requested);
           responses.push(responseXml(bookHref(slug), p.found, p.missing));
         }
       }
@@ -376,7 +380,7 @@ async function dispatch({ route, method, headers, body, depth }) {
 
       const responses = [];
       const self = splitProps(
-        bookProps(loaded.slug, loaded.book, loaded.ctag, loaded.cards.length), requested);
+        bookProps(loaded.slug, loaded.book, loaded.ctag), requested);
       responses.push(responseXml(bookHref(loaded.slug), self.found, self.missing));
 
       if (depth !== '0') {

@@ -657,6 +657,36 @@ async function carddavTests() {
     assert.ok(r.text.indexOf('ins-1') < r.text.indexOf('ins-2'), 'should be ordered by last name');
   });
 
+  // Regression: an address book is a collection. Advertising a content type
+  // described it as though it were itself a vCard file, and quota-used-bytes
+  // carried a card count in a property defined in bytes.
+  await test('address-book collections advertise no content type or quota', async () => {
+    const r = await req('PROPFIND', '/carddav/addressbooks/dsc/dsc-peers/',
+      { auth: basic(), headers: { Depth: '0' }, body: PROPFIND_ALL });
+    const self = r.text.split('</D:response>')[0];
+    assert.ok(!self.includes('<D:getcontenttype>'), 'a collection must not claim a content type');
+    assert.ok(!self.includes('<D:quota-used-bytes>'), 'card count is not a byte quota');
+    assert.ok(self.includes('<C:addressbook/>'), 'but it must still declare itself an addressbook');
+    assert.ok(self.includes('<CS:getctag>'), 'and still carry a ctag');
+  });
+
+  await test('cards — unlike collections — do carry a content type', async () => {
+    const r = await req('PROPFIND', '/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recA.vcf',
+      { auth: basic(), body: PROPFIND_ALL });
+    assert.ok(r.text.includes('text/vcard'), 'a card is a vCard resource and must say so');
+  });
+
+  await test('the ctag changes when the collection representation changes', () => {
+    // Card content alone cannot carry a protocol fix to a client that has
+    // already cached a ctag, so the schema version is folded into the tag.
+    const { collectionTag, COLLECTION_SCHEMA } = require('../utils/vcard');
+    assert.ok(Number.isInteger(COLLECTION_SCHEMA) && COLLECTION_SCHEMA >= 2);
+    const cards = [{ uid: 'u1', etag: '"a"' }, { uid: 'u2', etag: '"b"' }];
+    const tag = collectionTag(cards);
+    assert.strictEqual(tag, collectionTag(cards), 'must stay stable for identical input');
+    assert.notStrictEqual(tag, collectionTag([{ uid: 'u1', etag: '"a"' }]));
+  });
+
   await test('a card GET returns vCard with a matching ETag', async () => {
     const r = await req('GET', '/carddav/addressbooks/dsc/dsc-peers/ritzoini-peer-recA.vcf',
       { auth: basic() });
