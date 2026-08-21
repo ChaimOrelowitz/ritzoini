@@ -340,6 +340,69 @@ portal export. The standing convention is to repeat the selected interventions
 into it, so it is prefilled with the same labels sent to the `ControlId_20`
 multi-select — the peer's own selection copied into a second field, not prose the
 app composed. It stays editable, and an operator entry wins.
+
+---
+
+## Closing an encounter — the part that is not the payload
+
+`SaveEndEncounter` cannot be posted cold. On its own it returns
+`EPINCorrect: true`, `SignatureExist: true` — and silently keeps whatever times
+the encounter already had. The payload is not the difference: a working manual
+close and ours were byte-identical on every time field.
+
+InSync reads the encounter out of **session state**, which the close screen and
+its validations establish. So the close runs the same sequence the browser does:
+
+```
+GET  /ENDEncounter/ENDEncounter?eid=&pid=&tpelemname=…
+POST /EncounterNote/EncounterNote?pid=&eid=
+POST /ENDEncounter/GetEndEncounterDuration
+POST /EncounterDetail/GetEncounterDurationAlert    StartTime / EndTime
+POST /EndEncounter/ValidateEndEncounterTime        EndEncounterDateTime
+POST /EndEncounter/ValidateDurationForCPT          StartTime / EndTime
+POST /ENDEncounter/SaveEndEncounter
+```
+
+This is the same statefulness warning that forces serial execution, applied to
+the close: the ids in the payload are not enough on their own.
+
+### Billable units are the encounter window
+
+Not the appointment's slot length, and not a units field. `ValidateDurationForCPT`
+and the program alert are both passed StartTime and EndTime, and the span is what
+gets billed — a 180-minute session on a per-15-minute code is 12 units.
+`EncounterStartDate` carries a **padded** hour and `EncounterEndDate` does not
+(`08/20/2026 09:00 AM` → `08/20/2026 12:00 PM`); both captures agree, so the
+asymmetry is copied rather than tidied.
+
+### The co-sign is read, never configured
+
+A peer's note needs their supervisor's signature, and InSync does **not** attach
+it unless the close asks. The close screen carries the wiring:
+
+```
+hdnCoSignIDs               "97,"     -> CoSignID
+hdnEndCosignProvider_97    "2421"    -> CoSignPhysicianIDs (the supervisor)
+hdnCosignRequestOption_97  "1"       -> CosignTypeID
+hdnCosignSR_97             "1"       -> SR
+```
+
+`loadCloseScreen()` parses those and `applyCosign()` puts them in the payload, so
+the supervisor follows whatever InSync already knows for that peer and no
+clinician is ever named in code.
+
+### Correcting an encounter that is already closed
+
+Reopen on the **admin** session, then close on the **peer's**:
+
+```
+POST /CoSignEncounterList/EditEncounter
+     PatientId, EncounterId, txtReasonToReopen   (the reason is double-encoded)
+```
+
+then the close sequence above as the peer. `scripts/portal-redo-note.js
+<encounter_id> --apply` clears the dedupe ledger and resets the staged row so the
+note can be sent again.
 ---
 
 ## Offsite is switched off
