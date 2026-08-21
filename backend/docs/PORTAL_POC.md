@@ -27,13 +27,63 @@ A CRM team can reproduce the integration by calling InSync directly in the same
 order and preserving the same identity, billing, duplicate, session-state and
 signing safeguards.
 
-Start with:
+### Scope: files the CRM team should use
 
-- `utils/insync.js` — InSync login and request handling.
-- `utils/insyncPortal.js` — provider, patient, encounter-type, calendar and billing lookups.
-- `utils/portalExecute.js` — appointment, encounter, note, close, sign and co-sign sequence.
-- `routes/portalPoc.js` — review state, bindings, dedupe, execution and audit flow.
-- `test/portalPoc.test.js` and `test/portalAccess.test.js` — regression coverage.
+Stay focused on the Portal POC/InSync transcription path. The rest of Ritzoini
+contains separate group-supervision, One-On-One, Zoom, payroll, messaging and
+administrative features that are not part of this build.
+
+Primary reference files:
+
+- `backend/utils/insync.js` — InSync login and HTTP session handling.
+- `backend/utils/insyncPortal.js` — provider, patient, encounter-type, calendar, payer, program, CPT, POS and billing-provider lookups.
+- `backend/utils/portalExecute.js` — appointment, encounter, note, close, sign and co-sign sequence.
+- `backend/utils/portalMatch.js` — peer, client and encounter-type matching rules.
+- `backend/utils/portalPayload.js` — request preparation and success-result parsing.
+- `backend/utils/portalCrypto.js` — encrypted storage for peer credentials and PINs.
+- `backend/routes/portalPoc.js` — binding, review, dedupe, execution and audit flow.
+- `backend/db/portal_poc.sql` — Portal-specific tables and access controls.
+- `backend/scripts/extract-insync-captures.js` — safe extraction and scrubbing of HAR request shapes.
+- `backend/test/portalPoc.test.js` and `backend/test/portalAccess.test.js` — regression and access tests.
+- `frontend/src/pages/PortalPOCPage.js` — the existing review interface, if a UI reference is needed.
+
+Supporting files such as `backend/middleware/auth.js`, `frontend/src/utils/api.js`
+and the application server mounting code are relevant only for authentication
+and routing. Do not copy or redesign unrelated Ritzoini domains as part of the
+CRM-to-InSync project.
+
+### Required credentials and configuration
+
+The developers have access to the source code, but source access does not supply
+the runtime credentials or authorize copying production secrets. Their CRM
+implementation must provide its own secure configuration for:
+
+- **InSync administrative login** — used only for provider, patient and
+  encounter-type resolution. Ritzoini reads this from
+  `app_settings.insync_username` / `app_settings.insync_password`, with
+  `INSYNC_USERNAME` / `INSYNC_PASSWORD` as a fallback.
+- **Each peer's InSync username and password** — used to open that peer's
+  calendar and execute notes under the correct identity.
+- **Each peer's signing PIN** — used only when closing and signing the
+  encounter.
+- **Credential-encryption key** — Ritzoini uses `PORTAL_CRED_KEY` with
+  AES-256-GCM. The replacement system must use equivalent authenticated
+  encryption and proper key management.
+- **Database service credentials** — required for the binding, staging,
+  dedupe, audit and encrypted-credential records. In Ritzoini this is the
+  Supabase service-role connection.
+- **InSync practice/facility and scheduler context** — obtained from the
+  captured request shapes and live InSync responses; do not replace these with
+  guessed or globally hardcoded IDs.
+- **Scrubbed capture templates** — stored by Ritzoini in
+  `portal_capture_templates`. Raw HAR files contain live session cookies and
+  patient information and must never be committed, emailed or placed in the
+  CRM repository.
+
+Passwords and PINs must be write-only through the application interface,
+encrypted at rest, unavailable to browser responses, and removed from error and
+audit logs. The CRM team should receive credentials through an approved secure
+channel, separately from this document and the source repository.
 
 ---
 
