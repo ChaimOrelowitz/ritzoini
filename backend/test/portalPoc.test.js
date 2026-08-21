@@ -330,7 +330,8 @@ test('the acting peer\'s name replaces the captured clinician\'s in display fiel
     visitId: '0', encounterId: '0', signingPin: '',
   });
   const p = out.appointment.params;
-  assert.strictEqual(p['objBookAppointmentss[Provider]'], 'Brand, Shmuel');
+  // The scheduler writes a provider as "Last, First (P)".
+  assert.strictEqual(p['objBookAppointmentss[Provider]'], 'Brand, Shmuel (P)');
   assert.strictEqual(p['SEEncounterDetails.SEProviderName'], 'Brand, Shmuel');
   assert.strictEqual(p['objBookAppointmentss[ResourceId]'], '2401');
   assert.ok(!JSON.stringify(p).includes('Captured, Clinician'));
@@ -409,18 +410,17 @@ test('no value belonging to the captured type survives anywhere', () => {
   }
 });
 
-test('CPT, modifiers, units and POS are left for InSync to resolve', () => {
-  // Writing these back did no work — the values were read out of InSync moments
-  // earlier — and on a NEW booking it posts fields the server owns, which
-  // SaveBookAppointment refuses without saying why.
+test('the CPT grid is left for InSync, but the booking still carries POS', () => {
+  // The objCpt grid is InSync's to fill. Place of service is different: a
+  // booking that succeeded posts it back, because the form displayed it.
   const p = prepared1253();
   const a = p.appointment.params, e = p.encounter.params;
   for (const k of ['objCpt[0][EncounterTypeCPTMapID]', 'objCpt[0][CPT_Code]', 'objCpt[0][M1]',
-                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]', 'objBookAppointmentss[POSCode]',
-                   'objBookAppointmentss[POSCodeDescription]',
-                   'objBookAppointmentss[ProcedureCodeDescription]']) {
+                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]']) {
     assert.strictEqual(a[k], '', `${k} must be left for InSync`);
   }
+  assert.strictEqual(a['objBookAppointmentss[POSCode]'], '12');
+  assert.strictEqual(a['objBookAppointmentss[POSCodeDescription]'], '12 - Home');
   for (const k of ['SEEncounterDetails.SECPTCode', 'SEEncounterDetails_SECPTCode',
                    'SEEncounterDetails.SECPTModifiers', 'SEEncounterDetails.SECPTDescription',
                    'SEEncounterDetails.SEPOSCode', 'SEEncounterDetails.SEPOSDescription']) {

@@ -225,6 +225,36 @@ async function getPosForType(cookie, visitTypeId) {
   return { posCode: code, posId: String(body?.POSID ?? '').trim() };
 }
 
+// A peer cannot bill under their own name — InSync nominates a billing provider
+// (their supervisor) for the patient's payer. The booking is refused if that
+// comes through as 0, which is what the scrubbed capture leaves it as.
+async function getBillingProvider(cookie, { payerPlanId, providerId, patientId, visitTypeId }) {
+  const res = await post('/Scheduler/GetDefaultServiceProvider', {
+    payerPlanId: String(payerPlanId || '-1'),
+    ResourceId: String(providerId || ''),
+    EncounterType: String(visitTypeId || ''),
+    Patientid: String(patientId || ''),
+  }, cookie);
+  let body = null;
+  try { body = JSON.parse(await res.text()); } catch { return null; }
+  const d = body?.DefaultServiceProvider;
+  const id = String(d?.DefaultProviderID ?? '');
+  return /^\d+$/.test(id) && Number(id) > 0 ? { id, enabled: d.IsServiceProviderEnable !== false } : null;
+}
+
+// InSync writes a patient as "Last, First - MM/DD/YYYY" on a booking, and a
+// provider as "Last, First (P)". Sending the portal's "First Last" is not what
+// the form posts.
+function insyncPatientLabel(name, dobIso) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  const asLastFirst = parts.length >= 2
+    ? `${parts[parts.length - 1]}, ${parts.slice(0, -1).join(' ')}`
+    : parts.join(' ');
+  if (!dobIso) return asLastFirst;
+  const [y, m, d] = String(dobIso).split('-');
+  return `${asLastFirst} - ${m}/${d}/${y}`;
+}
+
 // Assemble everything the write chain needs for ONE encounter type.
 async function resolveBilling(cookie, { template, patientId, providerId, schedule, scheduleSetupId, dateIso, visitTypeId, useCapturedContext = false }) {
   const ctx = await getSchedulerContext(cookie, { template, patientId, providerId, schedule, scheduleSetupId, dateIso, useCapturedContext });
@@ -239,7 +269,11 @@ async function resolveBilling(cookie, { template, patientId, providerId, schedul
     getPosForType(cookie, visitTypeId),
     getPatientProgram(cookie, { patientId, providerId, facilityId, dateIso }),
   ]);
-  return { ...row, ...program, payers: ctx.payers, posCode, posId,
+  const billingProvider = await getBillingProvider(cookie, {
+    payerPlanId: ctx.payers.primary?.patientPayerId || '-1',
+    providerId, patientId, visitTypeId,
+  });
+  return { ...row, ...program, payers: ctx.payers, billingProvider, posCode, posId,
     posDescription: describePos(ctx.posDetail, posCode) };
 }
 
@@ -607,7 +641,8 @@ function findExistingAppointment(appointments, { patientId, startMinutes, client
 
 module.exports = {
   getVisitTypes, getProviderDirectory, searchPatients,
-  getSchedulerContext, getPosForType, getPatientProgram, resolveBilling, describePos,
+  getSchedulerContext, getPosForType, getPatientProgram, getBillingProvider,
+  insyncPatientLabel, resolveBilling, describePos,
   loadCloseScreen,
   loadCalendarView, peerCalendar, findExistingAppointment, appointmentDisposition,
   parseClosedBy, dobToIso, mdy,

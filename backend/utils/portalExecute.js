@@ -186,19 +186,49 @@ function applyBilling(result, b) {
     setFields(params, b.programManagementId, 'ProgramManagementID');
   }
 
-  // The patient's payers, same reasoning: the capture is a self-pay test
-  // patient, and booking an insured patient as self-pay with no payer id is
-  // refused with no message.
+  // Everything below is per PATIENT, not per encounter type, and every one of
+  // them is wrong in the capture because the capture is a self-pay test patient
+  // seen by the admin. Diffed field by field against a peer booking that
+  // succeeded (VisitID 647317).
   const pay = b.payers;
-  if (pay) {
-    for (const { params } of Object.values(result)) {
+  for (const { params } of Object.values(result)) {
+    if (pay) {
       setFields(params, pay.primary?.patientPayerId || '', 'PrimaryPatientPayerID');
       setFields(params, pay.secondary?.patientPayerId || '', 'SecondaryPatientPayerID');
       setFields(params, pay.tertiary?.patientPayerId || '', 'TertiaryPatientPayerID');
       setFields(params, pay.primary?.isActive ? 'true' : 'false', 'PrimaryIsActivePayer');
-      if (pay.primary?.name) setFields(params, pay.primary.name, 'SchedulerPrimaryPayerName');
       setFields(params, pay.selfPay ? 'true' : 'false', 'SelfPay');
       setFields(params, pay.selfPay ? 'Yes' : 'No', 'SelfPayStr');
+      // Display names the form posts back alongside the ids.
+      if (pay.primary?.name) {
+        setFields(params, pay.primary.name, 'SchedulerPrimaryPayerName', 'PrimaryInsurance');
+      }
+      if (pay.secondary?.name) setFields(params, pay.secondary.name, 'SecondaryInsurance');
+      if (pay.tertiary?.name) setFields(params, pay.tertiary.name, 'TertiaryInsurance');
+    }
+
+    // A peer cannot bill under their own name: InSync nominates their
+    // supervisor for this patient's payer, and a booking with 0 here is refused.
+    if (b.billingProvider?.id) {
+      setFields(params, b.billingProvider.id, 'BillingProviderId');
+      if (b.billingProviderName) {
+        setFields(params, b.billingProviderName, 'BillingProviderDescription');
+      }
+    }
+
+    if (b.programName) setFields(params, b.programName, 'ProgramDescription');
+
+    // Place of service travels on the BOOKING even though the encounter's
+    // billing is InSync's to resolve — the form posts what it displayed.
+    if (b.posCode) {
+      setFields(params, b.posCode, 'POSCode');
+      if (b.posDescription) setFields(params, b.posDescription, 'POSCodeDescription');
+    }
+    if (b.cptCode) {
+      const mods = [b.m1, b.m2, b.m3, b.m4].filter(x => x && x !== 'null').join(', ');
+      setFields(params,
+        `${b.cptCode} - ${b.cptDescription}${mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`} |`,
+        'ProcedureCodeDescription');
     }
   }
 }
@@ -312,13 +342,20 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
 
   for (const { params } of Object.values(result)) {
     setFields(params, ctx.patientId, 'PatientId', 'SEPatientId');
-    if (ctx.patientName) setFields(params, ctx.patientName, 'PatientFullName', 'SEPatientName');
+    // InSync posts a patient as "Last, First - MM/DD/YYYY" on a booking, not the
+    // portal's "First Last".
+    if (ctx.patientName) {
+      setFields(params, ctx.patientLabel || ctx.patientName, 'PatientFullName', 'SEPatientName');
+    }
     setFields(params, ctx.providerId, 'ProviderID', 'ProviderId', 'ResourceId', 'SEProviderID');
     // The captured provider's NAME rides along in display fields that no id
     // mapping touches, so without this a booking made as one peer would carry
     // the captured clinician's name.
     if (ctx.providerName) {
-      setFields(params, ctx.providerName, 'Provider', 'ProviderName', 'SEProviderName', 'ResourceName');
+      // The scheduler writes a provider as "Last, First (P)".
+      const asScheduler = /\(P\)\s*$/.test(ctx.providerName) ? ctx.providerName : `${ctx.providerName} (P)`;
+      setFields(params, asScheduler, 'Provider');
+      setFields(params, ctx.providerName, 'ProviderName', 'SEProviderName', 'ResourceName');
     }
     // OldSEEncounterTypeID is the type InSync echoes as the previous selection;
     // it used to ride along on the billing pass, which no longer writes anything
@@ -482,9 +519,46 @@ function restoreNestedBlocks(result, templates) {
 // booking out of session state these establish, and posting the payload alone
 // comes back DataSave=false with every message field null.
 async function runBookingPreamble(cookie, ctx, log) {
-  const { patientId, providerId, visitTypeId, visitDate, startTime, duration,
-          programDetailId, programId, payerId, cptCode, m1 } = ctx;
+  const { patientId, providerId, providerLabel, visitTypeId, visitDate, startTime, duration,
+          programDetailId, programId, payerId, cptCode, m1, scheduleSetupId, facilityId } = ctx;
+  // Open the booking dialog first. This is the booking's equivalent of loading
+  // the close screen: it puts the schedule, slot and provider into the session
+  // that SaveBookAppointment then reads. Posting the payload without it comes
+  // back DataSave=false with every message field null.
+  await post('/Scheduler/BookAppointmentModel', {
+    'bookAppointment[ScheduleSetupID]': scheduleSetupId || '',
+    'bookAppointment[ScheduleTypeID]': '0',
+    'bookAppointment[ResourceId]': providerId,
+    'bookAppointment[ResourceTypeId]': '0',
+    'bookAppointment[ResourceFullName]': '',
+    'bookAppointment[Provider]': providerLabel || '',
+    'bookAppointment[VisitIDList]': '',
+    'bookAppointment[IsGroupTherapyHeaderRow]': '',
+    'bookAppointment[TherapyInfo]': '',
+    'bookAppointment[VisitDate]': visitDate,
+    'bookAppointment[VisitTime]': String(startTime).toLowerCase(),
+    'bookAppointment[ProfileName]': 'Scheduler',
+    'bookAppointment[VisitID]': '0',
+    'bookAppointment[TargetDate]': visitDate,
+    'bookAppointment[PatientId]': '0',
+    'bookAppointment[PatientFullName]': '',
+    'bookAppointment[IsPatientview]': '0',
+    'bookAppointment[AdditionalResourceID]': '0',
+    'bookAppointment[AdditionalResTypeID]': '-1',
+    'bookAppointment[IsCalendarView]': 'true',
+    'bookAppointment[viewMedia]': '0',
+    'bookAppointment[IsServiceProvider]': 'True',
+    'bookAppointment[DefaultBillingProvider]': '0',
+    'bookAppointment[IsFamily]': 'false',
+    'bookAppointment[FamilyVisitId]': '0',
+    'bookAppointment[FacilityId]': facilityId || '199',
+    'bookAppointment[IsMultiFacility]': 'true',
+    'bookAppointment[IsMultipleScheduleWeekView]': 'false',
+    PageViewNo: '1',
+  }, cookie);
+
   const steps = [
+    ['/Scheduler/GetExpectedCopayAsConfiguration', {}],
     ['/EncounterDetail/SetSEAuditLogBillable', {
       IsBillable: 'true', IsManuallyChanged: 'false', IsSetFrom: '2',
       EncounterId: '0', IsbillableFrom: '4',
@@ -531,14 +605,48 @@ async function runBookingPreamble(cookie, ctx, log) {
     }],
   ];
 
+  // These do more than warm the session: their answers are what the form
+  // displays and then posts back. An empty string where InSync wrote "0.00" is
+  // a model-binding failure, and the save returns DataSave=false with every
+  // message field null — which is exactly the refusal being chased here.
+  const out = { copay: null, allowable: null, alert: null };
   for (const [path, params] of steps) {
     const res = await post(path, params, cookie);
     const text = (await res.text()).trim();
-    // These answer empty or a benign object. A restriction or alert here is
-    // InSync objecting to the booking, and it says so before the save does.
+    if (/GetExpectedCopayAsConfiguration/.test(path) && /^[\d.]+$/.test(text)) {
+      out.copay = Number(text).toFixed(2);
+    }
+    if (/GetFeeScheduleExpectedAllowable/.test(path)) {
+      const n = Number(String(text).replace(/[^\d.]/g, ''));
+      if (Number.isFinite(n) && n > 0) out.allowable = n.toFixed(2);
+    }
+    if (/ProgramManagementGetAlertData/.test(path)) {
+      try { out.alert = JSON.parse(text); } catch { /* not json */ }
+    }
     if (/"(RestrictWhileBookingAppOrEnc|ShowAlert)"\s*:\s*true|RestrictCptCodes"\s*:\s*"[^"]+"/i.test(text)) {
       await log('warn', 'appointment', `${path.split('/').pop()}: ${text.slice(0, 200)}`);
     }
+  }
+  return out;
+}
+
+// Write the numbers the preamble produced into the booking. InSync posts these
+// as decimals; blanks are what the scrubbed capture leaves behind.
+function applyBookingNumbers(params, pre) {
+  const copay = pre?.copay ?? '0.00';
+  setFields(params, copay, 'ExpectedCopay', 'ExpectedCopayDetail', 'EncTypeExpectedCopay');
+  setFields(params, '0', 'OldExpectedCopay');
+  if (pre?.allowable) setFields(params, pre.allowable, 'ExpectedAllowable', 'ExpAllowableDetails');
+  const a = pre?.alert;
+  if (a) {
+    if (a.ConsumedUnitOrVisit != null) setFields(params, String(a.ConsumedUnitOrVisit), 'ConsumedUnitOrVisit');
+    if (a.CurrentVisitOrUnit != null) setFields(params, String(a.CurrentVisitOrUnit), 'CurrentVisitOrUnit');
+    if (a.RemainingUnitOrVisit != null) setFields(params, String(a.RemainingUnitOrVisit), 'RemainingUnitOrVisit');
+    if (a.AllowedUnitOrVisit != null) setFields(params, String(a.AllowedUnitOrVisit), 'AllowedUnitOrVisit');
+  }
+  // The capture leaves this at "0"; the successful booking sends it empty.
+  for (const k of Object.keys(params)) {
+    if (/pmalertdata.*patientid$/i.test(k.replace(/[[\]]+/g, '.'))) params[k] = '';
   }
 }
 
@@ -670,16 +778,20 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
   if (visitId) {
     await log('info', 'appointment', `Reusing existing appointment VisitID ${visitId}`);
   } else {
-    const prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId: '0', encounterId: '0', signingPin: '' });
     const when = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes, ctx.duration);
-    await runBookingPreamble(cookie, {
+    const pre = await runBookingPreamble(cookie, {
       patientId: ctx.patientId, providerId: ctx.providerId, visitTypeId: ctx.visitTypeId,
       visitDate: when.date, startTime: when.time, duration: ctx.duration,
       programDetailId: ctx.billing?.programManagementDetailId || '',
       programId: ctx.billing?.programManagementId || '',
       payerId: ctx.billing?.payers?.primary?.patientPayerId || '',
       cptCode: ctx.billing?.cptCode || '', m1: ctx.billing?.m1 || '0',
+      providerLabel: ctx.providerName ? `${ctx.providerName} (P)` : '',
+      scheduleSetupId: ctx.schedule?.scheduleSetupId || '',
+      facilityId: ctx.facilityId || '',
     }, log);
+    const prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId: '0', encounterId: '0', signingPin: '' });
+    applyBookingNumbers(prep.appointment.params, pre);
     const { body } = await send(prep, 'appointment', cookie, log);
     visitId = appointmentResult(body);
     await log('info', 'appointment', `Created appointment VisitID ${visitId}`);
@@ -752,6 +864,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, restoreNestedBlocks,
+  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, applyBookingNumbers, restoreNestedBlocks,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };

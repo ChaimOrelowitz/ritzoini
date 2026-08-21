@@ -962,6 +962,7 @@ async function executeRun(runId, { mode, sign, noteIds }) {
           ctx: {
             billing,
             patientId: r.patient_id, patientName: r.patient_name || note.clientName,
+            patientLabel: IP.insyncPatientLabel(r.patient_name || note.clientName, note.clientDateOfBirth),
             providerId: r.provider_id, providerName: r.provider_name || note.peerName,
             visitTypeId: r.visit_type_id, visitTypeName: r.visit_type_name,
             sessionDate: note.sessionDate, sessionStartMinutes: note.sessionStartMinutes,
