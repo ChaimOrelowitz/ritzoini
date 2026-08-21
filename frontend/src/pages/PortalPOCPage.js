@@ -273,6 +273,43 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
               <br />
             </>
           )}
+          {/* Entered by hand. The calendar check only catches a manual entry
+              when it landed on the peer's own appointment; typed straight into
+              another one it is invisible, so this is the way to say so. */}
+          {r.marked_entered_by ? (
+            <>
+              <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
+                disabled={busy || running}
+                onClick={async () => {
+                  if (!window.confirm('Undo "added to InSync" for this note?\n\nIt goes back to needing attention and stops being skipped on future uploads.')) return;
+                  setBusy(true);
+                  try { await api.post(`/portal/runs/${runId}/notes/${row.id}/unmark-entered`, {}); await onChanged(); }
+                  catch (ex) { alert(ex.message); }
+                  finally { setBusy(false); }
+                }}>
+                Undo
+              </button>
+              <br />
+            </>
+          ) : row.status !== 'done' && (
+            <>
+              <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
+                disabled={busy || running}
+                onClick={async () => {
+                  if (!window.confirm(
+                    `Mark as already added to InSync?\n\n${note.clientName} — ${fmtDate(note.sessionDate)} ${note.sessionStartClock || ''}\n\n` +
+                    'Use this when the note was entered by hand. It will not be written, and the ' +
+                    'same note in a future export will be skipped on upload.')) return;
+                  setBusy(true);
+                  try { await api.post(`/portal/runs/${runId}/notes/${row.id}/mark-entered`, {}); await onChanged(); }
+                  catch (ex) { alert(ex.message); }
+                  finally { setBusy(false); }
+                }}>
+                Added to InSync
+              </button>
+              <br />
+            </>
+          )}
           {row.status !== 'done' && (
             <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
               disabled={busy || running}

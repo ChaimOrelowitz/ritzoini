@@ -634,6 +634,77 @@ router.patch('/runs/:runId/notes/:noteId', ...guard, async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// Mark a note as already entered in InSync by hand. Bella has been transcribing
+// some of these manually, and the calendar check only catches that when the
+// appointment is on the peer's calendar with a closed encounter — a note typed
+// straight into a different appointment is invisible to it.
+//
+// This writes the dedupe ledger as well as the staged row, so the SAME note in a
+// later export is skipped on upload instead of coming back as work to do.
+router.post('/runs/:runId/notes/:noteId/mark-entered', ...guard, async (req, res) => {
+  try {
+    const { data: row } = await supabase.from('portal_staged_notes')
+      .select('*').eq('id', req.params.noteId).eq('run_id', req.params.runId).maybeSingle();
+    if (!row) return res.status(404).json({ error: 'Staged note not found' });
+
+    const r = row.resolution || {};
+    const who = [req.user.first_name, req.user.last_name].filter(Boolean).join(' ') || req.user.email;
+    const note = String(req.body?.note || '').trim();
+    const msg = `Marked as already entered in InSync by ${who}${note ? ` — ${note}` : ''}`;
+
+    const { error: ledgerErr } = await supabase.from('portal_processed_notes').upsert({
+      portal_note_uuid: row.portal_note_uuid,
+      run_id: req.params.runId,
+      peer_name: r.peer_name || row.note?.peerName,
+      client_name: row.note?.clientName,
+      session_date: row.note?.sessionDate,
+      insync_visit_type_id: r.visit_type_id || null,
+      // Entered by hand, so there is no visit or encounter id this app can
+      // claim. Recording one it did not create would corrupt the audit trail.
+      insync_visit_id: null,
+      insync_encounter_id: null,
+      appointment_reused: null,
+      signed: false,
+      status: 'done',
+      error_detail: msg,
+      processed_at: new Date().toISOString(),
+    }, { onConflict: 'portal_note_uuid' });
+    if (ledgerErr) throw new Error(ledgerErr.message);
+
+    await supabase.from('portal_staged_notes').update({
+      status: 'duplicate',
+      flags: [{ field: 'dedupe', message: msg }],
+      resolution: { ...r, needs: [msg], marked_entered_by: who, marked_entered_at: new Date().toISOString() },
+      updated_at: new Date().toISOString(),
+    }).eq('id', row.id);
+
+    await logEvent(req.params.runId, row.id, 'info', 'manual',
+      `${row.note?.clientName} ${row.note?.sessionDate} — ${msg}`);
+    ok(res, { ok: true, message: msg });
+  } catch (err) { fail(res, err); }
+});
+
+// Undo the above, for a row marked by mistake.
+router.post('/runs/:runId/notes/:noteId/unmark-entered', ...guard, async (req, res) => {
+  try {
+    const { data: row } = await supabase.from('portal_staged_notes')
+      .select('*').eq('id', req.params.noteId).eq('run_id', req.params.runId).maybeSingle();
+    if (!row) return res.status(404).json({ error: 'Staged note not found' });
+    if (!row.resolution?.marked_entered_by) {
+      return res.status(409).json({ error: 'This note was not marked by hand — nothing to undo.' });
+    }
+
+    await supabase.from('portal_processed_notes').delete().eq('portal_note_uuid', row.portal_note_uuid);
+    const { marked_entered_by, marked_entered_at, needs, ...rest } = row.resolution;
+    await supabase.from('portal_staged_notes').update({
+      status: 'needs_attention', flags: [], resolution: rest, updated_at: new Date().toISOString(),
+    }).eq('id', row.id);
+    await logEvent(req.params.runId, row.id, 'info', 'manual',
+      `${row.note?.clientName} ${row.note?.sessionDate} — no longer marked as entered by hand`);
+    ok(res, { ok: true });
+  } catch (err) { fail(res, err); }
+});
+
 router.get('/runs/:id/events', ...guard, async (req, res) => {
   try {
     const after = Number(req.query.after || 0);
@@ -844,38 +915,29 @@ async function executeRun(runId, { mode, sign, noteIds }) {
         // only the captured ADMIN scheduler ids that their session could not
         // answer for. (The gating field is PatientId: the capture carries 0,
         // and a real patient is what makes InSync return the CPT map at all.)
-        const billingArgs = {
-          template: templates.schedulercalendar?.params,
-          patientId: r.patient_id,
-          providerId: r.provider_id,
-          dateIso: note.sessionDate,
-          visitTypeId: r.visit_type_id,
-        };
+        // The peer's OWN session, with the peer's own scheduler context. A peer
+        // books their own appointments, so their login can answer for billing —
+        // there is no admin fallback here on purpose: billing that came from a
+        // different login than the one doing the writing is not something to
+        // discover after the fact.
+        const scheduleSetupId = view.scheduleSetupId || peer.insync_schedule_setup_id || null;
         let billing;
         try {
           billing = await IP.resolveBilling(cookie, {
-            ...billingArgs,
-            scheduleSetupId: view.scheduleSetupId || peer.insync_schedule_setup_id || null,
+            template: templates.schedulercalendar?.params,
+            patientId: r.patient_id,
+            providerId: r.provider_id,
+            scheduleSetupId,
+            dateIso: note.sessionDate,
+            visitTypeId: r.visit_type_id,
           });
         } catch (e) {
-          // Falling back rather than dead-ending the run. The CPT map is keyed
-          // by encounter type and is practice-wide, so the admin session yields
-          // the same numbers — and assertBilling still checks every field before
-          // anything is sent. Logged loudly because the peer's own session is
-          // the intended path, and a fallback that fires quietly is a fallback
-          // nobody ever fixes.
-          await log('warn', 'billing',
-            `Could not resolve billing on ${peer.portal_peer_name}'s own session (${e.message.slice(0, 120)}). ` +
-            `Retrying on the practice admin session.`);
-          // The admin's OWN captured context, whole. Passing the peer's
-          // ResourceId alongside the captured ScheduleSetupID is the one
-          // combination that reliably returns nothing — the ids have to belong
-          // to the session making the call. providerId still rides along
-          // because the PROGRAM lookup is per patient+provider, not per session.
-          billing = await IP.resolveBilling(await adminCookie(), {
-            ...billingArgs, useCapturedContext: true,
-          });
-          await log('warn', 'billing', 'Billing came from the admin session, not the peer\'s.');
+          // Name what was sent, so a failure points at the field to look at
+          // rather than just restating that it failed.
+          throw new X.StepError('billing',
+            `${e.message} (sent as ${peer.portal_peer_name}: provider ${r.provider_id}, ` +
+            `schedule ${scheduleSetupId || 'unresolved'}, patient ${r.patient_id}, ` +
+            `calendar opened via ${view.via})`);
         }
         if (!billing.programManagementDetailId) {
           throw new X.StepError('billing',
