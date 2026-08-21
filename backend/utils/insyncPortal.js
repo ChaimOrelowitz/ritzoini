@@ -642,7 +642,7 @@ function findExistingAppointment(appointments, { patientId, startMinutes, client
 module.exports = {
   getVisitTypes, getProviderDirectory, searchPatients,
   getSchedulerContext, getPosForType, getPatientProgram, getBillingProvider,
-  insyncPatientLabel, resolveBilling, describePos,
+  insyncPatientLabel, resolveBilling, describePos, facilityFromTemplate,
   loadCloseScreen,
   loadCalendarView, peerCalendar, findExistingAppointment, appointmentDisposition,
   parseClosedBy, dobToIso, mdy,

@@ -501,18 +501,24 @@ function restoreNestedBlocks(result, templates) {
 
 // --- execution -------------------------------------------------------------
 
-// The browser runs a dozen calls before SaveBookAppointment — billable audit,
-// default service provider, credential config, fee schedule, payer and program
-// validation, overlap checks. Same lesson as the close: InSync builds the
-// booking out of session state these establish, and posting the payload alone
-// comes back DataSave=false with every message field null.
+// The booking sequence, in the order the browser performs it. Order is the
+// point: the dialog is opened FIRST, then the patient is bound into it, and
+// SaveBookAppointment reads the session those calls build. The same calls in a
+// different order — resolving billing before the dialog exists — leave the save
+// with a session that never had a patient selected, and it answers
+// DataSave=false with every message field null.
+//
+// Nothing here supplies values on InSync's behalf. These calls exist so that
+// InSync populates its own form.
 async function runBookingPreamble(cookie, ctx, log) {
-  const { patientId, providerId, providerLabel, visitTypeId, visitDate, startTime, duration,
-          programDetailId, programId, payerId, cptCode, m1, scheduleSetupId, facilityId } = ctx;
-  // Open the booking dialog first. This is the booking's equivalent of loading
-  // the close screen: it puts the schedule, slot and provider into the session
-  // that SaveBookAppointment then reads. Posting the payload without it comes
-  // back DataSave=false with every message field null.
+  const { patientId, providerId, providerLabel, visitTypeId, visitDate, startTime,
+          duration, programDetailId, programId, payerId, scheduleSetupId, scheduleId,
+          facilityId, schedulerTemplate } = ctx;
+  // The facility comes from the captured booking context, not a literal, so a
+  // second facility needs a re-capture rather than a code change.
+  const fac = facilityId || IP.facilityFromTemplate(schedulerTemplate) || '';
+
+  // 1. Open the booking dialog on the peer's own schedule and slot.
   await post('/Scheduler/BookAppointmentModel', {
     'bookAppointment[ScheduleSetupID]': scheduleSetupId || '',
     'bookAppointment[ScheduleTypeID]': '0',
@@ -539,52 +545,101 @@ async function runBookingPreamble(cookie, ctx, log) {
     'bookAppointment[DefaultBillingProvider]': '0',
     'bookAppointment[IsFamily]': 'false',
     'bookAppointment[FamilyVisitId]': '0',
-    'bookAppointment[FacilityId]': facilityId || '199',
+    'bookAppointment[FacilityId]': fac,
     'bookAppointment[IsMultiFacility]': 'true',
     'bookAppointment[IsMultipleScheduleWeekView]': 'false',
     PageViewNo: '1',
   }, cookie);
 
+  // 2. Bind the patient into the open dialog. GetSchedulerCalendar here IS the
+  //    selection, not a lookup: it carries schedule, slot, provider and patient
+  //    together, which no earlier call did.
+  const bookingCtx = { ...(schedulerTemplate || {}) };
+  const set = (re, v) => {
+    for (const k of Object.keys(bookingCtx)) {
+      if (re.test(k.replace(/[[\]]+/g, '.').replace(/\.+$/, ''))) bookingCtx[k] = String(v);
+    }
+  };
+  set(/(^|\.)schedulesetupid$/i, scheduleSetupId || '');
+  set(/(^|\.)scheduleid$/i, scheduleId || '');
+  set(/(^|\.)resourceid$/i, providerId);
+  set(/(^|\.)provider$/i, providerLabel || '');
+  set(/(^|\.)patientid$/i, patientId);
+  set(/(^|\.)visitdate$/i, visitDate);
+  set(/(^|\.)visittime$/i, startTime);
+  set(/(^|\.)facilityid$/i, fac);
+
+  await post('/Scheduler/CheckSticknote', { PatientID: patientId, LocationID: '3' }, cookie);
+  const calRes = await post('/Scheduler/GetSchedulerCalendar', bookingCtx, cookie);
+  const calText = await calRes.text();
+  await post('/Scheduler/getRLSPatientDetails', { PatientId: patientId, ScheduleDate: visitDate }, cookie);
+
+  // Whether the patient actually bound is the whole question, and InSync never
+  // says so directly -- it answers a save it did not like with DataSave=false
+  // and every message field null. It does answer THIS call differently: an
+  // unbound dialog comes back with an empty AdditionalDetails (no CPT map),
+  // a bound one comes back with the patient's. Report which, so a failed
+  // booking points at the binding rather than leaving it to be guessed at.
+  const bound = /"AdditionalDetails"\s*:\s*\[\s*\{/.test(calText);
+  await log(bound ? 'info' : 'warn', 'appointment',
+    bound
+      ? `Patient ${patientId} bound into the booking dialog (InSync returned its CPT map)`
+      : `InSync answered the patient selection with no CPT map — patient ${patientId} may not be ` +
+        `bound into the dialog, and SaveBookAppointment will likely refuse without saying why`);
+
+  // 3. Everything the dialog asks for next, in its own order.
   const steps = [
+    ['/Scheduler/GetDefaultServiceProvider', {
+      payerPlanId: String(payerId || '-1'), ResourceId: providerId,
+      EncounterType: 'NaN', Patientid: patientId,
+    }],
+    ['/CredentialConfiguration/GetCredentialConfigForVisit', {
+      PracticeId: '0', ResourceId: providerId, EncounterTypeId: '',
+      VisitDate: visitDate, CredentialConfigID: '', IsFromScheduler: 'true',
+    }],
+    ['/Scheduler/GetExpectedCopayAsConfiguration', {}],
+    ['/ProgramManagement/ProgramManagementSearch', {
+      ProgramManagementDetailID: '0', ProgramDisplayId: '1', PatientId: patientId,
+      ProgramDate: visitDate, FacilityID: fac, ProviderID: providerId,
+    }],
+    ['/ProgramManagement/GetLevelOfCareValidData', {
+      'obj[PatientID]': patientId, 'obj[CurrentVistDate]': visitDate,
+      'obj[ProgramManagementDetailID]': programDetailId, 'obj[ProgramManagementID]': programId,
+    }],
+    // The encounter type is chosen here, inside the booking context.
+    ['/Scheduler/GetVisitTypes', {
+      'objbookAppointment[ScheduleID]': scheduleId || '',
+      'objbookAppointment[VisitDate]': visitDate,
+      'objbookAppointment[VisitTime]': startTime,
+      'objbookAppointment[FacilityId]': fac,
+      'objbookAppointment[ProgramManagementDetailID]': programDetailId,
+      'objbookAppointment[isCaseProgramAutoSelectControls]': 'true',
+      'objbookAppointment[VisitTypeID]': '',
+      VisitTime: startTime,
+    }],
+    ['/ProgramManagement/CaseProgramDetails', {
+      CaseManagementID: '0', ProgramManagementDetailID: programDetailId,
+    }],
+    ['/Scheduler/GetDefaultServiceProvider', {
+      payerPlanId: String(payerId || '-1'), ResourceId: providerId,
+      EncounterType: visitTypeId, Patientid: patientId,
+    }],
     ['/Scheduler/GetExpectedCopayAsConfiguration', {}],
     ['/EncounterDetail/SetSEAuditLogBillable', {
       IsBillable: 'true', IsManuallyChanged: 'false', IsSetFrom: '2',
       EncounterId: '0', IsbillableFrom: '4',
     }],
-    ['/Scheduler/GetDefaultServiceProvider', {
-      payerPlanId: '-1', ResourceId: providerId, EncounterType: visitTypeId, Patientid: patientId,
-    }],
-    ['/CredentialConfiguration/GetCredentialConfigForVisit', {
-      PracticeId: '0', ResourceId: providerId, EncounterTypeId: visitTypeId,
-      VisitDate: visitDate, CredentialConfigID: '', IsFromScheduler: 'true',
-    }],
-    ['/FeeSchedule/GetFeeScheduleExpectedAllowable', {}],
     ['/Scheduler/PreviousVisitBookAppointmentAlert', {
       PatientGroupId: '0', PatientIds: patientId, VisitTypeId: visitTypeId,
       IsWarningYes: '0', DateToCheckFrom: visitDate, ProviderId: providerId,
-    }],
-    ['/CommonFunctions/GetValidationForPayerRestrictConfiguration', {
-      'CPTModifierList[0][CPTCode]': cptCode || '', 'CPTModifierList[0][M1]': m1 || '0',
-      'CPTModifierList[0][M2]': '0', 'CPTModifierList[0][M3]': '0', 'CPTModifierList[0][M4]': '0',
-      PatientPayerID: payerId || '', PatientID: patientId, VisitDate: visitDate,
-      EncounterTypeID: visitTypeId, IsFromScheduler: 'true',
     }],
     ['/ProgramManagement/ProgramManagementGetAlertData', {
       FromWhichPage: '1', PatientId: patientId, ProgramManagementDetailID: programDetailId,
       EncounterTypeID: visitTypeId, Duration: String(duration), VisitID: '0',
       EncounterID: '0', ChargeID: '0', VisitStatus: '3', IsBillable: 'true',
     }],
-    ['/ProgramManagement/GetProgramCptBaseAlertAndWarningDetail', {
-      ModuleType: '1', CPTCodes: cptCode || '', ProgramID: programId || '',
-      EncounterTypeID: visitTypeId, IsBillable: 'true', VisitDate: visitDate,
-      VisitStatus: '3', VisitID: '',
-    }],
     ['/ProgramManagement/ProgramManagementValidate', {
       VisitDate: visitDate, ProgramManagementDetailID: programDetailId,
-    }],
-    ['/EncounterDetail/GetCarePlanReviewAlterMessage', {
-      PatientId: patientId, ProviderId: providerId,
-      EncounterTypeId: visitTypeId, isFromBookAppoinment: 'true',
     }],
     ['/Scheduler/CheckOverlappingOnSameDate', {
       VisitDate: visitDate, PatientIDs: patientId, StartTime: startTime,
@@ -593,37 +648,15 @@ async function runBookingPreamble(cookie, ctx, log) {
     }],
   ];
 
-  // These do more than warm the session: their answers are what the form
-  // displays and then posts back. An empty string where InSync wrote "0.00" is
-  // a model-binding failure, and the save returns DataSave=false with every
-  // message field null — which is exactly the refusal being chased here.
-  const out = { copay: null, allowable: null, alert: null };
   for (const [path, params] of steps) {
     const res = await post(path, params, cookie);
     const text = (await res.text()).trim();
-    if (/GetExpectedCopayAsConfiguration/.test(path) && /^[\d.]+$/.test(text)) {
-      out.copay = Number(text).toFixed(2);
-    }
-    if (/GetFeeScheduleExpectedAllowable/.test(path)) {
-      const n = Number(String(text).replace(/[^\d.]/g, ''));
-      if (Number.isFinite(n) && n > 0) out.allowable = n.toFixed(2);
-    }
-    if (/ProgramManagementGetAlertData/.test(path)) {
-      try { out.alert = JSON.parse(text); } catch { /* not json */ }
-    }
     if (/"(RestrictWhileBookingAppOrEnc|ShowAlert)"\s*:\s*true|RestrictCptCodes"\s*:\s*"[^"]+"/i.test(text)) {
       await log('warn', 'appointment', `${path.split('/').pop()}: ${text.slice(0, 200)}`);
     }
   }
-  return out;
+  await log('info', 'appointment', `Booking dialog prepared for patient ${patientId} on ${visitDate} ${startTime}`);
 }
-
-// The preamble's answers are InSync populating the form, not values for us to
-// copy into the payload. It fills these itself; asserting figures the server
-// never agreed to is how a booking claims a copay or allowable of our own
-// invention. Kept as a no-op so the call site still reads as a step.
-function applyBookingNumbers() { /* intentionally nothing — see above */ }
-
 
 // Replay the validation calls the close screen makes. Each carries the window,
 // and together they are what puts the encounter — and its times — into the
@@ -754,19 +787,21 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
     await log('info', 'appointment', `Reusing existing appointment VisitID ${visitId}`);
   } else {
     const when = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes, ctx.duration);
-    const pre = await runBookingPreamble(cookie, {
+    await runBookingPreamble(cookie, {
       patientId: ctx.patientId, providerId: ctx.providerId, visitTypeId: ctx.visitTypeId,
       visitDate: when.date, startTime: when.time, duration: ctx.duration,
       programDetailId: ctx.billing?.programManagementDetailId || '',
       programId: ctx.billing?.programManagementId || '',
       payerId: ctx.billing?.payers?.primary?.patientPayerId || '',
-      cptCode: ctx.billing?.cptCode || '', m1: ctx.billing?.m1 || '0',
+      // InSync spells a provider "Last, First, Cred (P)" everywhere in the
+      // scheduler, and GetSchedulerCalendar matches on that string.
       providerLabel: ctx.providerName ? `${ctx.providerName} (P)` : '',
       scheduleSetupId: ctx.schedule?.scheduleSetupId || '',
+      scheduleId: ctx.schedule?.scheduleId || '',
       facilityId: ctx.facilityId || '',
+      schedulerTemplate: templates.schedulercalendar?.params || null,
     }, log);
     const prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId: '0', encounterId: '0', signingPin: '' });
-    applyBookingNumbers(prep.appointment.params, pre);
     const { body } = await send(prep, 'appointment', cookie, log);
     visitId = appointmentResult(body);
     await log('info', 'appointment', `Created appointment VisitID ${visitId}`);
@@ -839,6 +874,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, applyBookingNumbers, restoreNestedBlocks,
+  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, restoreNestedBlocks,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };
