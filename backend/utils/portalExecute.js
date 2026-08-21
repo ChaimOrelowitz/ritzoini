@@ -298,13 +298,16 @@ function appointmentClock(dateIso, startMinutes, durationMinutes = 0) {
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   const date = `${two(m)}/${two(d)}/${y}`;
 
-  // InSync writes the encounter window without a leading zero on the hour
-  // ("08/12/2026 1:45 PM"), so match that shape rather than the padded one used
-  // for the appointment's own time fields.
-  const loose = total => {
+  // The two captures agree on an asymmetry worth copying rather than tidying:
+  // EncounterStartDate carries a PADDED hour ("08/12/2026 01:00 PM") and
+  // EncounterEndDate does not ("08/12/2026 3:00 PM"). Both come straight from
+  // the browser's own controls, so match them exactly instead of guessing that
+  // InSync is lenient.
+  const clock = (total, pad) => {
     const hh = Math.floor(total / 60) % 24, mm = total % 60;
     const ap = hh >= 12 ? 'PM' : 'AM';
-    return `${hh % 12 === 0 ? 12 : hh % 12}:${two(mm)} ${ap}`;
+    const h = hh % 12 === 0 ? 12 : hh % 12;
+    return `${pad ? two(h) : h}:${two(mm)} ${ap}`;
   };
   const endMins = mins + (Number(durationMinutes) || 0);
 
@@ -318,8 +321,8 @@ function appointmentClock(dateIso, startMinutes, durationMinutes = 0) {
     // ValidateDurationForCPT and the program alert both read start/end, not the
     // appointment's slot length — so they are the billing-critical values in the
     // whole chain.
-    encounterStart: `${date} ${loose(mins)}`,
-    encounterEnd: `${date} ${loose(endMins)}`,
+    encounterStart: `${date} ${clock(mins, true)}`,
+    encounterEnd: `${date} ${clock(endMins, false)}`,
     // Spans past midnight only if a session ever did; kept explicit so a wrong
     // end date is visible rather than silently wrapping.
     endsNextDay: endMins >= 24 * 60,

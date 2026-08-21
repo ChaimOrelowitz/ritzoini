@@ -536,7 +536,7 @@ test('close carries the session\'s own start and end, not the capture\'s', () =>
   });
   const c = out.close.params;
   // 9:00 AM + 180 min = 12:00 PM, on the session's own date.
-  assert.strictEqual(c['SaveEndEncounter[EncounterStartDate]'], '08/20/2026 9:00 AM');
+  assert.strictEqual(c['SaveEndEncounter[EncounterStartDate]'], '08/20/2026 09:00 AM');
   assert.strictEqual(c['SaveEndEncounter[EncounterEndDate]'], '08/20/2026 12:00 PM');
   assert.ok(!JSON.stringify(c).includes('08/12/2026'), "the captured session's window must not survive");
 });
@@ -547,10 +547,13 @@ test('the window is what a per-15-minute code would be billed from', () => {
     const t = X.appointmentClock(dateIso, start, dur);
     return [t.encounterStart, t.encounterEnd];
   };
-  assert.deepStrictEqual(span('2026-08-19', 780, 120), ['08/19/2026 1:00 PM', '08/19/2026 3:00 PM']);
+  // Start padded, end not — copied from the captures, not normalised.
+  assert.deepStrictEqual(span('2026-08-19', 780, 120), ['08/19/2026 01:00 PM', '08/19/2026 3:00 PM']);
   assert.deepStrictEqual(span('2026-08-10', 720, 180), ['08/10/2026 12:00 PM', '08/10/2026 3:00 PM']);
   // Midnight and noon are the two the 12-hour clock usually gets wrong.
   assert.strictEqual(X.appointmentClock('2026-01-05', 0, 60).encounterStart, '01/05/2026 12:00 AM');
+  assert.strictEqual(X.appointmentClock('2026-08-12', 780, 120).encounterStart, '08/12/2026 01:00 PM');
+  assert.strictEqual(X.appointmentClock('2026-08-12', 780, 120).encounterEnd, '08/12/2026 3:00 PM');
   assert.strictEqual(X.appointmentClock('2026-01-05', 690, 30).encounterEnd, '01/05/2026 12:00 PM');
 });
 
