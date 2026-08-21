@@ -17,6 +17,7 @@
 // and sends nothing.
 
 const { post } = require('./insync');
+const IP = require('./insyncPortal');
 const { clean, setFields, responseId, appointmentResult } = require('./portalPayload');
 const { parseInsyncTypeName } = require('./portalMatch');
 
@@ -514,6 +515,63 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
 
 // --- execution -------------------------------------------------------------
 
+// Replay the validation calls the close screen makes. Each carries the window,
+// and together they are what puts the encounter — and its times — into the
+// session state SaveEndEncounter reads.
+async function runClosePreamble(cookie, ctx, log) {
+  const { encounterId, patientId, visitId, visitTypeId, programId, startTime, endTime } = ctx;
+  const steps = [
+    ['/EncounterNote/EncounterNote', {}, `?CallFrom=1&isSig=false&isScritAdd=0&pid=${patientId}&eid=${encounterId}`],
+    ['/ENDEncounter/GetEndEncounterDuration', {}],
+    ['/EncounterDetail/GetEncounterDurationAlert', {
+      'EncounterDurationAlert[EncounterTypeID]': visitTypeId,
+      'EncounterDurationAlert[ProgramID]': programId,
+      'EncounterDurationAlert[StartTime]': startTime,
+      'EncounterDurationAlert[EndTime]': endTime,
+    }],
+    ['/EndEncounter/ValidateEndEncounterTime', {
+      'encounters[0][EncounterId]': encounterId,
+      'encounters[0][PracticeId]': '200',
+      'encounters[0][VisitId]': visitId,
+      'encounters[0][EndEncounterDateTime]': endTime,
+      'encounters[0][EncounterTypeID]': visitTypeId,
+    }],
+    ['/EndEncounter/ValidateDurationForCPT', {
+      'model[0][EncounterId]': encounterId,
+      'model[0][StartTime]': startTime,
+      'model[0][EndTime]': endTime,
+    }],
+  ];
+  for (const [path, params, query] of steps) {
+    const res = await post(path + (query || ''), params, cookie);
+    const text = await res.text();
+    // These answer [] when content. Anything else is InSync objecting, and
+    // pressing on would close against a window it just refused.
+    const body = text.trim();
+    if (body && body !== '[]' && body !== '""' && /warning|error|restrict|alert.*true/i.test(body.slice(0, 400))) {
+      await log('warn', 'close', `${path.split('/').pop()} returned: ${body.slice(0, 160)}`);
+    }
+  }
+  await log('info', 'close', `Encounter window ${startTime} - ${endTime} accepted by InSync's checks`);
+}
+
+// The co-sign block, built from the close screen rather than from a name in
+// code. A peer's note needs their supervisor's signature; InSync knows who that
+// is, so it is read, not configured here.
+function applyCosign(params, closeCtx) {
+  (closeCtx.cosigns || []).forEach((c, i) => {
+    const at = k => `SaveEndEncounter[CosignRequests][CosignDetails][${i}][${k}]`;
+    params[at('CoSignID')] = c.coSignId;
+    params[at('CosignRequest')] = 'true';
+    params[at('CoSignPhysicianIDs')] = c.physicianIds;
+    params[at('CoSignColorCode')] = '#b1b1b1';
+    params[at('CoSignStatus')] = '2';
+    params[at('CosignTypeID')] = c.typeId;
+    params[at('SR')] = c.sr;
+  });
+  if (closeCtx.portalEnabled) params['SaveEndEncounter[IsPatientPortalEnable]'] = 'true';
+}
+
 class StepError extends Error {
   constructor(step, message) { super(message); this.step = step; }
 }
@@ -615,6 +673,29 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
     : 'Generate accepted; StrEncounterNote not visible in the response prefix');
 
   // 6–7. Close, and sign if the PIN was supplied.
+  // The browser does not post SaveEndEncounter cold. It loads the close screen,
+  // then runs the duration/time validations — and InSync's close reads the
+  // encounter out of session context those calls establish. Posting the payload
+  // on its own comes back successful and silently keeps the old times.
+  const closeCtx = await IP.loadCloseScreen(cookie, {
+    encounterId, patientId: ctx.patientId,
+  });
+  await log('info', 'close', `Close screen loaded${closeCtx.cosigns.length
+    ? ` — co-sign to provider ${closeCtx.cosigns.map(c => c.physicianIds).join(', ')}`
+    : ' — no co-sign configured on this encounter'}`);
+
+  const window = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes, ctx.duration);
+  await runClosePreamble(cookie, {
+    encounterId, patientId: ctx.patientId, visitId,
+    visitTypeId: ctx.visitTypeId,
+    programId: ctx.billing?.programManagementDetailId || '',
+    startTime: window.encounterStart, endTime: window.encounterEnd,
+  }, log);
+
+  // The co-sign the close screen says this encounter needs. Nobody is named in
+  // code: the supervisor comes from InSync's own wiring for this peer.
+  applyCosign(prep.close.params, closeCtx);
+
   const closeRes = await send(prep, 'close', cookie, log);
   let signed = false;
   if (allowSign) {
@@ -635,6 +716,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor,
+  noteStepFor, templatesFor, applyCosign, runClosePreamble,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };

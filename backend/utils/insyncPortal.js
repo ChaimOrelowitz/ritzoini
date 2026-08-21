@@ -394,6 +394,39 @@ async function searchPatients(cookie, { text, includeInactive = false } = {}) {
   }));
 }
 
+// --- the close screen ------------------------------------------------------
+
+// Loading /ENDEncounter/ENDEncounter is not optional decoration. It puts the
+// encounter into the session's current context — InSync's close reads that,
+// not only the posted fields, which is why posting SaveEndEncounter on its own
+// returns success and changes nothing. It also carries the co-sign wiring for
+// this encounter, which is how the supervisor is known without naming anyone.
+async function loadCloseScreen(cookie, { encounterId, patientId }) {
+  const url = `${BASE}/ENDEncounter/ENDEncounter?eid=${encodeURIComponent(encounterId)}` +
+    `&pid=${encodeURIComponent(patientId)}&tpelemname=${encodeURIComponent(' Plan / Visit Codes ')}&cpelemname=`;
+  const res = await fetch(url, { headers: { ...headers(cookie, `${BASE}/facesheet`), Accept: 'text/html,*/*' } });
+  const html = await res.text();
+  if (/SIGN IN/.test(html.slice(0, 4000))) throw new Error('Close screen: not authenticated to InSync');
+
+  // "97," -> the co-sign rows this encounter has; each has its own hidden inputs.
+  const ids = (html.match(/id="hdnCoSignIDs"[^>]*value="([^"]*)"/i) || [])[1] || '';
+  const cosigns = [];
+  for (const id of ids.split(',').map(x => x.trim()).filter(Boolean)) {
+    const pick = name => (html.match(new RegExp(`id="${name}_${id}"[^>]*value="([^"]*)"`, 'i')) || [])[1] || '';
+    const physicians = pick('hdnEndCosignProvider');
+    if (!physicians) continue;
+    cosigns.push({
+      coSignId: id,
+      physicianIds: physicians,
+      typeId: pick('hdnCosignRequestOption') || '1',
+      sr: pick('hdnCosignSR') || '1',
+    });
+  }
+  const portalEnabled = /id="hdnIsPatientPortalEnable"[^>]*value="(True|true)"/.test(html) ||
+    /IsPatientPortalEnable[^>]*value="(True|true)"/.test(html);
+  return { cosigns, portalEnabled, html };
+}
+
 // --- calendar (Phase B, peer login) ----------------------------------------
 
 // The peer's own day view. This is the ONLY reliable "does this appointment
@@ -554,6 +587,7 @@ function findExistingAppointment(appointments, { patientId, startMinutes, client
 module.exports = {
   getVisitTypes, getProviderDirectory, searchPatients,
   getSchedulerContext, getPosForType, getPatientProgram, resolveBilling, describePos,
+  loadCloseScreen,
   loadCalendarView, peerCalendar, findExistingAppointment, appointmentDisposition,
   parseClosedBy, dobToIso, mdy,
 };
