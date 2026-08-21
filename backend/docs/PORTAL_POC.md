@@ -455,6 +455,12 @@ hdnCosignSR_97             "1"       -> SR
 the supervisor follows whatever InSync already knows for that peer and no
 clinician is ever named in code.
 
+**Required final state:** after the peer signs and closes the encounter, the note
+must appear in InSync as **waiting for the configured supervisor's co-sign**. A
+run is not operationally complete merely because the peer signature succeeded;
+the co-sign request returned by the close screen must be included in
+`SaveEndEncounter` and verified in InSync during acceptance testing.
+
 ### Correcting an encounter that is already closed
 
 Reopen on the **admin** session, then close on the **peer's**:
