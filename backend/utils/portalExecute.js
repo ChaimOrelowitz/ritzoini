@@ -18,7 +18,7 @@
 
 const { post } = require('./insync');
 const IP = require('./insyncPortal');
-const { clean, setFields, responseId, appointmentResult } = require('./portalPayload');
+const { clean, setFields, keyMatches, responseId, appointmentResult } = require('./portalPayload');
 const { parseInsyncTypeName } = require('./portalMatch');
 
 const REQUIRED_STEPS = ['appointment', 'start', 'encounter', 'note', 'generate', 'close'];
@@ -171,27 +171,25 @@ function two(n) { return String(n).padStart(2, '0'); }
 // resolveBilling is still called: it is how the patient's program enrolment is
 // found, and its CPT/POS values are logged so a run says what InSync will bill.
 
+function cptComposite(b) { return `${b.cptCode}#*#&*&${b.cptMapId}`; }
+
+// "<CPT>#*#&*&<mapId>,<M1>,<M2>,<M3>,<M4>,<Units>,&*%^1,&*%^1"
+function cptModifiers(b) {
+  return [cptComposite(b), b.m1 || '', b.m2 || '', b.m3 || '', b.m4 || '', b.units, '&*%^1', '&*%^1'].join(',');
+}
+
+function modifierLabels(b) {
+  return [b.m1, b.m2, b.m3, b.m4].filter(Boolean).join(', ');
+}
+
 function applyBilling(result, b) {
-  // CPT code, modifiers, units, CPT-map id and place of service are NOT ours to
-  // send. InSync resolves them from the encounter type, and the billable units
-  // from the encounter window at close. Everything this used to write was read
-  // out of InSync moments earlier and handed straight back — no work done, and
-  // on a NEW booking it means posting fields the server owns, which is enough
-  // for SaveBookAppointment to refuse with DataSave=false and no message.
-  //
-  // What does have to travel is the PATIENT's program enrolment: the captured
-  // payloads carry the captured patient's, and it is per patient.
+  // Per patient, and wrong in every capture, so it goes on EVERY step: the
+  // capture is one patient's program enrolment and this is another's.
   for (const { params } of Object.values(result)) {
     setFields(params, b.programManagementDetailId, 'ProgramManagementDetailID');
     setFields(params, b.programManagementId, 'ProgramManagementID');
-  }
 
-  // Everything below is per PATIENT, not per encounter type, and every one of
-  // them is wrong in the capture because the capture is a self-pay test patient
-  // seen by the admin. Diffed field by field against a peer booking that
-  // succeeded (VisitID 647317).
-  const pay = b.payers;
-  for (const { params } of Object.values(result)) {
+    const pay = b.payers;
     if (pay) {
       setFields(params, pay.primary?.patientPayerId || '', 'PrimaryPatientPayerID');
       setFields(params, pay.secondary?.patientPayerId || '', 'SecondaryPatientPayerID');
@@ -203,33 +201,106 @@ function applyBilling(result, b) {
 
     // A peer cannot bill under their own name: InSync nominates their
     // supervisor for this patient's payer, and a booking with 0 here is refused.
-    if (b.billingProvider?.id) {
-      setFields(params, b.billingProvider.id, 'BillingProviderId');
-    }
+    if (b.billingProvider?.id) setFields(params, b.billingProvider.id, 'BillingProviderId');
+  }
 
+  // The CPT grid and place of service, on the ENCOUNTER forms only.
+  //
+  // These are InSync's to decide, and the BOOKING must not assert them -- it
+  // posts them only because InSync had already filled the dialog in, so sending
+  // our own is how SaveBookAppointment ends up refusing with DataSave=false.
+  //
+  // The encounter forms are the opposite case. They are replays of a form that
+  // already had these fields filled, and OUR OWN EXTRACTOR blanks them so the
+  // captured type's numbers can never be replayed for a different type. Leaving
+  // them blank is not deferring to InSync -- it is posting an empty CPT grid,
+  // and AddEditStartEncounter answers that with a 500. So they are written back
+  // here, from what InSync itself just said for the selected type: resolveBilling
+  // reads the CPT map, modifiers, units and POS live, per type and per patient.
+  const composite = cptComposite(b);
+  const mods = modifierLabels(b);
+  const procedureDesc = `${b.cptCode} - ${b.cptDescription}`
+    + (mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`) + ' |';
+
+  for (const [step, { params }] of Object.entries(result)) {
+    if (step === 'appointment') continue;
+
+    setFields(params, b.cptMapId,       'EncounterTypeCPTMapID');
+    setFields(params, b.cptCode,        'CPT_Code', 'CPTCode');
+    setFields(params, b.cptDescription, 'CPT_Description');
+    setFields(params, b.m1,             'M1');
+    setFields(params, b.m2,             'M2');
+    setFields(params, b.m3,             'M3');
+    setFields(params, b.m4,             'M4');
+    setFields(params, b.units,          'Units');
+    setFields(params, b.cptMapTypeId,   'CPTMapTypeID');
+
+    setFields(params, b.posCode,        'POSCode', 'SEPOSCode');
+    setFields(params, b.posDescription, 'POSCodeDescription');
+    setFields(params, b.posDescription.replace(/^\s*\d+\s*-\s*/, ''), 'SEPOSDescription');
+    setFields(params, procedureDesc,    'ProcedureCodeDescription');
+
+    // The encounter form's composites.
+    setFields(params, composite,       'SECPTCode');
+    setFields(params, cptModifiers(b), 'SECPTModifiers');
+    setFields(params, `${composite} -  ${b.cptDescription}`, 'SECPTDescription');
+
+    // Not reachable by suffix: this key has no bracket or dot, so it normalises
+    // to ONE segment and `setFields(…, 'SECPTCode')` can never see it.
+    if ('SEEncounterDetails_SECPTCode' in params) params.SEEncounterDetails_SECPTCode = composite;
+
+    // The type id InSync echoes back as the previous selection.
+    setFields(params, b.visitTypeId, 'OldSEEncounterTypeID');
   }
 }
 
-// Deliberately NOT written, though a successful booking carries them: POSCode
-// and its description, ProcedureCodeDescription, ProgramDescription, the
-// insurance and billing-provider display names, and the copay and allowable
-// figures. The browser posts those because InSync had already populated the
-// form with them — they are its output, not our input, and reconstructing them
-// means asserting values the server already knows.
+// Refuse to send a payload whose billing does not match what InSync said for the
+// selected type. This gate exists because the failure it catches is silent:
+// the extractor blanks every billing field, so a step we forget to fill goes out
+// as an empty CPT grid and InSync answers with a 500 and no explanation.
 //
-// What is written above is only what identifies WHO and WHAT: patient,
-// provider, payer, billing-provider and program ids, each read back from InSync
-// rather than computed here.
-
-// Refuse to send a payload whose program enrolment is missing or still belongs
-// to the captured patient. Billing itself is InSync's to decide, so there is
-// nothing to assert about CPT or POS.
+// The BOOKING is exempt by design — its billing is InSync's to fill in, so
+// there is nothing there to check.
 function assertBilling(result, b, forbidden = []) {
   const problems = [];
-  if (!String(b.programManagementDetailId ?? '').trim()) {
-    problems.push('program enrolment is missing');
+
+  // Completeness first. Comparing written-against-expected alone would happily
+  // pass a blank CPT map id through, because blank matches blank.
+  for (const [name, value] of Object.entries({
+    'CPT map id': b.cptMapId, 'CPT code': b.cptCode, units: b.units,
+    'place of service': b.posCode, 'program enrolment': b.programManagementDetailId,
+  })) {
+    if (!String(value ?? '').trim()) problems.push(`${name} is missing`);
+  }
+  if (problems.length) {
+    throw new StepError('billing',
+      `Refusing to send for encounter type ${b.visitTypeId}: ${problems.join('; ')}.`);
   }
 
+  const composite = cptComposite(b);
+  const expect = {
+    EncounterTypeCPTMapID: b.cptMapId,
+    SECPTCode: composite,
+    SECPTModifiers: cptModifiers(b),
+    POSCode: b.posCode,
+    SEPOSCode: b.posCode,
+  };
+  for (const [step, { params }] of Object.entries(result)) {
+    if (step === 'appointment') continue;
+    for (const [name, want] of Object.entries(expect)) {
+      for (const [k, v] of Object.entries(params)) {
+        if (!keyMatches(k, [name])) continue;
+        if (String(v) !== String(want)) {
+          problems.push(`${step}.${k} is ${JSON.stringify(String(v))}, expected ${JSON.stringify(String(want))}`);
+        }
+      }
+    }
+    if ('SEEncounterDetails_SECPTCode' in params && params.SEEncounterDetails_SECPTCode !== composite) {
+      problems.push(`${step}.SEEncounterDetails_SECPTCode is ${JSON.stringify(params.SEEncounterDetails_SECPTCode)}`);
+    }
+  }
+
+  // Anything identifying the CAPTURED encounter type must be gone.
   const blob = JSON.stringify(Object.fromEntries(
     Object.entries(result).map(([step, { params }]) => [step, params])));
   for (const bad of forbidden) {
@@ -241,7 +312,8 @@ function assertBilling(result, b, forbidden = []) {
 
   if (problems.length) {
     throw new StepError('billing',
-      `Refusing to send for encounter type ${b.visitTypeId}: ${problems.join('; ')}.`);
+      `Refusing to send: billing does not match InSync's mapping for encounter type ` +
+      `${b.visitTypeId}. ${problems.slice(0, 6).join('; ')}`);
   }
 }
 
@@ -725,7 +797,16 @@ async function send(prepared, step, cookie, log) {
   await log('info', step, `POST ${path} (${Object.keys(params).length} fields)`);
   const res = await post(path, params, cookie);
   const text = await res.text();
-  if (!res.ok) throw new StepError(step, `${step}: InSync returned HTTP ${res.status}`);
+  if (!res.ok) {
+    // A bare status code is not a diagnosis. InSync's 500 page carries the
+    // exception line, which is the difference between "something broke" and
+    // "the CPT grid went out empty" — so carry the first useful text out with
+    // the error rather than making the next run guess.
+    const detail = (text.match(/<title>([^<]{0,200})<\/title>/i)?.[1]
+                 || text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)
+                 || '(empty response body)').trim();
+    throw new StepError(step, `${step}: InSync returned HTTP ${res.status} — ${detail}`);
+  }
   if (/Session Timeout/i.test(text.slice(0, 4000))) {
     throw new StepError(step, `${step}: the InSync session was lost`);
   }
@@ -874,6 +955,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, restoreNestedBlocks,
+  noteStepFor, templatesFor, applyCosign, assertBilling, runClosePreamble, runBookingPreamble, restoreNestedBlocks,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };
