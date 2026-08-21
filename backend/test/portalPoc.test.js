@@ -197,10 +197,12 @@ test('an intervention InSync does not know is left out of the mirrored text too'
 
 console.log('\nclock formatting');
 test('portal minute-of-day becomes InSync clock strings without a timezone', () => {
-  assert.deepStrictEqual(X.appointmentClock('2026-08-17', 840), {
-    date: '08/17/2026', dateLoose: '8/17/2026', time: '02:00 PM',
-    timeSeconds: '02:00:00 PM', dateTime: '08/17/2026 02:00 PM',
-  });
+  const c = X.appointmentClock('2026-08-17', 840);
+  assert.strictEqual(c.date, '08/17/2026');
+  assert.strictEqual(c.dateLoose, '8/17/2026');
+  assert.strictEqual(c.time, '02:00 PM');
+  assert.strictEqual(c.timeSeconds, '02:00:00 PM');
+  assert.strictEqual(c.dateTime, '08/17/2026 02:00 PM');
   assert.strictEqual(X.appointmentClock('2026-01-05', 0).time, '12:00 AM');
   assert.strictEqual(X.appointmentClock('2026-01-05', 720).time, '12:00 PM');
 });
@@ -511,6 +513,58 @@ test('a half-written billing pass is refused rather than sent', () => {
       duration: 180, noteFields: fields },
     visitId: '0', encounterId: '0', signingPin: '',
   }), /billing does not match/);
+});
+
+console.log('\nthe encounter window — where billable units come from');
+test('close carries the session\'s own start and end, not the capture\'s', () => {
+  const templates = packWith1273();
+  // The captured close names a completely different session.
+  templates.close.params['SaveEndEncounter[EncounterStartDate]'] = '08/12/2026 12:00 PM';
+  templates.close.params['SaveEndEncounter[EncounterEndDate]'] = '08/12/2026 1:45 PM';
+
+  const { fields } = X.buildNoteFields(n1, {});
+  const out = X.preparePayloads({
+    templates, capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253,
+      patientId: '625156', patientName: 'Yitzchok Hornstein',
+      providerId: '2826', providerName: 'Feldman, Shloma',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: '2026-08-20', sessionStartMinutes: 540, duration: 180, noteFields: fields,
+    },
+    visitId: '0', encounterId: '99', signingPin: '',
+  });
+  const c = out.close.params;
+  // 9:00 AM + 180 min = 12:00 PM, on the session's own date.
+  assert.strictEqual(c['SaveEndEncounter[EncounterStartDate]'], '08/20/2026 9:00 AM');
+  assert.strictEqual(c['SaveEndEncounter[EncounterEndDate]'], '08/20/2026 12:00 PM');
+  assert.ok(!JSON.stringify(c).includes('08/12/2026'), "the captured session's window must not survive");
+});
+
+test('the window is what a per-15-minute code would be billed from', () => {
+  // Not asserting units — InSync derives them — but the span has to be right.
+  const span = (dateIso, start, dur) => {
+    const t = X.appointmentClock(dateIso, start, dur);
+    return [t.encounterStart, t.encounterEnd];
+  };
+  assert.deepStrictEqual(span('2026-08-19', 780, 120), ['08/19/2026 1:00 PM', '08/19/2026 3:00 PM']);
+  assert.deepStrictEqual(span('2026-08-10', 720, 180), ['08/10/2026 12:00 PM', '08/10/2026 3:00 PM']);
+  // Midnight and noon are the two the 12-hour clock usually gets wrong.
+  assert.strictEqual(X.appointmentClock('2026-01-05', 0, 60).encounterStart, '01/05/2026 12:00 AM');
+  assert.strictEqual(X.appointmentClock('2026-01-05', 690, 30).encounterEnd, '01/05/2026 12:00 PM');
+});
+
+test('a session running past midnight is refused rather than closed same-day', () => {
+  const { fields } = X.buildNoteFields(n1, {});
+  assert.throws(() => X.preparePayloads({
+    templates: packWith1273(), capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253, patientId: '1', patientName: 'p', providerId: '2', providerName: 'q',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: '2026-08-20', sessionStartMinutes: 1380, duration: 180, noteFields: fields,
+    },
+    visitId: '0', encounterId: '0', signingPin: '',
+  }), /past midnight/);
 });
 
 console.log('\nOffsite is switched off');

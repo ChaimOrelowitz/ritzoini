@@ -290,18 +290,39 @@ function keyMatchesName(key, name) {
 // The portal gives a date and a minute-of-day; everything InSync wants is a
 // formatting of those two. Built without Date so a server TZ can never shift a
 // clinical appointment by a day.
-function appointmentClock(dateIso, startMinutes) {
+function appointmentClock(dateIso, startMinutes, durationMinutes = 0) {
   const [y, m, d] = String(dateIso).split('-').map(Number);
   const mins = Number(startMinutes);
   const h24 = Math.floor(mins / 60), mi = mins % 60;
   const ampm = h24 >= 12 ? 'PM' : 'AM';
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  const date = `${two(m)}/${two(d)}/${y}`;
+
+  // InSync writes the encounter window without a leading zero on the hour
+  // ("08/12/2026 1:45 PM"), so match that shape rather than the padded one used
+  // for the appointment's own time fields.
+  const loose = total => {
+    const hh = Math.floor(total / 60) % 24, mm = total % 60;
+    const ap = hh >= 12 ? 'PM' : 'AM';
+    return `${hh % 12 === 0 ? 12 : hh % 12}:${two(mm)} ${ap}`;
+  };
+  const endMins = mins + (Number(durationMinutes) || 0);
+
   return {
-    date: `${two(m)}/${two(d)}/${y}`,
+    date,
     dateLoose: `${m}/${d}/${y}`,
     time: `${two(h12)}:${two(mi)} ${ampm}`,
     timeSeconds: `${two(h12)}:${two(mi)}:00 ${ampm}`,
-    dateTime: `${two(m)}/${two(d)}/${y} ${two(h12)}:${two(mi)} ${ampm}`,
+    dateTime: `${date} ${two(h12)}:${two(mi)} ${ampm}`,
+    // The session window. Billable units are derived from these at close —
+    // ValidateDurationForCPT and the program alert both read start/end, not the
+    // appointment's slot length — so they are the billing-critical values in the
+    // whole chain.
+    encounterStart: `${date} ${loose(mins)}`,
+    encounterEnd: `${date} ${loose(endMins)}`,
+    // Spans past midnight only if a session ever did; kept explicit so a wrong
+    // end date is visible rather than silently wrapping.
+    endsNextDay: endMins >= 24 * 60,
   };
 }
 
@@ -343,7 +364,7 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     result[step] = { url: tpl.url, params: { ...tpl.params } };
   }
 
-  const t = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes);
+  const t = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes, ctx.duration);
 
   for (const { params } of Object.values(result)) {
     setFields(params, ctx.patientId, 'PatientId', 'SEPatientId');
@@ -409,6 +430,19 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     c['SaveEndEncounter[VisitTypeID]'] = '0';
     c['SaveEndEncounter[VisitDateTime]'] = `${t.dateLoose} ${t.timeSeconds}`;
     c['SaveEndEncounter[VisitDate]'] = `${t.dateLoose} 12:00:00 AM`;
+
+    // The encounter's real window. Everything InSync does at close reads these:
+    // GetEncounterDurationAlert, ValidateEndEncounterTime and
+    // ValidateDurationForCPT are all passed StartTime/EndTime, and the billed
+    // units fall out of the span. Leaving them at the captured values closed
+    // every encounter against that capture's session instead of its own.
+    setFields(c, t.encounterStart, 'EncounterStartDate');
+    setFields(c, t.encounterEnd, 'EncounterEndDate');
+    if (t.endsNextDay) {
+      throw new StepError('close',
+        `Session runs past midnight (${ctx.duration} minutes from ${t.encounterStart}). ` +
+        `Refusing to close it against a same-day end time.`);
+    }
     // Signing happens by carrying a valid EPIN on the close request. Empty when
     // signing is off — never a PIN replayed from a capture.
     setFields(c, signingPin || '', 'EPIN');
