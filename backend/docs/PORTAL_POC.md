@@ -69,8 +69,9 @@ live, every run:
   type NAME (language / mode / location) plus offsite-or-not.
 - **Peer provider IDs** — parsed live from `ddlPsPrimaryPhysician` in
   `GetAdvancedSearchFields`.
-- **Client patient IDs** — `BindPatientList` search, then a one-time human
-  confirmation stored in `portal_client_map`.
+- **Client patient IDs** — `BindPatientList` search (as `"Last, First"` — InSync
+  returns nothing for `"First Last"`), then a one-time human confirmation stored
+  in `portal_client_map`.
 
 A new peer, a new client or a new encounter type therefore needs no code change.
 
@@ -271,6 +272,74 @@ than quietly billing the captured type's numbers.
 `portal_verified_types` survives as audit history of the old manual gate; nothing
 reads it to decide anything.
 
+
+---
+
+## The appointment check — and notes already entered by hand
+
+Before writing anything, the run opens **the peer's own InSync calendar** for that
+client, date and minute. Reuse an untouched appointment; if the session has
+already been worked, write nothing.
+
+### Getting the right calendar
+
+`LoadCalendarView` filters on `selectedSchedulers` (a **ScheduleSetupID**), not on
+provider id. The captured request pins it to the captured user's schedule and its
+`fromDate`/`toDate` to the week it was recorded, so replaying it asks about
+somebody else's calendar in a past week — regardless of whose session runs it.
+Everything that decides *whose* calendar and *which* day is therefore set
+explicitly, and the schedule id is resolved rather than assumed:
+
+1. try the session default (blank `selectedSchedulers`)
+2. then the id cached on `portal_peers.insync_schedule_setup_id`
+3. then look the peer up in the scheduler directory — **`Item6`** of the response
+   maps `ScheduleSetupID` ↔ `ResourceId` — and pin that
+
+Each attempt is **verified** against `Item1`, which names the schedule actually
+being shown. If none can be confirmed as the peer's, the note is **blocked**: a
+wrong "no appointment here" is precisely what books a duplicate, so silence is
+never read as absence. The captured id is never a fallback.
+
+> Observed in practice: the blank-filter attempt did **not** return the owner's
+> own calendar even on their own session, so the directory lookup is the branch
+> that actually fires. The activity log names which one was used.
+
+### What the match means
+
+An encounter id can exist while the encounter is still **open**, so "an encounter
+exists" must not be read as "the note was already entered":
+
+| Calendar row | Disposition | Effect |
+|---|---|---|
+| `VisitStatusID === 4` | cancelled | ignored |
+| no `EncounterId` | `reusable` | reuse that `VisitID` |
+| `EncounterId` + clearly closed | `already_closed` | row → **duplicate**, nothing written |
+| `EncounterId`, not clearly closed | `needs_review` | row **held**, nothing written |
+
+**"Clearly closed"** needs a positive completion signal, not merely a non-Pending
+status: `EncounterClosedByName` present (it reads "Closed By: … On …"), **or**
+`EncounterStatus === '3'` together with `ChargeStatus === 1`. Real closed rows
+carry `VisitStatusID = 1` ("Check In"), which is why excluding only status 4 was
+not enough — those rows used to be reused.
+
+A `needs_review` hold is stored on the row (`resolution.calendar_hold`) because
+resolution runs on the admin session and cannot re-derive it; without that, a
+re-resolve would quietly mark the row Ready again. "Reviewed — clear hold" on the
+review screen removes it, and the next run re-checks the calendar anyway.
+
+**Dry run signs in too**, read-only, purely so it can do this check. That is what
+makes "already entered by hand" visible *before* a live run rather than during
+one. It sends nothing.
+
+---
+
+## The intervention-details field
+
+`ControlId_7` ("Peer Support Intervention Details") has no counterpart in the
+portal export. The standing convention is to repeat the selected interventions
+into it, so it is prefilled with the same labels sent to the `ControlId_20`
+multi-select — the peer's own selection copied into a second field, not prose the
+app composed. It stays editable, and an operator entry wins.
 ---
 
 ## Offsite is switched off

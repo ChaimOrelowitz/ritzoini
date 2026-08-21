@@ -180,9 +180,19 @@ test('the offsite justification exists only on offsite types, and blocks when em
   assert.strictEqual(filled.fields.ControlId_27, 'Community setting per treatment plan.');
   assert.ok(!filled.warnings.some(w => /required by the Offsite template/.test(w)));
 });
-test('no clinical text is invented for a field the portal does not carry', () => {
-  const { fields } = X.buildNoteFields(n1, {});
-  assert.strictEqual(fields.ControlId_7, '');
+test('intervention details mirror the interventions, and stay overridable', () => {
+  // The portal has no field for this; the convention is to repeat the selection.
+  const { fields, warnings } = X.buildNoteFields(n1, {});
+  assert.strictEqual(fields.ControlId_7, 'Active Listening, Social Connection, Strengths-Based Approach');
+  assert.strictEqual(fields.ControlId_20, '1,20,21', 'and the codes still go to the multi-select');
+  assert.ok(!warnings.some(w => /Intervention Details is empty/.test(w)));
+
+  const manual = X.buildNoteFields(n1, { manual: { ControlId_7: 'Practised active listening throughout.' } });
+  assert.strictEqual(manual.fields.ControlId_7, 'Practised active listening throughout.');
+});
+test('an intervention InSync does not know is left out of the mirrored text too', () => {
+  const odd = { ...n1, interventions: ['Active Listening', 'Interpretive Dance'] };
+  assert.strictEqual(X.interventionLabels(odd), 'Active Listening');
 });
 
 console.log('\nclock formatting');
@@ -213,26 +223,80 @@ test('a "successful" appointment with no VisitID is still a failure', () => {
 });
 
 console.log('\nappointment-exists rule');
-const APPTS = [
-  { visitId: '1', startMinutes: 540, cancelled: false, statusId: 3, appText: 'Heilpern, Chaya (Pending, Peer Support)', participants: [{ PatientId: 626427 }] },
-  { visitId: '2', startMinutes: 540, cancelled: true,  statusId: 4, appText: 'Kahana, Yakov (Cancelled)',              participants: [{ PatientId: 700 }] },
-  { visitId: '3', startMinutes: 600, cancelled: false, statusId: 3, appText: 'Kahana, Yakov (Pending)',                participants: [{ PatientId: 700 }] },
-];
-test('matches on patient + exact start minute', () => {
-  const hit = IP.findExistingAppointment(APPTS, { patientId: '626427', startMinutes: 540, clientName: 'Chaya Heilpern' });
-  assert.strictEqual(hit.visitId, '1');
+
+// Shapes taken from real calendars, not invented.
+const appt = o => ({
+  visitId: '1', startMinutes: 540, cancelled: false, statusId: 3, statusText: 'Pending',
+  encounterId: '', encounterStatus: '', chargeStatus: 0, closedBy: null,
+  appText: 'Heilpern, Chaya (Pending, Peer Support)', participants: [{ PatientId: 626427 }], ...o,
 });
-test('a cancelled appointment is not a match', () => {
-  const hit = IP.findExistingAppointment(APPTS, { patientId: '700', startMinutes: 540, clientName: 'Yakov Kahana' });
-  assert.strictEqual(hit, null);
+const FOR_CHAYA = { patientId: '626427', startMinutes: 540, clientName: 'Chaya Heilpern' };
+
+test('booked but untouched -> reuse', () => {
+  const r = IP.findExistingAppointment([appt()], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'reusable');
+  assert.strictEqual(r.appointment.visitId, '1');
+});
+test('a cancelled appointment is invisible', () => {
+  const r = IP.findExistingAppointment([appt({ cancelled: true, statusId: 4 })], FOR_CHAYA);
+  assert.strictEqual(r.appointment, null);
+  assert.strictEqual(r.disposition, 'none');
 });
 test('the right patient at the wrong time is not a match', () => {
-  assert.strictEqual(IP.findExistingAppointment(APPTS, { patientId: '626427', startMinutes: 600, clientName: 'Chaya Heilpern' }), null);
+  assert.strictEqual(IP.findExistingAppointment([appt()], { ...FOR_CHAYA, startMinutes: 600 }).appointment, null);
 });
 test('AppText name matching covers calendars with no Participants', () => {
-  const noParts = [{ visitId: '9', startMinutes: 1140, cancelled: false, statusId: 3, appText: 'Kahana, Yakov (Pending, Peer Support)', participants: [] }];
-  const hit = IP.findExistingAppointment(noParts, { patientId: '999', startMinutes: 1140, clientName: 'Yakov Kahana' });
-  assert.strictEqual(hit.visitId, '9');
+  const r = IP.findExistingAppointment(
+    [appt({ visitId: '9', startMinutes: 1140, appText: 'Kahana, Yakov (Pending, Peer Support)', participants: [] })],
+    { patientId: '999', startMinutes: 1140, clientName: 'Yakov Kahana' });
+  assert.strictEqual(r.appointment.visitId, '9');
+});
+
+test('a clearly closed encounter -> already_closed, never reused', () => {
+  // The real shape: status 1 "Check In", not 4, so the old rule reused it.
+  const r = IP.findExistingAppointment([appt({
+    visitId: '642215', statusId: 1, statusText: 'Check In',
+    encounterId: '1010479', encounterStatus: '3', chargeStatus: 1,
+    closedBy: { name: 'Orelowitz, Chaim, LCSW', on: '08/18/2026', text: '' },
+  })], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'already_closed');
+});
+test('closed-by alone is enough, without status/charge', () => {
+  const r = IP.findExistingAppointment([appt({
+    encounterId: '1010479', encounterStatus: '', chargeStatus: 0,
+    closedBy: { name: 'Someone', on: '08/18/2026', text: '' },
+  })], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'already_closed');
+});
+test('status 3 + charge 1 is enough, without a closed-by name', () => {
+  const r = IP.findExistingAppointment([appt({
+    encounterId: '1010479', encounterStatus: '3', chargeStatus: 1, closedBy: null,
+  })], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'already_closed');
+});
+test('an encounter that is NOT clearly closed -> needs_review, not duplicate', () => {
+  // An encounter id can exist while the encounter is still open. That is its own
+  // case: neither safe to reuse nor safe to call already-entered.
+  const r = IP.findExistingAppointment([appt({
+    encounterId: '1011943', encounterStatus: '1', chargeStatus: 0, closedBy: null,
+  })], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'needs_review');
+  assert.notStrictEqual(r.disposition, 'already_closed');
+});
+test('status 3 without a charge is still only needs_review', () => {
+  const r = IP.findExistingAppointment([appt({
+    encounterId: '1011943', encounterStatus: '3', chargeStatus: 0, closedBy: null,
+  })], FOR_CHAYA);
+  assert.strictEqual(r.disposition, 'needs_review');
+});
+
+test('EncounterClosedByName HTML is parsed into a name and a date', () => {
+  const c = IP.parseClosedBy(
+    "<div class='p-5'><b>Closed By:</b> Orelowitz, Chaim, LCSW On 08/18/2026 12:38 PM</div>");
+  assert.strictEqual(c.name, 'Orelowitz, Chaim, LCSW');
+  assert.strictEqual(c.on, '08/18/2026');
+  assert.strictEqual(IP.parseClosedBy(''), null);
+  assert.strictEqual(IP.parseClosedBy(null), null);
 });
 
 console.log('\ncapture scrubbing (regressions found against the real captures)');

@@ -69,7 +69,11 @@ const NOTE_FIELDS = [
   { control: 'ControlId_24', label: 'Location of the Meeting',           source: 'locationText' },
   { control: 'ControlId_5',  label: 'Focus of the Meeting',              source: 'focusOfMeeting' },
   { control: 'ControlId_22', label: 'Activities and Duration',           source: 'activitiesSummary' },
-  { control: 'ControlId_7',  label: 'Peer Support Intervention Details', manual: true },
+  // The portal has no counterpart for this field. The standing convention is to
+  // repeat the selected interventions into it, so it is prefilled from
+  // ControlId_20 — the peer's own selection copied across, not prose the app
+  // composed. Still editable: a manual entry wins.
+  { control: 'ControlId_7',  label: 'Peer Support Intervention Details', manual: true, mirrors: 'ControlId_20' },
   { control: 'ControlId_20', label: 'Peer Support Interventions',        source: 'interventions', kind: 'multiselect' },
   { control: 'ControlId_9',  label: 'Patient Response / Content',        source: 'patientResponse' },
   { control: 'ControlId_11', label: 'Plan',                              source: 'nextPlan' },
@@ -86,6 +90,15 @@ const PROVIDER_NAME_CONTROL = 'ControlId_13';
 
 // Turn a portal note plus the operator's manual entries into { ControlId_N: value }.
 // Returns `warnings` for anything a human should look at before this is signed.
+// The interventions exactly as they will read in InSync, for the details field
+// that mirrors them.
+function interventionLabels(note) {
+  return (Array.isArray(note?.interventions) ? note.interventions : [])
+    .map(l => String(l).trim())
+    .filter(l => LABEL_TO_CODE.has(l.toLowerCase()))
+    .join(', ');
+}
+
 function buildNoteFields(note, { manual = {}, offsite = false } = {}) {
   const fields = {};
   const warnings = [];
@@ -94,11 +107,14 @@ function buildNoteFields(note, { manual = {}, offsite = false } = {}) {
     if (f.offsiteOnly && !offsite) continue;
 
     if (f.manual) {
-      const v = clean(manual[f.control]);
+      let v = clean(manual[f.control]);
+      // A field that mirrors another falls back to that field's labels rather
+      // than to empty — the operator convention, applied by default.
+      if (!v && f.mirrors === 'ControlId_20') v = interventionLabels(note);
       fields[f.control] = v;
       if (!v && f.offsiteOnly) {
         warnings.push(`${f.label} is required by the Offsite template and has no portal source — enter it before running`);
-      } else if (!v) {
+      } else if (!v && !f.mirrors) {
         warnings.push(`${f.label} is empty (the portal export carries no field for it)`);
       }
       continue;
@@ -569,7 +585,7 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
 
 module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
-  buildNoteFields, preparePayloads, executeNote, appointmentClock,
+  buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
   noteStepFor, templatesFor,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,

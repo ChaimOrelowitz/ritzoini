@@ -369,20 +369,55 @@ async function searchPatients(cookie, { text, includeInactive = false } = {}) {
 
 // The peer's own day view. This is the ONLY reliable "does this appointment
 // already exist" signal — caseload is not, because clients move between peers.
-async function loadCalendarView(cookie, { dateIso, resourceId, template }) {
+//
+// The captured request pins selectedSchedulers to the CAPTURED user's schedule
+// and fromDate/toDate to the week it was recorded in. Replaying that asks for
+// somebody else's calendar in a past week no matter whose session it runs on, so
+// every field that decides WHOSE calendar and WHICH day is set explicitly here.
+async function loadCalendarView(cookie, { dateIso, resourceId, template, scheduleSetupId } = {}) {
+  const day = mdy(dateIso);
   const params = { ...(template || {}) };
-  params.visitDate = mdy(dateIso);
-  params.ResourceId = String(resourceId);
-  params.iViewType = params.iViewType || '1';
+
+  params.visitDate = day;
+  // Day view, and the window has to travel with the day being asked about.
+  params.iViewType = '1';
+  params.fromDate = day;
+  params.toDate = day;
+  params.ResourceId = String(resourceId || '');
+  params.providerID = String(resourceId || '-1');
+  params.selectedPatient = '0';
+  // Blank = every status, so cancelled rows still come back and can be
+  // recognised rather than being silently absent.
+  params.selectedVisitStatus = '';
+  // Blank lets the session decide; a resolved id pins it. The captured id is
+  // never a fallback — the wrong calendar is worse than no calendar.
+  params.selectedSchedulers = scheduleSetupId ? String(scheduleSetupId) : '';
 
   const res = await post('/Scheduler/LoadCalendarView', params, cookie);
   const body = await json(res, 'LoadCalendarView');
+  const pick = k => (Array.isArray(body?.[k]) ? body[k] : Array.isArray(body?.result?.[k]) ? body.result[k] : []);
 
-  const list = Array.isArray(body?.Item3) ? body.Item3
-             : Array.isArray(body?.result?.Item3) ? body.result.Item3
-             : [];
+  return {
+    appointments: pick('Item3').map(mapAppointment),
+    // Item1 describes the schedule actually being displayed — how we tell
+    // whether we got the calendar we asked for.
+    shown: pick('Item1').map(r => ({
+      resourceId: String(r.ResourceId ?? ''),
+      resourceName: String(r.ResourceName ?? ''),
+      scheduleSetupId: String(r.ScheduleSetupID ?? ''),
+    })),
+    // Item6 is the scheduler directory: schedule <-> provider.
+    schedulers: pick('Item6').map(r => ({
+      scheduleSetupId: String(r.ScheduleSetupID ?? ''),
+      resourceId: String(r.ResourceId ?? ''),
+      name: String(r.FullName ?? r.ProviderName ?? '').trim(),
+    })).filter(r => r.scheduleSetupId && r.resourceId),
+  };
+}
 
-  return list.map(a => ({
+function mapAppointment(a) {
+  const encounterId = String(a.EncounterId ?? a.EncounterID ?? '0');
+  return {
     visitId: String(a.VisitID ?? a.VisitId ?? ''),
     visitTypeId: String(a.VisitTypeID ?? ''),
     // StartTime is an object; TotalMinutes lines up exactly with the portal's
@@ -392,18 +427,77 @@ async function loadCalendarView(cookie, { dateIso, resourceId, template }) {
     endMinutes: Number(a.EndTime?.TotalMinutes ?? NaN),
     duration: Number(a.Duration) || 0,
     statusId: Number(a.VisitStatusID),
+    statusText: String(a.VisitStatusDescription ?? '').trim(),
     cancelled: Number(a.VisitStatusID) === 4,
+    // Everything needed to tell "booked but untouched" from "already worked".
+    encounterId: /^\d+$/.test(encounterId) && Number(encounterId) > 0 ? encounterId : '',
+    encounterStatus: String(a.EncounterStatus ?? '').trim(),
+    chargeStatus: Number(a.ChargeStatus ?? 0),
+    closedBy: parseClosedBy(a.EncounterClosedByName),
     appText: String(a.AppText || ''),
     participants: Array.isArray(a.Participants) ? a.Participants : [],
-  }));
+  };
 }
 
-// Does an appointment for this client, at this minute-of-day, already exist and
-// is it not cancelled? Cancelled (VisitStatusID 4) rows are invisible here by
-// design — reusing one would attach the encounter to a dead appointment.
+// EncounterClosedByName arrives as an HTML blob:
+//   "<div class='p-5'><b>Closed By:</b> Orelowitz, Chaim, LCSW On 08/18/2026 12:38 PM</div>"
+function parseClosedBy(raw) {
+  const text = String(raw || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  const m = text.match(/Closed By:\s*(.+?)\s+On\s+(\d{1,2}\/\d{1,2}\/\d{4})/i);
+  return m ? { name: m[1].trim(), on: m[2], text } : { name: '', on: '', text };
+}
+
+// Fetch the calendar and PROVE it is the peer's before believing it. Order:
+// blank filter, then the schedule id resolved from the scheduler directory.
+// If neither can be confirmed, throw — silence must never be read as "no
+// appointment here", because that is what books a duplicate.
+async function peerCalendar(cookie, { dateIso, providerId, template, scheduleSetupId } = {}) {
+  const wanted = String(providerId || '');
+  const attempts = [];
+  if (scheduleSetupId) attempts.push({ via: 'cached schedule id', scheduleSetupId });
+  attempts.push({ via: 'session default', scheduleSetupId: null });
+
+  let lastSchedulers = [];
+  for (const attempt of attempts) {
+    const view = await loadCalendarView(cookie, { dateIso, resourceId: providerId, template, scheduleSetupId: attempt.scheduleSetupId });
+    lastSchedulers = view.schedulers.length ? view.schedulers : lastSchedulers;
+    if (view.shown.some(r => r.resourceId === wanted)) {
+      return { ...view, via: attempt.via, scheduleSetupId: attempt.scheduleSetupId || view.shown.find(r => r.resourceId === wanted)?.scheduleSetupId || null };
+    }
+  }
+
+  // Neither worked — look the peer up in the scheduler directory and pin it.
+  const row = lastSchedulers.find(r => r.resourceId === wanted);
+  if (row) {
+    const view = await loadCalendarView(cookie, { dateIso, resourceId: providerId, template, scheduleSetupId: row.scheduleSetupId });
+    if (view.shown.some(r => r.resourceId === wanted)) {
+      return { ...view, via: `resolved schedule ${row.scheduleSetupId}`, scheduleSetupId: row.scheduleSetupId };
+    }
+  }
+
+  throw new Error(
+    `Could not open the calendar for provider ${wanted} on ${dateIso}. ` +
+    `Refusing to treat that as "no appointment exists" — booking now would duplicate ` +
+    `whatever is already on their schedule.`);
+}
+
+// Is this appointment already worked? An encounter id can exist while the
+// encounter is still OPEN, so "an encounter exists" must not be read as "the
+// note was already entered" — that is a third case, and it needs a human.
+function appointmentDisposition(a) {
+  if (!a) return 'none';
+  if (!a.encounterId) return 'reusable';
+  const definitelyClosed = !!a.closedBy || (a.encounterStatus === '3' && a.chargeStatus === 1);
+  return definitelyClosed ? 'already_closed' : 'needs_review';
+}
+
+// Find this client's appointment at this minute-of-day and say what state it is
+// in. Cancelled rows are invisible by design — reusing one would attach the
+// encounter to a dead appointment.
 function findExistingAppointment(appointments, { patientId, startMinutes, clientName }) {
   const wanted = Number(startMinutes);
-  return appointments.find(a => {
+  const match = (appointments || []).find(a => {
     if (a.cancelled) return false;
     if (a.startMinutes !== wanted) return false;
     const byId = a.participants.some(p =>
@@ -416,10 +510,13 @@ function findExistingAppointment(appointments, { patientId, startMinutes, client
     const head = a.appText.split('(')[0].trim();
     return head && normalizeName(head) === normalizeName(clientName);
   }) || null;
+
+  return { appointment: match, disposition: appointmentDisposition(match) };
 }
 
 module.exports = {
   getVisitTypes, getProviderDirectory, searchPatients,
   getSchedulerContext, getPosForType, getPatientProgram, resolveBilling, describePos,
-  loadCalendarView, findExistingAppointment, dobToIso, mdy,
+  loadCalendarView, peerCalendar, findExistingAppointment, appointmentDisposition,
+  parseClosedBy, dobToIso, mdy,
 };

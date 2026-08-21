@@ -99,6 +99,15 @@ Three things that bite:
   them. The portal has no offsite-justification field, so such an encounter could
   only be signed with `ControlId_27` blank. The two-form machinery (`note` /
   `note_offsite`, different InSync TemplateIds) is intact for when it returns.
+- Before writing, the run opens the **peer's own** InSync calendar
+  (`utils/insyncPortal.js` `peerCalendar`) and classifies the match three ways:
+  no encounter → reuse the appointment; encounter clearly closed → mark the row
+  `duplicate` and write nothing; encounter present but not clearly closed → hold
+  for review. `LoadCalendarView` filters on ScheduleSetupID, not provider id, so
+  the schedule is resolved from the response's `Item6` directory and verified
+  against `Item1` — an unconfirmable calendar BLOCKS rather than booking, because
+  a wrong "nothing here" creates a duplicate encounter. Dry runs sign in
+  read-only just to do this check.
 - `profiles.portal_only` fences an account to this one screen (same pattern as
   `ps_payroll_only`), enforced in `middleware/auth.js` and `Layout.js`.
 

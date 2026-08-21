@@ -125,6 +125,7 @@ function neededActions(resolution, flags, note) {
   for (const f of flags || []) {
     if (f.field === 'note' && f.blocking) needs.push(f.message);
   }
+  if (r.calendar_hold) needs.push(r.calendar_hold);
   if (has('dedupe')) needs.push('Already processed — will be skipped');
 
   return needs;
@@ -160,6 +161,7 @@ const peerView = p => ({
   portal_peer_name: p.portal_peer_name,
   insync_provider_id: p.insync_provider_id,
   insync_provider_name: p.insync_provider_name,
+  insync_schedule_setup_id: p.insync_schedule_setup_id,
   insync_username: p.insync_username,
   has_password: !!p.insync_password_enc,
   has_pin: !!p.signing_pin_enc,
@@ -448,6 +450,12 @@ async function resolveRun(runId) {
 
     // A flag blocks unless it explicitly says otherwise — "Intervention Details
     // is empty" is a warning worth showing, not a reason to hold the row.
+    // A hold found on the peer's calendar during a run survives re-resolution —
+    // nothing here can re-derive it, so it must not be silently cleared.
+    if (resolution.calendar_hold) {
+      flags.push({ field: 'encounter', message: resolution.calendar_hold });
+    }
+
     const blocking = flags.filter(f => f.blocking !== false);
     const ready = !!(resolution.provider_id && resolution.patient_id && resolution.visit_type_id
                      && resolution.duration && blocking.length === 0);
@@ -582,6 +590,10 @@ router.patch('/runs/:runId/notes/:noteId', ...guard, async (req, res) => {
     if (req.body.manual && typeof req.body.manual === 'object') {
       resolution.manual = { ...(resolution.manual || {}), ...req.body.manual };
     }
+    // Clearing the hold is the operator saying "I looked at that encounter in
+    // InSync and this note still needs to go in." The next run re-checks the
+    // calendar anyway, so this cannot force a write past a closed encounter.
+    if (req.body.clear_calendar_hold === true) delete resolution.calendar_hold;
     // Recompute this one row in place, without a round trip to InSync: the
     // encounter type comes from the candidate list already resolved for it, and
     // the template shape follows from that choice. Peer and client bindings are
@@ -710,7 +722,7 @@ async function executeRun(runId, { mode, sign, noteIds }) {
     byPeer.get(pid).push(r);
   }
 
-  let done = 0, failed = 0;
+  let done = 0, failed = 0, skipped = 0;
 
   for (const [peerId, notes] of byPeer) {
     const { data: peer } = await supabase.from('portal_peers').select('*').eq('id', peerId).maybeSingle();
@@ -719,27 +731,29 @@ async function executeRun(runId, { mode, sign, noteIds }) {
       continue;
     }
 
+    // A dry run signs in too, read-only. Without a session it cannot see the
+    // peer's calendar, and the calendar is the only way to know whether a
+    // session was already entered by hand — which is exactly what a dry run is
+    // for telling you BEFORE a live run rather than during one.
     let cookie = null;
     let pin = null;
-    if (live) {
-      try {
-        const password = crypto.decrypt(peer.insync_password_enc);
-        if (!peer.insync_username || !password) throw new Error('no stored InSync login');
-        pin = sign ? crypto.decrypt(peer.signing_pin_enc) : null;
-        if (sign && !pin) throw new Error('signing is on but no signing PIN is stored');
-        await logEvent(runId, null, 'info', 'login', `Logging in to InSync as ${peer.portal_peer_name}`);
-        cookie = await login(peer.insync_username, password);
-        // The plaintext password is not held past this point.
-      } catch (e) {
-        // crypto.scrub is belt-and-braces: a decrypt/login error should never
-        // carry a secret, but this guarantees it.
-        const msg = crypto.scrub(e.message, peer.insync_username);
-        for (const n of notes) { failed++; await recordFailure(runId, n, 'login', `Could not sign in as ${peer.portal_peer_name}: ${msg}`, true); }
-        continue;
+    try {
+      const password = crypto.decrypt(peer.insync_password_enc);
+      if (!peer.insync_username || !password) throw new Error('no stored InSync login');
+      if (live && sign) {
+        pin = crypto.decrypt(peer.signing_pin_enc);
+        if (!pin) throw new Error('signing is on but no signing PIN is stored');
       }
-    } else {
       await logEvent(runId, null, 'info', 'login',
-        `Would log in to InSync as ${peer.portal_peer_name}${peer.insync_username ? '' : ' (NO stored username — live would fail here)'}`);
+        `Signing in to InSync as ${peer.portal_peer_name}${live ? '' : ' (read-only — dry run)'}`);
+      cookie = await login(peer.insync_username, password);
+      // The plaintext password is not held past this point.
+    } catch (e) {
+      // crypto.scrub is belt-and-braces: a decrypt/login error should never
+      // carry a secret, but this guarantees it.
+      const msg = crypto.scrub(e.message, peer.insync_username);
+      for (const n of notes) { failed++; await recordFailure(runId, n, 'login', `Could not sign in as ${peer.portal_peer_name}: ${msg}`, live); }
+      continue;
     }
 
     for (const row of notes) {
@@ -751,19 +765,73 @@ async function executeRun(runId, { mode, sign, noteIds }) {
 
         // The appointment-exists check can only happen here, on the peer's own
         // session. Caseload is not a valid signal — clients change peers.
-        let existing = null;
-        if (live) {
-          const appts = await IP.loadCalendarView(cookie, {
-            dateIso: note.sessionDate, resourceId: r.provider_id,
-            template: templates.calendar?.params,
-          });
-          existing = IP.findExistingAppointment(appts, {
-            patientId: r.patient_id, startMinutes: note.sessionStartMinutes, clientName: note.clientName,
-          });
-          await log('info', 'calendar', existing
-            ? `Found appointment VisitID ${existing.visitId} at minute ${existing.startMinutes} (status ${existing.statusId})`
-            : `No matching appointment on ${note.sessionDate} at minute ${note.sessionStartMinutes} — one will be created`);
+        // peerCalendar proves the calendar belongs to this peer, and throws
+        // rather than letting an unreadable calendar look like an empty one.
+        const view = await IP.peerCalendar(cookie, {
+          dateIso: note.sessionDate,
+          providerId: r.provider_id,
+          template: templates.calendar?.params,
+          scheduleSetupId: peer.insync_schedule_setup_id || null,
+        });
+        if (view.scheduleSetupId && view.scheduleSetupId !== peer.insync_schedule_setup_id) {
+          // Caching the schedule id only saves a round trip. If the column is not
+          // there yet (db/portal_poc.sql is applied by hand), resolution still
+          // works every run — so note it and carry on rather than failing a note
+          // over a missing optimisation.
+          const { error: cacheErr } = await supabase.from('portal_peers')
+            .update({ insync_schedule_setup_id: view.scheduleSetupId }).eq('id', peer.id);
+          if (cacheErr) {
+            await logEvent(runId, null, 'warn', 'calendar',
+              `Could not cache ${peer.portal_peer_name}'s schedule id (${cacheErr.message}) — re-run db/portal_poc.sql. Resolution still works.`);
+          } else {
+            peer.insync_schedule_setup_id = view.scheduleSetupId;
+          }
         }
+        await log('info', 'calendar',
+          `${peer.portal_peer_name}'s calendar for ${note.sessionDate} via ${view.via} — ${view.appointments.length} appointment(s)`);
+
+        const { appointment, disposition } = IP.findExistingAppointment(view.appointments, {
+          patientId: r.patient_id, startMinutes: note.sessionStartMinutes, clientName: note.clientName,
+        });
+
+        // An encounter id alone does not mean the note was entered — it can
+        // exist while the encounter is still open. Three outcomes, and two of
+        // them write nothing.
+        if (disposition === 'already_closed') {
+          const by = appointment.closedBy?.name ? `, closed by ${appointment.closedBy.name}` : '';
+          const on = appointment.closedBy?.on ? ` on ${appointment.closedBy.on}` : '';
+          const msg = `Already in InSync — encounter ${appointment.encounterId}${by}${on} (appointment ${appointment.visitId})`;
+          await log('warn', 'calendar', msg);
+          await supabase.from('portal_staged_notes').update({
+            status: 'duplicate',
+            flags: [{ field: 'dedupe', message: msg }],
+            resolution: { ...r, needs: [msg] },
+            updated_at: new Date().toISOString(),
+          }).eq('id', row.id);
+          skipped++;
+          continue;
+        }
+        if (disposition === 'needs_review') {
+          const msg = `Existing encounter ${appointment.encounterId} on appointment ${appointment.visitId} ` +
+            `is not clearly closed (status ${appointment.encounterStatus || '?'}, charge ${appointment.chargeStatus}) — review it in InSync`;
+          await log('warn', 'calendar', msg);
+          await supabase.from('portal_staged_notes').update({
+            status: 'needs_attention',
+            flags: [{ field: 'encounter', message: msg }],
+            // Persisted: resolution runs on the ADMIN session and cannot see a
+            // peer's calendar, so without this a re-resolve would quietly drop
+            // the hold and mark the row Ready again.
+            resolution: { ...r, needs: [msg], calendar_hold: msg },
+            updated_at: new Date().toISOString(),
+          }).eq('id', row.id);
+          skipped++;
+          continue;
+        }
+
+        const existing = appointment;
+        await log('info', 'calendar', existing
+          ? `Reusing appointment VisitID ${existing.visitId} at minute ${existing.startMinutes} (${existing.statusText || 'status ' + existing.statusId}, no encounter yet)`
+          : `No matching appointment on ${note.sessionDate} at minute ${note.sessionStartMinutes} — one will be created`);
 
         // Everything that follows from the chosen encounter type — CPT, modifier,
         // units, POS — plus this patient's program enrolment, asked of InSync
@@ -829,9 +897,10 @@ async function executeRun(runId, { mode, sign, noteIds }) {
   }
 
   await logEvent(runId, null, 'info', 'finish',
-    `${live ? 'LIVE RUN' : 'DRY RUN'} finished — ${done} succeeded, ${failed} failed`);
+    `${live ? 'LIVE RUN' : 'DRY RUN'} finished — ${done} succeeded, ${failed} failed` +
+    `${skipped ? `, ${skipped} left alone (already in InSync or needing review)` : ''}`);
   await supabase.from('portal_job_runs').update({ status: failed && !done ? 'failed' : 'done' }).eq('id', runId);
-  return { done, failed };
+  return { done, failed, skipped };
 }
 
 async function recordFailure(runId, row, step, message, live = false) {

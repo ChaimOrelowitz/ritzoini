@@ -254,6 +254,25 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
               <br />
             </>
           )}
+          {r.calendar_hold && (
+            // The hold survives re-resolution on purpose, so clearing it is an
+            // explicit act. The next run re-checks the calendar regardless, so
+            // this cannot push a note past a genuinely closed encounter.
+            <>
+              <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
+                disabled={busy || running}
+                onClick={() => {
+                  if (!window.confirm(
+                    'Clear this hold?\n\n' + r.calendar_hold + '\n\n' +
+                    'Do this only after looking at that encounter in InSync and deciding this note ' +
+                    'still needs to go in. The next run re-checks the calendar either way.')) return;
+                  patch({ clear_calendar_hold: true });
+                }}>
+                Reviewed — clear hold
+              </button>
+              <br />
+            </>
+          )}
           {row.status !== 'done' && (
             <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
               disabled={busy || running}
@@ -740,7 +759,8 @@ export default function PortalPOCPage() {
             <button className="btn btn-outline" onClick={reresolve} disabled={busy || running}>
               {busy === 'resolve' ? 'Resolving…' : 'Re-resolve'}
             </button>
-            <button className="btn btn-outline" onClick={() => execute('dry_run', false)} disabled={busy || running}>
+            <button className="btn btn-outline" onClick={() => execute('dry_run', false)} disabled={busy || running}
+              title="Signs in as each peer read-only to check their calendar. Writes nothing.">
               Dry run
             </button>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' }}>

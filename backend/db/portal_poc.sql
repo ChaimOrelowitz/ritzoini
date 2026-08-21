@@ -46,6 +46,14 @@ create table if not exists portal_peers (
 create unique index if not exists portal_peers_name_uniq
   on portal_peers (lower(portal_peer_name));
 
+-- Which InSync scheduler shows this peer's calendar. LoadCalendarView filters on
+-- ScheduleSetupID, not on provider id, so without this the appointment-exists
+-- check reads the wrong calendar -- and a wrong "nothing here" books a duplicate.
+-- Resolved from the scheduler directory (LoadCalendarView's Item6) and cached;
+-- re-resolved automatically if it stops working.
+alter table portal_peers
+  add column if not exists insync_schedule_setup_id text;
+
 
 -- ---------------------------------------------------------------------------
 -- Client map — resolve once, confirm once, reuse forever
