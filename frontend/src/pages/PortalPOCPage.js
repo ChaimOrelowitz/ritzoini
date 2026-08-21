@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../utils/api';
 
 // Portal POC — transcribe finished peer-support notes from the portal CRM into
@@ -519,6 +519,8 @@ export default function PortalPOCPage() {
   // Whether a run signs. Shared by the batch GO and the per-note buttons so the
   // two can never mean different things.
   const [signOnRun, setSignOnRun] = useState(false);
+  const [filterPeer, setFilterPeer] = useState('');
+  const [filterClient, setFilterClient] = useState('');
   const fileRef = useRef(null);
   const lastEventId = useRef(0);
   const pollRef = useRef(null);
@@ -647,6 +649,39 @@ export default function PortalPOCPage() {
 
   const notes = current?.notes || [];
   const counts = notes.reduce((a, n) => ({ ...a, [n.status]: (a[n.status] || 0) + 1 }), {});
+
+  // Filter options come from the notes themselves, so they can only ever offer
+  // something that is actually in this upload.
+  const peerNames = [...new Set(notes.map(n => n.note.peerName).filter(Boolean))].sort();
+  const clientNames = [...new Set(notes
+    .filter(n => !filterPeer || n.note.peerName === filterPeer)
+    .map(n => n.note.clientName).filter(Boolean))].sort();
+
+  const visible = notes.filter(n =>
+    (!filterPeer || n.note.peerName === filterPeer) &&
+    (!filterClient || n.note.clientName === filterClient));
+
+  // Peer -> client -> notes. A peer works one InSync session at a time and a
+  // client is one chart, so that is the order the work actually happens in.
+  const grouped = [];
+  for (const row of visible) {
+    const peerName = row.note.peerName || '(no peer)';
+    let peer = grouped.find(g => g.peer === peerName);
+    if (!peer) { peer = { peer: peerName, clients: [], count: 0, ready: 0 }; grouped.push(peer); }
+    const clientName = row.note.clientName || '(no client)';
+    let client = peer.clients.find(c => c.client === clientName);
+    if (!client) { client = { client: clientName, rows: [], ready: 0 }; peer.clients.push(client); }
+    client.rows.push(row);
+    peer.count++;
+    if (row.status === 'ready') { peer.ready++; client.ready++; }
+  }
+  grouped.sort((a, b) => a.peer.localeCompare(b.peer));
+  for (const g of grouped) {
+    g.clients.sort((a, b) => a.client.localeCompare(b.client));
+    for (const c of g.clients) c.rows.sort((a, b) =>
+      (a.note.sessionDate || '').localeCompare(b.note.sessionDate || '') ||
+      (a.note.sessionStartMinutes || 0) - (b.note.sessionStartMinutes || 0));
+  }
   const running = current?.run?.status === 'executing';
 
   const TABS = [
@@ -791,6 +826,33 @@ export default function PortalPOCPage() {
             once signed in as the peer, so it resolves during the run.
           </Banner>
 
+          <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', paddingTop: 12, paddingBottom: 12 }}>
+            <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)' }}>
+              Peer{' '}
+              <select className="form-select" style={{ fontSize: '0.78rem', minWidth: 170 }}
+                value={filterPeer}
+                onChange={e => { setFilterPeer(e.target.value); setFilterClient(''); }}>
+                <option value="">All peers ({peerNames.length})</option>
+                {peerNames.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </label>
+            <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)' }}>
+              Client{' '}
+              <select className="form-select" style={{ fontSize: '0.78rem', minWidth: 190 }}
+                value={filterClient} onChange={e => setFilterClient(e.target.value)}>
+                <option value="">All clients ({clientNames.length})</option>
+                {clientNames.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+            {(filterPeer || filterClient) && (
+              <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
+                onClick={() => { setFilterPeer(''); setFilterClient(''); }}>Clear filters</button>
+            )}
+            <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--gray-400)' }}>
+              showing {visible.length} of {notes.length} note{notes.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
           <div style={{ ...card, overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
               <thead><tr>
@@ -798,14 +860,51 @@ export default function PortalPOCPage() {
                 <th style={th}>Encounter type</th><th style={th}>Appointment</th>
                 <th style={th}>Status</th><th style={th} />
               </tr></thead>
-              <tbody>
-                {notes.map(row => (
-                  <ReviewRow key={row.id} runId={current.run.id} row={row}
-                    onChanged={refreshCurrent}
-                    onConfirmClient={setConfirmingClient}
-                    onRunOne={runOne} running={running} signOnRun={signOnRun} />
-                ))}
-              </tbody>
+              {grouped.map(group => (
+                <tbody key={group.peer}>
+                  <tr>
+                    <td colSpan={7} style={{
+                      padding: '10px 8px 6px', borderTop: '2px solid var(--navy)',
+                      fontWeight: 700, fontSize: '0.85rem', color: 'var(--navy)',
+                      background: 'var(--gray-50, #fafafa)',
+                    }}>
+                      {group.peer}
+                      <span style={{ fontWeight: 400, color: 'var(--gray-400)', fontSize: '0.75rem' }}>
+                        {' '}· {group.count} note{group.count === 1 ? '' : 's'} ·{' '}
+                        {group.clients.length} client{group.clients.length === 1 ? '' : 's'} ·{' '}
+                        {group.ready} ready
+                      </span>
+                    </td>
+                  </tr>
+                  {group.clients.map(client => (
+                    <Fragment key={client.client}>
+                      <tr>
+                        <td colSpan={7} style={{
+                          padding: '6px 8px 4px 26px', borderTop: '1px solid var(--gray-100)',
+                          fontWeight: 600, fontSize: '0.78rem', color: 'var(--gray-600)',
+                        }}>
+                          {client.client}
+                          <span style={{ fontWeight: 400, color: 'var(--gray-400)' }}>
+                            {' '}· {client.rows.length} note{client.rows.length === 1 ? '' : 's'} ·{' '}
+                            {client.ready} ready
+                          </span>
+                        </td>
+                      </tr>
+                      {client.rows.map(row => (
+                        <ReviewRow key={row.id} runId={current.run.id} row={row}
+                          onChanged={refreshCurrent}
+                          onConfirmClient={setConfirmingClient}
+                          onRunOne={runOne} running={running} signOnRun={signOnRun} />
+                      ))}
+                    </Fragment>
+                  ))}
+                </tbody>
+              ))}
+              {!grouped.length && (
+                <tbody><tr><td style={td} colSpan={7}>
+                  {notes.length ? 'No notes match those filters.' : 'No notes staged.'}
+                </td></tr></tbody>
+              )}
             </table>
           </div>
 
