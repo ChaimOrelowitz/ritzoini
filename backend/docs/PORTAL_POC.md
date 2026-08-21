@@ -8,13 +8,32 @@ fills the note with the peer's own words, closes it, and signs it with the peer'
 PIN.
 
 This is **transcription of already-authored notes, not generation of clinical
-content.** Every clinical value written to InSync comes verbatim from the portal
-note. The diagnosis / treatment-plan / visit-code content is assembled by InSync
-itself at `GenerateEncounterNote`; this system supplies none of it. These are
-billable Medicaid encounters (CPT H0038), so the integrity rule is absolute:
-what gets signed must faithfully reflect what the peer wrote.
+content.** The narrative fields are copied from the portal note. The default
+value for Peer Support Intervention Details is the peer's own selected
+intervention labels, and an operator may edit fields exposed for manual review.
+Diagnosis, treatment-plan and visit-code content is assembled by InSync itself
+at `GenerateEncounterNote`; this system does not generate it.
 
+In the observed DSC configuration, the Peer Support encounters use CPT H0038.
+Payer, CPT mapping, modifiers, place of service, program enrolment and billing
+provider are still resolved from InSync for the selected patient and encounter
+type; the application does not assume that every patient has the same payer.
 Route: **`/portalPOC`**. API: **`/api/portal/*`**.
+
+## For teams rebuilding this inside another CRM
+
+Ritzoini is the working reference implementation, not a required intermediary.
+A CRM team can reproduce the integration by calling InSync directly in the same
+order and preserving the same identity, billing, duplicate, session-state and
+signing safeguards.
+
+Start with:
+
+- `utils/insync.js` — InSync login and request handling.
+- `utils/insyncPortal.js` — provider, patient, encounter-type, calendar and billing lookups.
+- `utils/portalExecute.js` — appointment, encounter, note, close, sign and co-sign sequence.
+- `routes/portalPoc.js` — review state, bindings, dedupe, execution and audit flow.
+- `test/portalPoc.test.js` and `test/portalAccess.test.js` — regression coverage.
 
 ---
 
@@ -48,7 +67,7 @@ portal_job_runs + portal_staged_notes      ← dedupe on portalNoteId and on the
    │                                          portal's own enteredInInsyncAt
    │ Phase A (admin login, read only)
    ▼
-review screen  ── Bella fixes every flagged row, then GO
+review screen  ── an authorized operator fixes every flagged row, then GO
    │
    │ Phase B (per peer, that peer's login)
    │   calendar check → reuse or book → start encounter → note →
@@ -59,51 +78,84 @@ InSync  +  portal_processed_notes (audit) + portal_run_events (log)
 
 ---
 
-## Nothing is hardcoded
+## Identity and encounter-type resolution
 
-Encounter type IDs, peer provider IDs and client patient IDs are all resolved
-live, every run:
+Captured patient, provider and encounter-type IDs are never reused. The sources
+of truth are:
 
-- **Encounter types** — `GetVisitTypes` each run, filtered to
-  `Peer Support` + `Individual`, matched on three dimensions parsed out of the
-  type NAME (language / mode / location) plus offsite-or-not.
-- **Peer provider IDs** — parsed live from `ddlPsPrimaryPhysician` in
-  `GetAdvancedSearchFields`.
-- **Client patient IDs** — `BindPatientList` search (as `"Last, First"` — InSync
-  returns nothing for `"First Last"`), then a one-time human confirmation stored
-  in `portal_client_map`.
+- **Encounter types** — retrieved from `GetVisitTypes` during resolution, filtered
+  to `Peer Support` + `Individual`, and matched from the type name.
+- **Peer providers** — the provider directory is read live from
+  `ddlPsPrimaryPhysician` in `GetAdvancedSearchFields`. A human-confirmed
+  provider ID is then stored on the peer record and reused until it is changed.
+- **Clients** — `BindPatientList` searches InSync using `"Last, First"` and, when
+  necessary, the surname. A human-confirmed name+DOB → patient-ID binding is
+  stored in `portal_client_map` and reused on later uploads.
 
-A new peer, a new client or a new encounter type therefore needs no code change.
+Adding a peer or client does not require a code change, but it does require a
+confirmed binding. A newly created encounter type is discovered live only if its
+name fits the supported Peer Support Individual naming rules and InSync returns
+complete billing information for it.
 
-### The Offsite dimension
+### Standard and Offsite note forms
 
-InSync's peer types come in pairs: a base type and an "Offsite" twin. They are
-**two different note forms with different InSync TemplateIds** — the Offsite form
-adds one field, **"Justification for Offsite Delivery" (ControlId_27)**. The
-capture pack therefore stores both note shapes (`note` and `note_offsite`), and
-the **selected encounter type** picks which one is replayed. Offsite is detected
-from the type *name*, never from an ID list.
+InSync uses two Peer Support Individual note forms:
 
-**The portal's `isOffsite` flag is deliberately ignored** (`parsePortalNote`
-returns `offsite: false` unconditionally). The flag exists in the export, but it
-means nothing yet: the portal has no field for the justification text, and the
-encounter types actually in use pull the base note form, which has no such
-field. Honouring the flag would route notes to an Offsite twin whose required
-field could only ever be blank. The flag is still surfaced as
-`dimensions.portalIsOffsite` so the reason stays visible.
+| Encounter-type name | Note form | TemplateId | FormTemplateDetailId |
+|---|---|---:|---:|
+| Does not contain `Offsite` | Standard Peer Support Individual | 973 | 471 |
+| Contains `Offsite` | Offsite Peer Support Individual | 1028 | 525 |
 
-The offsite **machinery is intact and exercised** whenever the selected type is
-an Offsite one: the review screen's dropdown can still pick one, which switches
-to the offsite note form and blocks the row until the justification is typed. To
-re-enable automatic routing once the portal grows that field, flip the flag in
-`parsePortalNote` and map the new portal field onto ControlId_27 in
-`portalExecute`'s `NOTE_FIELDS`.
+The Offsite form adds **Justification for Offsite Delivery** (`ControlId_27`).
+The two-form machinery is captured and tested, but **Offsite execution is
+currently disabled**: the source export has no dedicated value for that required
+field. The portal ignores its `isOffsite` flag, removes Offsite types from the
+review choices, and refuses an Offsite row at execution.
 
-The justification is never inferred from the narrative — several sample notes
-bury a rationale inside `activitiesSummary`, and extracting it would be this
-system inventing clinical text.
+Do not infer the justification from narrative text. To enable Offsite later, the
+source CRM must supply a dedicated justification field; then map it to
+`ControlId_27`, restore the source `isOffsite` value, remove the dropdown filter
+in `resolveRun`, and remove the Offsite guard in `executeNote`.
+
+### Peer Support Individual encounter types observed in the supplied HARs
+
+The four captured Offsite types and their base twins are aligned first. A blank
+Offsite column means no Offsite twin was observed in the supplied HAR files.
+This is capture evidence, not a promise that every listed type is currently active
+or has complete billing configuration.
+
+| Non-Offsite type | Offsite twin |
+|---|---|
+| **1246** — Peer Support - Individual - English - In-person outside the clinic-- [15 mins] | **1271** — Peer Support - Individual - English - In-person outside the clinic - Offsite-- [15 mins] |
+| **1253** — Peer Support - Individual - English - In-person at Home-- [15 mins] | **1272** — Peer Support - Individual - English - In-person at Home Offsite-- [15 mins] |
+| **1252** — Peer Support - Individual - Language other than English -In-person outside the clinic-- [15 mins] | **1273** — Peer Support - Individual - Language other than English -In-person outside the clinic Offsite-- [15 mins] |
+| **1254** — Peer Support - Individual - Language other than English - In-person Home-- [15 mins] | **1274** — Peer Support - Individual - Language other than English - In-person at Home Offsite-- [15 mins] |
+| **1194** — Peer Support - Individual - 15min-- [15 mins] | — |
+| **1199** — Peer Support - Individual - 1hr-- [60 mins] | — |
+| **1200** — Peer Support - Individual - 2hr-- [120 mins] | — |
+| **1201** — Peer Support - Individual - 3hr-- [180 mins] | — |
+| **1205** — Peer Support - Individual - 30min-- [30 mins] | — |
+| **1206** — Peer Support - Individual - 45min-- [45 mins] | — |
+| **1207** — Peer Support - Individual - 1hr 15min-- [75 mins] | — |
+| **1208** — Peer Support - Individual - 1hr 30min-- [90 mins] | — |
+| **1209** — Peer Support - Individual - 1hr 45min-- [105 mins] | — |
+| **1210** — Peer Support - Individual - 2hr 15min-- [135 mins] | — |
+| **1211** — Peer Support - Individual - 2hr 30min-- [150 mins] | — |
+| **1212** — Peer Support - Individual - 2hr 45min-- [165 mins] | — |
+| **1241** — Peer Support - Individual - English - In the clinic-- [15 mins] | — |
+| **1242** — Peer Support - Individual - English - Telehealth with video and audio when the client is home-- [15 mins] | — |
+| **1243** — Peer Support - Individual - English - Telehealth audio only when the client is home-- [15 mins] | — |
+| **1244** — Peer Support - Individual - English - Telehealth with video when the client is not home-- [15 mins] | — |
+| **1245** — Peer Support - Individual - English - Telehealth audio only when the client is not home-- [15 mins] | — |
+| **1247** — Peer Support - Individual - Language other than English - In the clinic-- [15 mins] | — |
+| **1248** — Peer Support - Individual - Language other than English - Telehealth video & audio when client is home-- [15 mins] | — |
+| **1249** — Peer Support - Individual - Language other than English -Telehealth audio only when client is home-- [15 mins] | — |
+| **1250** — Peer Support; Individual - Language other than English -Telehealth video when client is not home-- [15 mins] | — |
+| **1251** — Peer Support - Individual - Language other than English -Telehealth audio when client is not home-- [15 mins] | — |
 
 ---
+
+## Data model---
 
 ## Data model
 
@@ -198,26 +250,32 @@ Each of those let real data through when first written, so `assertClean` now
 looks *inside* the rendered blob rather than only at the parameters, and there
 are regression tests for the first two.
 
-### Current status: complete
+### Current capture inventory
 
-With `portal_POC/InSync Apointment Note Close Encounter.har` in place, all eight
-steps resolve:
+The extractor recognizes nine endpoint shapes; the note endpoint is split into
+standard and Offsite variants, producing ten stored template roles:
 
-| Step | Source | Captured against |
-|---|---|---|
-| appointment | unified HAR | type 1273 |
-| start | unified HAR | — |
-| encounter | unified HAR | — |
-| close | unified HAR | type 1273 |
-| generate | unified HAR | — |
-| calendar | unified HAR | — |
-| `note` (base form) | `InSync Save Peer Encounter Note.har` | TemplateId 973 |
-| `note_offsite` | unified HAR | TemplateId 1028 |
+| Role | Purpose |
+|---|---|
+| `appointment` | Save a new appointment |
+| `start` | Start the selected appointment |
+| `encounter` | Create/open the encounter |
+| `note` | Save the standard form (TemplateId 973) |
+| `note_offsite` | Save the Offsite form (TemplateId 1028) |
+| `generate` | Ask InSync to assemble the chart-derived note sections |
+| `close` | Close and optionally sign |
+| `calendar` | Read the peer's calendar |
+| `visittypes` | Retrieve the encounter-type catalog |
+| `schedulercalendar` | Retrieve patient/scheduler billing context |
 
-Every write step now comes from **one coherent session** that worked end to end,
-rather than being stitched together from partial captures.
+The standard note form was captured in `InSync Save Peer Encounter Note.har`.
+The unified HAR supplied the shared write chain and the Offsite form. Therefore,
+the pack is deliberately assembled from compatible captures; it did not all come
+from one session.
 
 ---
+
+## Per-type billing---
 
 ## Per-type billing — resolved live, never replayed
 
@@ -296,8 +354,8 @@ somebody else's calendar in a past week — regardless of whose session runs it.
 Everything that decides *whose* calendar and *which* day is therefore set
 explicitly, and the schedule id is resolved rather than assumed:
 
-1. try the session default (blank `selectedSchedulers`)
-2. then the id cached on `portal_peers.insync_schedule_setup_id`
+1. try the id cached on `portal_peers.insync_schedule_setup_id`
+2. then try the session default (blank `selectedSchedulers`)
 3. then look the peer up in the scheduler directory — **`Item6`** of the response
    maps `ScheduleSetupID` ↔ `ResourceId` — and pin that
 
@@ -436,8 +494,9 @@ and Co-Sign sections use, set from either of those screens. It is deliberately
 see or change it, and changing it here would silently alter what the other two
 domains run under.
 
-If it is missing or expired, `/api/portal/status` reports
-`admin_insync_configured: false` and the page says so.
+`/api/portal/status` reports whether both admin credential values are configured.
+It does not perform a live login test; invalid or expired credentials are discovered
+when a resolution request attempts to sign in.
 
 ---
 
@@ -446,14 +505,14 @@ If it is missing or expired, `/api/portal/status` reports
 | Guardrail | Enforced by |
 |---|---|
 | Never hardcode type / peer / client IDs | `utils/portalMatch.js`, `utils/insyncPortal.js` — everything resolves live |
-| Dry-run before live | `POST /runs/:id/execute` defaults to `dry_run`; live also requires `confirm: true` and two browser confirmations |
+| Dry run before live | Dry run is available and strongly recommended, but not enforced as a prerequisite. Live requires `confirm: true`; the UI shows one confirmation for unsigned live runs and a second confirmation when signing is enabled. |
 | Billing is right for the type being written | `resolveBilling()` asks InSync per type/patient; `assertBilling()` refuses to send an incomplete or mismatched payload |
 | Inspect what would be sent | `GET /runs/:runId/notes/:noteId/payloads` — the exact bodies, with live-resolved billing shown first and the PIN redacted |
 | Client-match ambiguity BLOCKS | `resolveRun` never auto-binds; a binding is always an explicit human confirm written to `portal_client_map` |
 | Credentials encrypted, never logged | `utils/portalCrypto.js` + `peerView()` + `scrub()` |
-| Only portal-authored content is written | `NOTE_FIELDS` maps each control to a named portal field; the two fields with no portal source are typed by the operator, never inferred |
+| Control every clinical field | `NOTE_FIELDS` maps narrative controls to portal fields. Intervention Details defaults to the peer's selected intervention labels; exposed manual fields may be edited by an operator; diagnosis/plan/visit-code sections are assembled by InSync. |
 | Respect appointment status | `findExistingAppointment` ignores `VisitStatusID === 4` |
-| Stop on unexpected, per note | each step has an explicit success signal; a failure records against that note and moves to the next |
+| Stop on unexpected, per note | Critical writes require their expected success result; HTTP/session failures and recognized InSync restrictions stop that note and are recorded before processing continues. |
 | No cross-patient contamination | every answer control is blanked before the current note is written in — tested |
 
 ---
@@ -489,17 +548,16 @@ Admins also see the screen (a fourth "Portal POC" section tab).
 1. Run `db/portal_poc.sql` in the Supabase SQL editor.
 2. Set `PORTAL_CRED_KEY` in the backend environment.
 3. Confirm `app_settings.insync_username` / `insync_password` hold the admin login.
-4. `node --max-old-space-size=8192 scripts/extract-insync-captures.js`.
-5. Add each peer on the Peers tab: portal name, "Look up" their provider ID,
-   InSync username, password, signing PIN.
-6. Upload an export, work the review screen, **dry run**, read the log.
-7. Use "View prepared payloads" on a dry run and check the billing block against
-   the encounter type you expect — CPT map, modifier, POS.
-8. Run live without signing first, then with signing.
+4. Run `node --max-old-space-size=8192 scripts/extract-insync-captures.js` on a trusted machine.
+5. Add each peer: portal name, confirmed provider ID, InSync username, password and signing PIN.
+6. Upload a test export, resolve every flagged row, run a dry run and inspect the log.
+7. Inspect prepared payloads and confirm the selected type, patient, provider, payer, CPT map, modifier, POS and program.
+8. Run one dedicated test note live with signing enabled, then verify the saved appointment, encounter, note, units and co-sign route in InSync.
+9. Do not use the same note for an unsigned test followed by a signed test: the first close makes the later attempt a duplicate. Use separate test notes, or follow the documented reopen procedure.
 
-## Tests
+## Tests## Tests
 
-`node test/portalPoc.test.js` (35 assertions — the matching rules, the ignored
+`node test/portalPoc.test.js` (59 assertions — the matching rules, the ignored
 `isOffsite` flag, the note-form split, the appointment-exists rule, the
 credential crypto, the cross-patient contamination guard) and
 `node test/portalAccess.test.js` (53 assertions — the `portal_only` fence, and
