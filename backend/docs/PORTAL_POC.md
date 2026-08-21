@@ -85,14 +85,6 @@ encrypted at rest, unavailable to browser responses, and removed from error and
 audit logs. The CRM team should receive credentials through an approved secure
 channel, separately from this document and the source repository.
 
-### Working reference
-
-- `utils/insync.js` — InSync login and request handling.
-- `utils/insyncPortal.js` — provider, patient, encounter-type, calendar and billing lookups.
-- `utils/portalExecute.js` — appointment, encounter, note, close, sign and co-sign sequence.
-- `routes/portalPoc.js` — review state, bindings, dedupe, execution and audit flow.
-- `test/portalPoc.test.js` and `test/portalAccess.test.js` — regression coverage.
-
 ---
 
 ## The two-login architecture
