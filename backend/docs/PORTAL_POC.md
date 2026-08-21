@@ -155,7 +155,7 @@ or has complete billing configuration.
 
 ---
 
-## Data model---
+---
 
 ## Data model
 
@@ -275,7 +275,7 @@ from one session.
 
 ---
 
-## Per-type billing---
+---
 
 ## Per-type billing — resolved live, never replayed
 
@@ -555,7 +555,7 @@ Admins also see the screen (a fourth "Portal POC" section tab).
 8. Run one dedicated test note live with signing enabled, then verify the saved appointment, encounter, note, units and co-sign route in InSync.
 9. Do not use the same note for an unsigned test followed by a signed test: the first close makes the later attempt a duplicate. Use separate test notes, or follow the documented reopen procedure.
 
-## Tests## Tests
+## Tests
 
 `node test/portalPoc.test.js` (59 assertions — the matching rules, the ignored
 `isOffsite` flag, the note-form split, the appointment-exists rule, the
