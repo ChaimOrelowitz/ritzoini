@@ -573,6 +573,14 @@ function restoreNestedBlocks(result, templates) {
 
 // --- execution -------------------------------------------------------------
 
+// InSync's scheduler posts its booking model under two different prefixes: the
+// dialog OPENS with bookAppointment[...] and is then queried with
+// objbookAppointment[...]. Same object, two spellings, and mixing them up gets
+// a 200 with an empty answer rather than an error.
+function bookAppt(fields) {
+  return Object.fromEntries(Object.entries(fields).map(([k, v]) => [`objbookAppointment[${k}]`, String(v)]));
+}
+
 // The booking sequence, in the order the browser performs it. Order is the
 // point: the dialog is opened FIRST, then the patient is bound into it, and
 // SaveBookAppointment reads the session those calls build. The same calls in a
@@ -623,41 +631,73 @@ async function runBookingPreamble(cookie, ctx, log) {
     PageViewNo: '1',
   }, cookie);
 
-  // 2. Bind the patient into the open dialog. GetSchedulerCalendar here IS the
-  //    selection, not a lookup: it carries schedule, slot, provider and patient
-  //    together, which no earlier call did.
-  const bookingCtx = { ...(schedulerTemplate || {}) };
-  const set = (re, v) => {
-    for (const k of Object.keys(bookingCtx)) {
-      if (re.test(k.replace(/[[\]]+/g, '.').replace(/\.+$/, ''))) bookingCtx[k] = String(v);
-    }
-  };
-  set(/(^|\.)schedulesetupid$/i, scheduleSetupId || '');
-  set(/(^|\.)scheduleid$/i, scheduleId || '');
-  set(/(^|\.)resourceid$/i, providerId);
-  set(/(^|\.)provider$/i, providerLabel || '');
-  set(/(^|\.)patientid$/i, patientId);
-  set(/(^|\.)visitdate$/i, visitDate);
-  set(/(^|\.)visittime$/i, startTime);
-  set(/(^|\.)facilityid$/i, fac);
-
+  // 2. SELECT the patient. This is the step that was missing, and the
+  //    distinction it turns on is the one this integration keeps getting
+  //    wrong: naming a patient id in a request parameter is not the same as
+  //    selecting them. LastPatientAccessrecored is the call whose whole job is
+  //    to write "this session's current patient" into server state, and
+  //    SaveBookAppointment reads that state rather than trusting the ids in the
+  //    form it is posted. Every other call here only READS the selection.
+  await post('/PatientGroup/PatientSearchWithPatientGroup', {}, cookie);
+  await post('/EncPatientRestrictAccess/CheckPatientRestriction', {}, cookie);
+  const sel = await post('/PatientSearch/LastPatientAccessrecored', { PatientId: patientId }, cookie);
+  const selText = (await sel.text()).trim();
+  if (!/success/i.test(selText)) {
+    throw new StepError('appointment',
+      `InSync did not accept patient ${patientId} as the session's current patient ` +
+      `(answered ${JSON.stringify(selText.slice(0, 120))}). Booking without a selected patient ` +
+      `is refused with no error text, so this stops here instead.`);
+  }
   await post('/Scheduler/CheckSticknote', { PatientID: patientId, LocationID: '3' }, cookie);
-  const calRes = await post('/Scheduler/GetSchedulerCalendar', bookingCtx, cookie);
+
+  // 3. Load the dialog for that patient in that slot. Built field by field from
+  //    the capture rather than by substituting into the stored template: the
+  //    template is the CALENDAR's version of this request, and the booking
+  //    dialog's differs in ways no rename-the-matching-key pass would find --
+  //    ScheduleID is 0 here, not the resolved schedule, and the type, payer,
+  //    copay and program fields are all empty because the dialog has not
+  //    resolved them yet. Same endpoint, different question.
+  const calRes = await post('/Scheduler/GetSchedulerCalendar', bookAppt({
+    ScheduleSetupID: scheduleSetupId || '', ScheduleID: '0', ScheduleTypeID: '0',
+    ResourceId: providerId, ResourceTypeId: '0', Provider: providerLabel || '',
+    IsGroupTherapyHeaderRow: 'False',
+    VisitDate: visitDate, VisitTime: startTime, ProfileName: 'Scheduler',
+    POSCode: '', PatientId: patientId, VisitID: '0', VisitIDList: '', ReSchedule: '0',
+    VisitTypeID: '', VisitTypeDescription: '', RefPhysicianID: '',
+    VisitStatusId: '', VisitStatusDescription: '',
+    PatientLocationId: '', PatientLocationName: '',
+    SelfPay: '', PrimaryPatientPayerID: '', SecondaryPatientPayerID: '', TertiaryPatientPayerID: '',
+    ExpectedCopay: '', EncTypeExpectedCopay: '', AuthNumber: '', BookComment: '',
+    PatientFullName: '', IsPatientview: '0',
+    AdditionalResourceID: '0', AdditionalResTypeID: '-1', PatientGroupId: '0',
+    FacilityId: fac, IsFamily: 'false', FamilyVisitID: '0', ReScheFacility: '',
+    PatientWaitlistId: '0', CaseManagementID: '0', ProgramManagementDetailID: '0',
+    IsMultiFacility: 'True', IsDateChangeFlag: 'false', IsFromDashboard: 'false',
+    CallFrom: '', AppointmentDataID: '0', IsFromOfflineSync: 'false',
+  }), cookie);
   const calText = await calRes.text();
   await post('/Scheduler/getRLSPatientDetails', { PatientId: patientId, ScheduleDate: visitDate }, cookie);
 
-  // Whether the patient actually bound is the whole question, and InSync never
-  // says so directly -- it answers a save it did not like with DataSave=false
-  // and every message field null. It does answer THIS call differently: an
-  // unbound dialog comes back with an empty AdditionalDetails (no CPT map),
-  // a bound one comes back with the patient's. Report which, so a failed
-  // booking points at the binding rather than leaving it to be guessed at.
-  const bound = /"AdditionalDetails"\s*:\s*\[\s*\{/.test(calText);
-  await log(bound ? 'info' : 'warn', 'appointment',
-    bound
-      ? `Patient ${patientId} bound into the booking dialog (InSync returned its CPT map)`
-      : `InSync answered the patient selection with no CPT map — patient ${patientId} may not be ` +
-        `bound into the dialog, and SaveBookAppointment will likely refuse without saying why`);
+  // Confirm the dialog came back populated FOR THIS PATIENT. The proof is
+  // patient-specific content InSync could not produce for nobody: their payer
+  // list, and the CPT and POS tables it offers for them.
+  //
+  // An earlier version of this check looked for AdditionalDetails as an ARRAY.
+  // It is an object here, so it matched nothing and warned on every run,
+  // including good ones -- a broken detector is worse than none, because it
+  // sends you looking in the wrong place.
+  let detail = null;
+  try { detail = JSON.parse(calText)?.AdditionalDetails || null; } catch { /* not JSON */ }
+  const payerRows = detail?.SchedularPrimaryInsurance?.length || 0;
+  const cptRows = detail?.lstCPT?.length || 0;
+  if (!detail || (!payerRows && !cptRows)) {
+    throw new StepError('appointment',
+      `The booking dialog came back with nothing for patient ${patientId} — no payer list and no ` +
+      `CPT table. The patient is not selected in this session, and SaveBookAppointment would ` +
+      `refuse without saying why.`);
+  }
+  await log('info', 'appointment',
+    `Patient ${patientId} selected — dialog offers ${payerRows} payer(s) and ${cptRows} CPT row(s)`);
 
   // 3. Everything the dialog asks for next, in its own order.
   const steps = [
