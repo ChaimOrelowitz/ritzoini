@@ -162,110 +162,40 @@ function two(n) { return String(n).padStart(2, '0'); }
 
 // --- billing ---------------------------------------------------------------
 //
-// Every field below mirrors the SELECTED encounter type's billing mapping, which
-// InSync supplies per type (utils/insyncPortal resolveBilling). The captured
-// payloads carried type 1273's numbers -- CPT map 418, modifier 338 (U4), POS 99
-// -- in eighteen places across three steps. 1253 is map 401, no modifier, POS 12,
-// so replaying the capture bills the wrong thing. The extractor blanks all of
-// them; this writes all of them.
-
-// InSync packs the code and its map-row id into one string.
-function cptComposite(b) { return `${b.cptCode}#*#&*&${b.cptMapId}`; }
-
-// "<CPT>#*#&*&<mapId>,<M1>,<M2>,<M3>,<M4>,<Units>,&*%^1,&*%^1"
-function cptModifiers(b) {
-  return [cptComposite(b), b.m1 || '', b.m2 || '', b.m3 || '', b.m4 || '', b.units, '&*%^1', '&*%^1'].join(',');
-}
-
-function modifierLabels(b) {
-  return [b.m1, b.m2, b.m3, b.m4].filter(Boolean).join(', ');
-}
+// InSync owns billing. CPT, modifiers, units, the CPT-map id and place of
+// service are resolved from the encounter type, and the billable units from the
+// encounter window at close -- which is why the window is the thing worth
+// getting right. The extractor blanks all of those fields so the captured type's
+// numbers cannot be replayed, and nothing here fills them back in.
+//
+// resolveBilling is still called: it is how the patient's program enrolment is
+// found, and its CPT/POS values are logged so a run says what InSync will bill.
 
 function applyBilling(result, b) {
-  const composite = cptComposite(b);
-  const mods = modifierLabels(b);
-  const procedureDesc = `${b.cptCode} - ${b.cptDescription}`
-    + (mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`) + ' |';
-
+  // CPT code, modifiers, units, CPT-map id and place of service are NOT ours to
+  // send. InSync resolves them from the encounter type, and the billable units
+  // from the encounter window at close. Everything this used to write was read
+  // out of InSync moments earlier and handed straight back — no work done, and
+  // on a NEW booking it means posting fields the server owns, which is enough
+  // for SaveBookAppointment to refuse with DataSave=false and no message.
+  //
+  // What does have to travel is the PATIENT's program enrolment: the captured
+  // payloads carry the captured patient's, and it is per patient.
   for (const { params } of Object.values(result)) {
-    // The booking grid's CPT row.
-    setFields(params, b.cptMapId,      'EncounterTypeCPTMapID');
-    setFields(params, b.cptCode,       'CPT_Code', 'CPTCode');
-    setFields(params, b.cptDescription,'CPT_Description');
-    setFields(params, b.m1,            'M1');
-    setFields(params, b.m2,            'M2');
-    setFields(params, b.m3,            'M3');
-    setFields(params, b.m4,            'M4');
-    setFields(params, b.units,         'Units');
-    setFields(params, b.cptMapTypeId,  'CPTMapTypeID');
-
-    // Place of service.
-    setFields(params, b.posCode,        'POSCode', 'SEPOSCode');
-    setFields(params, b.posDescription, 'POSCodeDescription');
-    setFields(params, b.posDescription.replace(/^\s*\d+\s*-\s*/, ''), 'SEPOSDescription');
-    setFields(params, procedureDesc,    'ProcedureCodeDescription');
-
-    // The encounter form's composites.
-    setFields(params, composite,           'SECPTCode');
-    setFields(params, cptModifiers(b),     'SECPTModifiers');
-    setFields(params, `${composite} -  ${b.cptDescription}`, 'SECPTDescription');
-
-    // Not reachable by suffix: this key has no bracket or dot, so it normalises
-    // to ONE segment and `setFields(…, 'SECPTCode')` can never see it.
-    if ('SEEncounterDetails_SECPTCode' in params) params.SEEncounterDetails_SECPTCode = composite;
-
-    // The type id InSync echoes back as the previous selection.
-    setFields(params, b.visitTypeId, 'OldSEEncounterTypeID');
-
-    // The patient's program enrolment, resolved per patient.
     setFields(params, b.programManagementDetailId, 'ProgramManagementDetailID');
-    setFields(params, b.programManagementId,       'ProgramManagementID');
+    setFields(params, b.programManagementId, 'ProgramManagementID');
   }
 }
 
-// Refuse to send a payload whose billing does not match what InSync said for the
-// selected type. Catches both a field we forgot to write and a stale value that
-// survived from the capture.
+// Refuse to send a payload whose program enrolment is missing or still belongs
+// to the captured patient. Billing itself is InSync's to decide, so there is
+// nothing to assert about CPT or POS.
 function assertBilling(result, b, forbidden = []) {
   const problems = [];
-
-  // Completeness first. Comparing written-against-expected alone would happily
-  // pass a blank CPT map id through, because blank matches blank — InSync would
-  // then book a billable encounter with no mapping.
-  for (const [name, value] of Object.entries({
-    'CPT map id': b.cptMapId, 'CPT code': b.cptCode, units: b.units,
-    'place of service': b.posCode, 'program enrolment': b.programManagementDetailId,
-  })) {
-    if (!String(value ?? '').trim()) problems.push(`${name} is missing`);
-  }
-  if (problems.length) {
-    throw new StepError('billing',
-      `Refusing to send: billing does not match InSync's mapping for encounter type ` +
-      `${b.visitTypeId} — ${problems.join('; ')}.`);
+  if (!String(b.programManagementDetailId ?? '').trim()) {
+    problems.push('program enrolment is missing');
   }
 
-  const composite = cptComposite(b);
-
-  const expect = {
-    EncounterTypeCPTMapID: b.cptMapId,
-    SECPTCode: composite,
-    SECPTModifiers: cptModifiers(b),
-    POSCode: b.posCode,
-    SEPOSCode: b.posCode,
-  };
-  for (const { params } of Object.values(result)) {
-    for (const [name, want] of Object.entries(expect)) {
-      for (const [k, v] of Object.entries(params)) {
-        if (!keyMatchesName(k, name)) continue;
-        if (String(v) !== String(want)) problems.push(`${k} is ${JSON.stringify(String(v))}, expected ${JSON.stringify(String(want))}`);
-      }
-    }
-    if ('SEEncounterDetails_SECPTCode' in params && params.SEEncounterDetails_SECPTCode !== composite) {
-      problems.push(`SEEncounterDetails_SECPTCode is ${JSON.stringify(params.SEEncounterDetails_SECPTCode)}`);
-    }
-  }
-
-  // Anything identifying the CAPTURED encounter/patient must be gone.
   const blob = JSON.stringify(Object.fromEntries(
     Object.entries(result).map(([step, { params }]) => [step, params])));
   for (const bad of forbidden) {
@@ -277,16 +207,10 @@ function assertBilling(result, b, forbidden = []) {
 
   if (problems.length) {
     throw new StepError('billing',
-      `Refusing to send: billing does not match InSync's mapping for encounter type ` +
-      `${b.visitTypeId}. ${problems.slice(0, 6).join('; ')}`);
+      `Refusing to send for encounter type ${b.visitTypeId}: ${problems.join('; ')}.`);
   }
 }
 
-function keyMatchesName(key, name) {
-  const k = String(key).replace(/[[\]]+/g, '.').replace(/\.+$/, '').toLowerCase();
-  const n = name.toLowerCase();
-  return k === n || k.endsWith('.' + n);
-}
 
 // The portal gives a date and a minute-of-day; everything InSync wants is a
 // formatting of those two. Built without Date so a server TZ can never shift a
@@ -380,7 +304,11 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     if (ctx.providerName) {
       setFields(params, ctx.providerName, 'Provider', 'ProviderName', 'SEProviderName', 'ResourceName');
     }
-    setFields(params, ctx.visitTypeId, 'EncounterTypeID', 'VisitTypeID', 'SEEncounterTypeID', 'SEVisitTypeID', 'CurrentVisitTypeId');
+    // OldSEEncounterTypeID is the type InSync echoes as the previous selection;
+    // it used to ride along on the billing pass, which no longer writes anything
+    // type-shaped, so it belongs here with the rest of the type ids.
+    setFields(params, ctx.visitTypeId, 'EncounterTypeID', 'VisitTypeID', 'SEEncounterTypeID',
+      'SEVisitTypeID', 'CurrentVisitTypeId', 'OldSEEncounterTypeID');
     setFields(params, ctx.visitTypeName, 'EncounterType', 'VisitTypeDescription', 'SEEncounterType', 'CurrentVisitType');
     setFields(params, visitId, 'VisitID', 'SEVisitID');
     setFields(params, encounterId, 'EncounterId', 'EncounterID');

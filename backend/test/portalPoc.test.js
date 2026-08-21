@@ -338,38 +338,37 @@ test('the acting peer\'s name replaces the captured clinician\'s in display fiel
 
 console.log('\nper-type billing (the whole mapping, at every occurrence)');
 
-// A stand-in for the stored pack, carrying type 1273's billing in all eighteen
-// places the real capture does -- including the underscore variant that a
-// dot-segment suffix rule structurally cannot reach.
+// A stand-in for the stored pack as the extractor leaves it: every billing
+// field BLANK, because InSync resolves CPT, modifiers, units and place of
+// service itself. Only the captured type ids remain, so a leak stays visible.
 function packWith1273() {
   return {
     appointment: { url: 'u', params: {
-      'objCpt[0][EncounterTypeCPTMapID]': '418', 'objCpt[0][CPT_Code]': 'H0038',
-      'objCpt[0][CPT_Description]': 'Self-help/peer svc per 15min',
-      'objCpt[0][M1]': '338', 'objCpt[0][M2]': '', 'objCpt[0][M3]': '', 'objCpt[0][M4]': '',
-      'objCpt[0][Units]': '1', 'objCpt[0][CPTMapTypeID]': '1',
-      'objBookAppointmentss[POSCode]': '99',
-      'objBookAppointmentss[POSCodeDescription]': '99 - Other Place of Service',
-      'objBookAppointmentss[ProcedureCodeDescription]': 'H0038 - Self-help (Modifiers: U4; Units: 1.00) |',
-      'objBookAppointmentss[ProgramManagementDetailID]': '6519',
-      'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': '6519',
+      'objCpt[0][EncounterTypeCPTMapID]': '', 'objCpt[0][CPT_Code]': '',
+      'objCpt[0][CPT_Description]': '', 'objCpt[0][M1]': '', 'objCpt[0][Units]': '',
+      'objCpt[0][CPTMapTypeID]': '',
+      'objBookAppointmentss[POSCode]': '',
+      'objBookAppointmentss[POSCodeDescription]': '',
+      'objBookAppointmentss[ProcedureCodeDescription]': '',
+      'objBookAppointmentss[ProgramManagementDetailID]': '',
+      'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': '',
       'objBookAppointmentss[VisitTypeID]': '1273',
     } },
     encounter: { url: 'u', params: {
-      'SEEncounterDetails.SECPTCode': 'H0038#*#&*&418',
-      'SEEncounterDetails_SECPTCode': 'H0038#*#&*&418',
-      'SEEncounterDetails.SECPTModifiers': 'H0038#*#&*&418,338,,,,1.00,&*%^1,&*%^1',
-      'SEEncounterDetails.SECPTDescription': 'H0038#*#&*&418 -  Self-help/peer svc per 15min',
-      'SEEncounterDetails.SEPOSCode': '99',
-      'SEEncounterDetails.SEPOSDescription': 'Other Place of Service',
+      'SEEncounterDetails.SECPTCode': '',
+      'SEEncounterDetails_SECPTCode': '',
+      'SEEncounterDetails.SECPTModifiers': '',
+      'SEEncounterDetails.SECPTDescription': '',
+      'SEEncounterDetails.SEPOSCode': '',
+      'SEEncounterDetails.SEPOSDescription': '',
       'SEEncounterDetails.SEEncounterTypeID': '1273',
       'SEEncounterDetails.OldSEEncounterTypeID': '1273',
-      'SEEncounterDetails.ProgramManagementDetailID': '6519',
-      'SEEncounterDetails.ProgramManagementID': '18',
+      'SEEncounterDetails.ProgramManagementDetailID': '',
+      'SEEncounterDetails.ProgramManagementID': '',
     } },
     close: { url: 'u', params: {
       'SaveEndEncounter[EncounterTypeID]': '1273',
-      'SaveEndEncounter[ProgramManagementDetailID]': '6519',
+      'SaveEndEncounter[ProgramManagementDetailID]': '',
     } },
     note: { url: 'u', params: { 'data[ControlId_3]': '', 'data[ControlId_24]': '', 'data[ControlId_5]': '',
       'data[ControlId_22]': '', 'data[ControlId_7]': '', 'data[ControlId_20]': '', 'data[ControlId_9]': '',
@@ -410,19 +409,33 @@ test('no value belonging to the captured type survives anywhere', () => {
   }
 });
 
-test('the appointment CPT grid carries 1253 mapping, not 1273', () => {
-  const p = prepared1253().appointment.params;
-  assert.strictEqual(p['objCpt[0][EncounterTypeCPTMapID]'], '401');
-  assert.strictEqual(p['objCpt[0][CPT_Code]'], 'H0038');
-  assert.strictEqual(p['objCpt[0][M1]'], '', 'English at-home must carry NO modifier');
-  assert.strictEqual(p['objCpt[0][Units]'], '1.00');
-  assert.strictEqual(p['objCpt[0][CPTMapTypeID]'], '1');
-  assert.strictEqual(p['objBookAppointmentss[POSCode]'], '12');
-  assert.strictEqual(p['objBookAppointmentss[POSCodeDescription]'], '12 - Home');
-  assert.ok(!/Modifiers/.test(p['objBookAppointmentss[ProcedureCodeDescription]']));
-  assert.strictEqual(p['objBookAppointmentss[VisitTypeID]'], '1253');
+test('CPT, modifiers, units and POS are left for InSync to resolve', () => {
+  // Writing these back did no work — the values were read out of InSync moments
+  // earlier — and on a NEW booking it posts fields the server owns, which
+  // SaveBookAppointment refuses without saying why.
+  const p = prepared1253();
+  const a = p.appointment.params, e = p.encounter.params;
+  for (const k of ['objCpt[0][EncounterTypeCPTMapID]', 'objCpt[0][CPT_Code]', 'objCpt[0][M1]',
+                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]', 'objBookAppointmentss[POSCode]',
+                   'objBookAppointmentss[POSCodeDescription]',
+                   'objBookAppointmentss[ProcedureCodeDescription]']) {
+    assert.strictEqual(a[k], '', `${k} must be left for InSync`);
+  }
+  for (const k of ['SEEncounterDetails.SECPTCode', 'SEEncounterDetails_SECPTCode',
+                   'SEEncounterDetails.SECPTModifiers', 'SEEncounterDetails.SECPTDescription',
+                   'SEEncounterDetails.SEPOSCode', 'SEEncounterDetails.SEPOSDescription']) {
+    assert.strictEqual(e[k], '', `${k} must be left for InSync`);
+  }
 });
 
+test('the encounter type still travels everywhere it appears', () => {
+  // OldSEEncounterTypeID used to ride on the billing pass; it has to keep moving
+  // now that the pass writes nothing type-shaped.
+  const p = prepared1253();
+  assert.strictEqual(p.encounter.params['SEEncounterDetails.SEEncounterTypeID'], '1253');
+  assert.strictEqual(p.encounter.params['SEEncounterDetails.OldSEEncounterTypeID'], '1253');
+  assert.strictEqual(p.appointment.params['objBookAppointmentss[VisitTypeID]'], '1253');
+});
 test("a new appointment is booked on the PEER's schedule, not the captured one", () => {
   // The capture carries the captured user's schedule (setup 1329 / id 1399).
   // Booking on a peer's session against that schedule is refused by InSync with
@@ -508,25 +521,11 @@ test("VisitHistory is the previous visit's record and is never written into", ()
   assert.strictEqual(p['objBookAppointmentss[PMAlertData][VisitID]'], '');
 
   // The real fields still get this appointment's values.
-  assert.strictEqual(p['objBookAppointmentss[POSCode]'], '12');
   assert.strictEqual(p['objBookAppointmentss[Duration]'], '120');
   assert.strictEqual(p['objBookAppointmentss[ScheduleSetupID]'], '1812');
   assert.strictEqual(p['objBookAppointmentss[PatientId]'], '623762');
   // PMAlertData's program mirrors the top level, as the capture does.
   assert.strictEqual(p['objBookAppointmentss[PMAlertData][ProgramManagementDetailID]'], '5996');
-});
-
-test('the encounter composites are rebuilt, including the underscore variant', () => {
-  const p = prepared1253().encounter.params;
-  assert.strictEqual(p['SEEncounterDetails.SECPTCode'], 'H0038#*#&*&401');
-  assert.strictEqual(p['SEEncounterDetails_SECPTCode'], 'H0038#*#&*&401',
-    'the underscore key is one dot-segment; a suffix rule cannot reach it');
-  assert.strictEqual(p['SEEncounterDetails.SECPTModifiers'], 'H0038#*#&*&401,,,,,1.00,&*%^1,&*%^1');
-  assert.strictEqual(p['SEEncounterDetails.SECPTDescription'], 'H0038#*#&*&401 -  Self-help/peer svc per 15min');
-  assert.strictEqual(p['SEEncounterDetails.SEPOSCode'], '12');
-  assert.strictEqual(p['SEEncounterDetails.SEPOSDescription'], 'Home');
-  assert.strictEqual(p['SEEncounterDetails.SEEncounterTypeID'], '1253');
-  assert.strictEqual(p['SEEncounterDetails.OldSEEncounterTypeID'], '1253');
 });
 
 test("the patient's own program replaces the captured one, everywhere", () => {
@@ -546,11 +545,9 @@ test('the base note form is used, with no offsite justification field', () => {
   assert.strictEqual(p['data[ControlId_13]'], 'Brand, Shmuel');
 });
 
-test('a half-written billing pass is refused rather than sent', () => {
-  // Simulate a field the writer missed: assertBilling must catch the mismatch.
+test('a note with no resolved program enrolment is refused rather than sent', () => {
   const templates = packWith1273();
-  templates.encounter.params['SEEncounterDetails.SECPTCodeX'] = 'unused';
-  const bad = { ...BILLING_1253, cptMapId: '' };
+  const bad = { ...BILLING_1253, programManagementDetailId: '' };
   const { fields } = X.buildNoteFields(n1, {});
   assert.throws(() => X.preparePayloads({
     templates, capturedVisitTypeId: '1273',
@@ -559,7 +556,7 @@ test('a half-written billing pass is refused rather than sent', () => {
       sessionDate: n1.sessionDate, sessionStartMinutes: n1.sessionStartMinutes,
       duration: 180, noteFields: fields },
     visitId: '0', encounterId: '0', signingPin: '',
-  }), /billing does not match/);
+  }), /program enrolment is missing/);
 });
 
 console.log('\nthe encounter window — where billable units come from');
