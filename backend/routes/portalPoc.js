@@ -703,6 +703,7 @@ async function executeRun(runId, { mode, sign, noteIds }) {
   const { data: caps } = await supabase.from('portal_capture_templates')
     .select('step, captured_visit_type_id');
 
+
   await supabase.from('portal_job_runs').update({
     status: 'executing', last_execution_mode: live ? 'live' : 'dry_run',
     last_executed_at: new Date().toISOString(),
@@ -837,13 +838,38 @@ async function executeRun(runId, { mode, sign, noteIds }) {
         // units, POS — plus this patient's program enrolment, asked of InSync
         // rather than replayed from the capture. Resolved per note because the
         // program is per patient and the CPT map is per type.
-        const billing = await IP.resolveBilling(cookie || await adminCookie(), {
+        // Resolved on the PEER's own session with the peer's own scheduler
+        // context — the same one that just opened their calendar. A peer books
+        // their own appointments, so the billing is populated for them; it was
+        // only the captured ADMIN scheduler ids that their session could not
+        // answer for. (The gating field is PatientId: the capture carries 0,
+        // and a real patient is what makes InSync return the CPT map at all.)
+        const billingArgs = {
           template: templates.schedulercalendar?.params,
           patientId: r.patient_id,
           providerId: r.provider_id,
           dateIso: note.sessionDate,
           visitTypeId: r.visit_type_id,
-        });
+        };
+        let billing;
+        try {
+          billing = await IP.resolveBilling(cookie, {
+            ...billingArgs,
+            scheduleSetupId: view.scheduleSetupId || peer.insync_schedule_setup_id || null,
+          });
+        } catch (e) {
+          // Falling back rather than dead-ending the run. The CPT map is keyed
+          // by encounter type and is practice-wide, so the admin session yields
+          // the same numbers — and assertBilling still checks every field before
+          // anything is sent. Logged loudly because the peer's own session is
+          // the intended path, and a fallback that fires quietly is a fallback
+          // nobody ever fixes.
+          await log('warn', 'billing',
+            `Could not resolve billing on ${peer.portal_peer_name}'s own session (${e.message.slice(0, 120)}). ` +
+            `Retrying on the practice admin session.`);
+          billing = await IP.resolveBilling(await adminCookie(), billingArgs);
+          await log('warn', 'billing', 'Billing came from the admin session, not the peer\'s.');
+        }
         if (!billing.programManagementDetailId) {
           throw new X.StepError('billing',
             billing.programCount > 1
