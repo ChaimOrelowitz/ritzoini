@@ -410,26 +410,22 @@ test('no value belonging to the captured type survives anywhere', () => {
   }
 });
 
-test('the booking leaves billing to InSync; the encounter forms carry it', () => {
-  // Two different rules, and conflating them broke both halves in turn.
-  //
-  // The BOOKING dialog is filled in by InSync before the browser posts it, so
-  // the values it carries are InSync's output. Sending our own is enough for
-  // SaveBookAppointment to refuse with DataSave=false and no message.
-  //
-  // The ENCOUNTER forms are the opposite. The extractor blanks every billing
-  // field so the captured type's numbers can never be replayed for a different
-  // type — so if this pass does not write them back, nothing does, and
-  // AddEditStartEncounter answers an empty CPT grid with a 500.
+test('the booking and encounter forms carry the billing model InSync resolved', () => {
+  // InSync owns the values and fills them into its booking dialog. Its browser
+  // then posts that populated model back to SaveBookAppointment; dropping it
+  // produces DataSave=false with no message. The extractor blanks the captured
+  // type's values, so the live values must be restored on both steps.
   const p = prepared1253();
   const a = p.appointment.params, e = p.encounter.params;
 
-  for (const k of ['objCpt[0][EncounterTypeCPTMapID]', 'objCpt[0][CPT_Code]', 'objCpt[0][M1]',
-                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]', 'objBookAppointmentss[POSCode]',
-                   'objBookAppointmentss[POSCodeDescription]',
-                   'objBookAppointmentss[ProcedureCodeDescription]']) {
-    assert.strictEqual(a[k], '', `${k} is InSync's to fill on the booking`);
-  }
+  assert.strictEqual(a['objCpt[0][EncounterTypeCPTMapID]'], '401');
+  assert.strictEqual(a['objCpt[0][CPT_Code]'], 'H0038');
+  assert.strictEqual(a['objCpt[0][M1]'], '');
+  assert.strictEqual(a['objCpt[0][Units]'], '1.00');
+  assert.strictEqual(a['objCpt[0][CPTMapTypeID]'], '1');
+  assert.strictEqual(a['objBookAppointmentss[POSCode]'], '12');
+  assert.strictEqual(a['objBookAppointmentss[POSCodeDescription]'], '12 - Home');
+  assert.match(a['objBookAppointmentss[ProcedureCodeDescription]'], /^H0038 - .+\(Units: 1\.00\) \|$/);
 
   // 1253 is CPT map 401, H0038, no modifier, POS 12 — resolved live, not
   // replayed: the capture was taken against 1273 (map 418, U4, POS 99).
