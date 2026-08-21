@@ -410,17 +410,17 @@ test('no value belonging to the captured type survives anywhere', () => {
   }
 });
 
-test('the CPT grid is left for InSync, but the booking still carries POS', () => {
-  // The objCpt grid is InSync's to fill. Place of service is different: a
-  // booking that succeeded posts it back, because the form displayed it.
+test('anything InSync populates itself is left alone', () => {
+  // A successful booking carries these, but only because InSync had already
+  // filled the form with them. They are its output, not our input.
   const p = prepared1253();
   const a = p.appointment.params, e = p.encounter.params;
   for (const k of ['objCpt[0][EncounterTypeCPTMapID]', 'objCpt[0][CPT_Code]', 'objCpt[0][M1]',
-                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]']) {
-    assert.strictEqual(a[k], '', `${k} must be left for InSync`);
+                   'objCpt[0][Units]', 'objCpt[0][CPTMapTypeID]', 'objBookAppointmentss[POSCode]',
+                   'objBookAppointmentss[POSCodeDescription]',
+                   'objBookAppointmentss[ProcedureCodeDescription]']) {
+    assert.strictEqual(a[k], '', `${k} is InSync's to fill`);
   }
-  assert.strictEqual(a['objBookAppointmentss[POSCode]'], '12');
-  assert.strictEqual(a['objBookAppointmentss[POSCodeDescription]'], '12 - Home');
   for (const k of ['SEEncounterDetails.SECPTCode', 'SEEncounterDetails_SECPTCode',
                    'SEEncounterDetails.SECPTModifiers', 'SEEncounterDetails.SECPTDescription',
                    'SEEncounterDetails.SEPOSCode', 'SEEncounterDetails.SEPOSDescription']) {

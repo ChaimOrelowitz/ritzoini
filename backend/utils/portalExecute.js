@@ -199,39 +199,27 @@ function applyBilling(result, b) {
       setFields(params, pay.primary?.isActive ? 'true' : 'false', 'PrimaryIsActivePayer');
       setFields(params, pay.selfPay ? 'true' : 'false', 'SelfPay');
       setFields(params, pay.selfPay ? 'Yes' : 'No', 'SelfPayStr');
-      // Display names the form posts back alongside the ids.
-      if (pay.primary?.name) {
-        setFields(params, pay.primary.name, 'SchedulerPrimaryPayerName', 'PrimaryInsurance');
-      }
-      if (pay.secondary?.name) setFields(params, pay.secondary.name, 'SecondaryInsurance');
-      if (pay.tertiary?.name) setFields(params, pay.tertiary.name, 'TertiaryInsurance');
     }
 
     // A peer cannot bill under their own name: InSync nominates their
     // supervisor for this patient's payer, and a booking with 0 here is refused.
     if (b.billingProvider?.id) {
       setFields(params, b.billingProvider.id, 'BillingProviderId');
-      if (b.billingProviderName) {
-        setFields(params, b.billingProviderName, 'BillingProviderDescription');
-      }
     }
 
-    if (b.programName) setFields(params, b.programName, 'ProgramDescription');
-
-    // Place of service travels on the BOOKING even though the encounter's
-    // billing is InSync's to resolve — the form posts what it displayed.
-    if (b.posCode) {
-      setFields(params, b.posCode, 'POSCode');
-      if (b.posDescription) setFields(params, b.posDescription, 'POSCodeDescription');
-    }
-    if (b.cptCode) {
-      const mods = [b.m1, b.m2, b.m3, b.m4].filter(x => x && x !== 'null').join(', ');
-      setFields(params,
-        `${b.cptCode} - ${b.cptDescription}${mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`} |`,
-        'ProcedureCodeDescription');
-    }
   }
 }
+
+// Deliberately NOT written, though a successful booking carries them: POSCode
+// and its description, ProcedureCodeDescription, ProgramDescription, the
+// insurance and billing-provider display names, and the copay and allowable
+// figures. The browser posts those because InSync had already populated the
+// form with them — they are its output, not our input, and reconstructing them
+// means asserting values the server already knows.
+//
+// What is written above is only what identifies WHO and WHAT: patient,
+// provider, payer, billing-provider and program ids, each read back from InSync
+// rather than computed here.
 
 // Refuse to send a payload whose program enrolment is missing or still belongs
 // to the captured patient. Billing itself is InSync's to decide, so there is
@@ -630,25 +618,12 @@ async function runBookingPreamble(cookie, ctx, log) {
   return out;
 }
 
-// Write the numbers the preamble produced into the booking. InSync posts these
-// as decimals; blanks are what the scrubbed capture leaves behind.
-function applyBookingNumbers(params, pre) {
-  const copay = pre?.copay ?? '0.00';
-  setFields(params, copay, 'ExpectedCopay', 'ExpectedCopayDetail', 'EncTypeExpectedCopay');
-  setFields(params, '0', 'OldExpectedCopay');
-  if (pre?.allowable) setFields(params, pre.allowable, 'ExpectedAllowable', 'ExpAllowableDetails');
-  const a = pre?.alert;
-  if (a) {
-    if (a.ConsumedUnitOrVisit != null) setFields(params, String(a.ConsumedUnitOrVisit), 'ConsumedUnitOrVisit');
-    if (a.CurrentVisitOrUnit != null) setFields(params, String(a.CurrentVisitOrUnit), 'CurrentVisitOrUnit');
-    if (a.RemainingUnitOrVisit != null) setFields(params, String(a.RemainingUnitOrVisit), 'RemainingUnitOrVisit');
-    if (a.AllowedUnitOrVisit != null) setFields(params, String(a.AllowedUnitOrVisit), 'AllowedUnitOrVisit');
-  }
-  // The capture leaves this at "0"; the successful booking sends it empty.
-  for (const k of Object.keys(params)) {
-    if (/pmalertdata.*patientid$/i.test(k.replace(/[[\]]+/g, '.'))) params[k] = '';
-  }
-}
+// The preamble's answers are InSync populating the form, not values for us to
+// copy into the payload. It fills these itself; asserting figures the server
+// never agreed to is how a booking claims a copay or allowable of our own
+// invention. Kept as a no-op so the call site still reads as a step.
+function applyBookingNumbers() { /* intentionally nothing — see above */ }
+
 
 // Replay the validation calls the close screen makes. Each carries the window,
 // and together they are what puts the encounter — and its times — into the
