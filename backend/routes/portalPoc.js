@@ -927,6 +927,7 @@ async function executeRun(runId, { mode, sign, noteIds }) {
             template: templates.schedulercalendar?.params,
             patientId: r.patient_id,
             providerId: r.provider_id,
+            schedule: view.schedule || null,
             scheduleSetupId,
             dateIso: note.sessionDate,
             visitTypeId: r.visit_type_id,
@@ -936,8 +937,9 @@ async function executeRun(runId, { mode, sign, noteIds }) {
           // rather than just restating that it failed.
           throw new X.StepError('billing',
             `${e.message} (sent as ${peer.portal_peer_name}: provider ${r.provider_id}, ` +
-            `schedule ${scheduleSetupId || 'unresolved'}, patient ${r.patient_id}, ` +
-            `calendar opened via ${view.via})`);
+            `schedule setup ${scheduleSetupId || 'unresolved'}, ` +
+            `schedule id ${view.schedule?.scheduleId || 'unresolved'}, ` +
+            `patient ${r.patient_id}, calendar opened via ${view.via})`);
         }
         if (!billing.programManagementDetailId) {
           throw new X.StepError('billing',

@@ -102,7 +102,7 @@ async function getVisitTypes(cookie, { template, dateIso } = {}) {
 // GetSchedulerCalendar answers with the whole practice's CPT map in
 // AdditionalDetails.lstCPT, keyed by EncounterTypeID — the same call the browser
 // makes to populate the booking form's CPT grid.
-async function getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, useCapturedContext = false } = {}) {
+async function getSchedulerContext(cookie, { template, patientId, providerId, schedule, scheduleSetupId, dateIso, useCapturedContext = false } = {}) {
   if (!template) {
     throw new Error(
       'No captured GetSchedulerCalendar request is stored, so per-type billing cannot be resolved. ' +
@@ -129,8 +129,14 @@ async function getSchedulerContext(cookie, { template, patientId, providerId, sc
   // login that means the peer's; on the admin's it means leaving the captured
   // ones alone, which is what useCapturedContext is for.
   if (!useCapturedContext) {
-    if (providerId)      setKey(/(^|\.)resourceid$/i, providerId);
-    if (scheduleSetupId) setKey(/(^|\.)schedulesetupid$/i, scheduleSetupId);
+    if (providerId) setKey(/(^|\.)resourceid$/i, providerId);
+    // The whole schedule identity, not just the setup id. The captured payload
+    // carries ScheduleID and ScheduleTypeID too, and leaving those pointing at
+    // the captured user's schedule is a half-substituted context.
+    const setup = schedule?.scheduleSetupId || scheduleSetupId;
+    if (setup)                    setKey(/(^|\.)schedulesetupid$/i, setup);
+    if (schedule?.scheduleId)     setKey(/(^|\.)scheduleid$/i, schedule.scheduleId);
+    if (schedule?.scheduleTypeId) setKey(/(^|\.)scheduletypeid$/i, schedule.scheduleTypeId);
   }
 
   const res = await post('/Scheduler/GetSchedulerCalendar', params, cookie);
@@ -200,8 +206,8 @@ async function getPosForType(cookie, visitTypeId) {
 }
 
 // Assemble everything the write chain needs for ONE encounter type.
-async function resolveBilling(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, visitTypeId, useCapturedContext = false }) {
-  const ctx = await getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, useCapturedContext });
+async function resolveBilling(cookie, { template, patientId, providerId, schedule, scheduleSetupId, dateIso, visitTypeId, useCapturedContext = false }) {
+  const ctx = await getSchedulerContext(cookie, { template, patientId, providerId, schedule, scheduleSetupId, dateIso, useCapturedContext });
   const row = ctx.cptMap.get(String(visitTypeId));
   if (!row) {
     throw new Error(
