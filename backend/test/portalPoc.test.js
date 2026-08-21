@@ -469,6 +469,53 @@ test('with no resolved schedule the captured ids are left alone', () => {
   assert.ok(out.appointment.params);
 });
 
+test("VisitHistory is the previous visit's record and is never written into", () => {
+  // Broad suffix matching reaches into it, and InSync answers a contaminated
+  // booking with DataSave=false and no error text.
+  const templates = packWith1273();
+  Object.assign(templates.appointment.params, {
+    'objBookAppointmentss[Duration]': '15',
+    'objBookAppointmentss[PatientId]': '0',
+    'objBookAppointmentss[ScheduleSetupID]': '1329',
+    'objBookAppointmentss[ScheduleID]': '1399',
+    'objBookAppointmentss[VisitHistory][POSCode]': '11 - Office',
+    'objBookAppointmentss[VisitHistory][Duration]': '',
+    'objBookAppointmentss[VisitHistory][RecurrenceStartDate]': '08/12/2026',
+    'objBookAppointmentss[VisitHistory][ProgramManagementDetailID]': '0',
+    'objBookAppointmentss[PMAlertData][PatientID]': '',
+    'objBookAppointmentss[PMAlertData][VisitID]': '',
+    'objBookAppointmentss[PMAlertData][ProgramManagementDetailID]': '',
+  });
+
+  const { fields } = X.buildNoteFields(n1, {});
+  const p = X.preparePayloads({
+    templates, capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253, patientId: '623762', patientName: 'Yisroel Schwei',
+      providerId: '2826', providerName: 'Feldman, Shloma',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: '2026-08-05', sessionStartMinutes: 780, duration: 120, noteFields: fields,
+      schedule: { scheduleSetupId: '1812', scheduleId: '1894', scheduleTypeId: '0' },
+    },
+    visitId: '0', encounterId: '0', signingPin: '',
+  }).appointment.params;
+
+  assert.strictEqual(p['objBookAppointmentss[VisitHistory][POSCode]'], '11 - Office');
+  assert.strictEqual(p['objBookAppointmentss[VisitHistory][RecurrenceStartDate]'], '08/12/2026');
+  assert.strictEqual(p['objBookAppointmentss[VisitHistory][ProgramManagementDetailID]'], '0');
+  assert.strictEqual(p['objBookAppointmentss[VisitHistory][Duration]'], '');
+  assert.strictEqual(p['objBookAppointmentss[PMAlertData][PatientID]'], '');
+  assert.strictEqual(p['objBookAppointmentss[PMAlertData][VisitID]'], '');
+
+  // The real fields still get this appointment's values.
+  assert.strictEqual(p['objBookAppointmentss[POSCode]'], '12');
+  assert.strictEqual(p['objBookAppointmentss[Duration]'], '120');
+  assert.strictEqual(p['objBookAppointmentss[ScheduleSetupID]'], '1812');
+  assert.strictEqual(p['objBookAppointmentss[PatientId]'], '623762');
+  // PMAlertData's program mirrors the top level, as the capture does.
+  assert.strictEqual(p['objBookAppointmentss[PMAlertData][ProgramManagementDetailID]'], '5996');
+});
+
 test('the encounter composites are rebuilt, including the underscore variant', () => {
   const p = prepared1253().encounter.params;
   assert.strictEqual(p['SEEncounterDetails.SECPTCode'], 'H0038#*#&*&401');

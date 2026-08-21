@@ -401,22 +401,13 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     }
   }
 
-  // Fields that LOOK like ids/dates but are deliberately blank or zero in the
-  // request that actually succeeded. Suffix matching above would have filled
-  // them; put the captured values back.
+  // VisitTypeDescription is deliberately stale in the request that succeeded —
+  // VisitTypeID is what InSync binds on. (The nested VisitHistory / PMAlertData
+  // blocks are restored at the very end, after every substitution pass.)
   if (result.appointment) {
-    const appt = result.appointment.params;
     const orig = templates.appointment.params;
-    for (const key of [
-      'objBookAppointmentss[PMAlertData][PatientID]',
-      'objBookAppointmentss[PMAlertData][VisitID]',
-      'objBookAppointmentss[VisitHistory][AppointmentTime]',
-      'objBookAppointmentss[VisitHistory][Duration]',
-      'objBookAppointmentss[VisitHistory][bookVisitdate]',
-      'objBookAppointmentss[VisitTypeDescription]',
-    ]) {
-      if (key in orig) appt[key] = orig[key];
-    }
+    const k = 'objBookAppointmentss[VisitTypeDescription]';
+    if (k in orig) result.appointment.params[k] = orig[k];
   }
 
   if (result.encounter) {
@@ -510,7 +501,34 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     assertBilling(result, b, [capturedVisitTypeId].filter(Boolean));
   }
 
+  // LAST, after every substitution including billing: put the nested blocks back.
+  //
+  // VisitHistory is the PREVIOUS visit's record, not this one's. Broad suffix
+  // matching reaches into it — POSCode, RecurrenceStartDate and the program id
+  // were all being overwritten with the new appointment's values — and InSync
+  // answers a contaminated booking with DataSave=false and no error text at all.
+  // app.py guards a handful of these by name; the block is safer restored whole.
+  restoreNestedBlocks(result, templates);
+
   return result;
+}
+
+// Anything under VisitHistory belongs to the previous visit and is never ours to
+// write. PMAlertData's PatientID and VisitID are blank in the request that
+// succeeded and must stay blank; its ProgramManagementDetailID carried the
+// patient's program there, so that one is left as substituted.
+function restoreNestedBlocks(result, templates) {
+  for (const [step, { params }] of Object.entries(result)) {
+    const orig = templates[step]?.params;
+    if (!orig) continue;
+    for (const key of Object.keys(params)) {
+      if (!(key in orig)) continue;
+      const bare = key.replace(/[[\]]+/g, '.').replace(/\.+$/, '').toLowerCase();
+      const isVisitHistory = bare.includes('.visithistory.');
+      const isProtectedAlert = /\.pmalertdata\.(patientid|visitid)$/.test(bare);
+      if (isVisitHistory || isProtectedAlert) params[key] = orig[key];
+    }
+  }
 }
 
 // --- execution -------------------------------------------------------------
@@ -716,6 +734,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor, applyCosign, runClosePreamble,
+  noteStepFor, templatesFor, applyCosign, runClosePreamble, restoreNestedBlocks,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };
