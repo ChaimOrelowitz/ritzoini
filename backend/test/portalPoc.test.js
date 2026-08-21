@@ -421,6 +421,52 @@ test('the appointment CPT grid carries 1253 mapping, not 1273', () => {
   assert.strictEqual(p['objBookAppointmentss[VisitTypeID]'], '1253');
 });
 
+test("a new appointment is booked on the PEER's schedule, not the captured one", () => {
+  // The capture carries the captured user's schedule (setup 1329 / id 1399).
+  // Booking on a peer's session against that schedule is refused by InSync with
+  // an unexplained DataSave=false.
+  const templates = packWith1273();
+  templates.appointment.params['objBookAppointmentss[ScheduleSetupID]'] = '1329';
+  templates.appointment.params['objBookAppointmentss[ScheduleID]'] = '1399';
+  templates.appointment.params['objBookAppointmentss[ScheduleTypeID]'] = '0';
+
+  const { fields } = X.buildNoteFields(n1, {});
+  const out = X.preparePayloads({
+    templates, capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253,
+      patientId: '622616', patientName: 'Nissim Gadayev',
+      providerId: '2620', providerName: 'Brand, Shmuel',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: n1.sessionDate, sessionStartMinutes: n1.sessionStartMinutes,
+      duration: n1.durationMinutes, noteFields: fields,
+      schedule: { scheduleSetupId: '1812', scheduleId: '1901', scheduleTypeId: '0', resourceId: '2620' },
+    },
+    visitId: '0', encounterId: '99', signingPin: '',
+  });
+  const p = out.appointment.params;
+  assert.strictEqual(p['objBookAppointmentss[ScheduleSetupID]'], '1812');
+  assert.strictEqual(p['objBookAppointmentss[ScheduleID]'], '1901');
+  assert.ok(!JSON.stringify(p).includes('1329'), "the captured user's schedule must not survive");
+});
+
+test('with no resolved schedule the captured ids are left alone', () => {
+  // Reusing an existing appointment does not need a schedule, so absence must
+  // not blank the field and break the payload.
+  const { fields } = X.buildNoteFields(n1, {});
+  const out = X.preparePayloads({
+    templates: packWith1273(), capturedVisitTypeId: '1273',
+    ctx: {
+      billing: BILLING_1253, patientId: '1', patientName: 'p', providerId: '2', providerName: 'q',
+      visitTypeId: '1253', visitTypeName: 'Peer Support - Individual - English - In-person at Home',
+      sessionDate: n1.sessionDate, sessionStartMinutes: n1.sessionStartMinutes,
+      duration: 180, noteFields: fields, schedule: null,
+    },
+    visitId: '0', encounterId: '0', signingPin: '',
+  });
+  assert.ok(out.appointment.params);
+});
+
 test('the encounter composites are rebuilt, including the underscore variant', () => {
   const p = prepared1253().encounter.params;
   assert.strictEqual(p['SEEncounterDetails.SECPTCode'], 'H0038#*#&*&401');

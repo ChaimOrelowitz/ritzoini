@@ -867,7 +867,14 @@ async function executeRun(runId, { mode, sign, noteIds }) {
           await log('warn', 'billing',
             `Could not resolve billing on ${peer.portal_peer_name}'s own session (${e.message.slice(0, 120)}). ` +
             `Retrying on the practice admin session.`);
-          billing = await IP.resolveBilling(await adminCookie(), billingArgs);
+          // The admin's OWN captured context, whole. Passing the peer's
+          // ResourceId alongside the captured ScheduleSetupID is the one
+          // combination that reliably returns nothing — the ids have to belong
+          // to the session making the call. providerId still rides along
+          // because the PROGRAM lookup is per patient+provider, not per session.
+          billing = await IP.resolveBilling(await adminCookie(), {
+            ...billingArgs, useCapturedContext: true,
+          });
           await log('warn', 'billing', 'Billing came from the admin session, not the peer\'s.');
         }
         if (!billing.programManagementDetailId) {
@@ -894,6 +901,9 @@ async function executeRun(runId, { mode, sign, noteIds }) {
             visitTypeId: r.visit_type_id, visitTypeName: r.visit_type_name,
             sessionDate: note.sessionDate, sessionStartMinutes: note.sessionStartMinutes,
             duration: r.duration, noteFields: r.note_fields || {},
+            // The peer's own schedule, so a NEW appointment is booked on their
+            // calendar rather than against the captured user's schedule.
+            schedule: view.schedule || null,
             // Drives which note FORM is replayed — base or Offsite.
             offsite: !!r.visit_type_offsite,
           },

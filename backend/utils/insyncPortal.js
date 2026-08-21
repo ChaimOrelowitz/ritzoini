@@ -102,7 +102,7 @@ async function getVisitTypes(cookie, { template, dateIso } = {}) {
 // GetSchedulerCalendar answers with the whole practice's CPT map in
 // AdditionalDetails.lstCPT, keyed by EncounterTypeID — the same call the browser
 // makes to populate the booking form's CPT grid.
-async function getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso } = {}) {
+async function getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, useCapturedContext = false } = {}) {
   if (!template) {
     throw new Error(
       'No captured GetSchedulerCalendar request is stored, so per-type billing cannot be resolved. ' +
@@ -122,9 +122,16 @@ async function getSchedulerContext(cookie, { template, patientId, providerId, sc
   for (const k of Object.keys(params)) {
     if (/visitdate/i.test(k)) params[k] = when;
   }
-  if (patientId)       setKey(/(^|\.)patientid$/i, patientId);
-  if (providerId)      setKey(/(^|\.)resourceid$/i, providerId);
-  if (scheduleSetupId) setKey(/(^|\.)schedulesetupid$/i, scheduleSetupId);
+  // PatientId is what actually gates the response: the capture carries 0 and
+  // InSync answers with an empty AdditionalDetails until a real patient is named.
+  if (patientId) setKey(/(^|\.)patientid$/i, patientId);
+  // The scheduler ids must belong to the SESSION making the call. On a peer's
+  // login that means the peer's; on the admin's it means leaving the captured
+  // ones alone, which is what useCapturedContext is for.
+  if (!useCapturedContext) {
+    if (providerId)      setKey(/(^|\.)resourceid$/i, providerId);
+    if (scheduleSetupId) setKey(/(^|\.)schedulesetupid$/i, scheduleSetupId);
+  }
 
   const res = await post('/Scheduler/GetSchedulerCalendar', params, cookie);
   const body = await json(res, 'GetSchedulerCalendar');
@@ -193,8 +200,8 @@ async function getPosForType(cookie, visitTypeId) {
 }
 
 // Assemble everything the write chain needs for ONE encounter type.
-async function resolveBilling(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, visitTypeId }) {
-  const ctx = await getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso });
+async function resolveBilling(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, visitTypeId, useCapturedContext = false }) {
+  const ctx = await getSchedulerContext(cookie, { template, patientId, providerId, scheduleSetupId, dateIso, useCapturedContext });
   const row = ctx.cptMap.get(String(visitTypeId));
   if (!row) {
     throw new Error(
@@ -421,6 +428,11 @@ async function loadCalendarView(cookie, { dateIso, resourceId, template, schedul
       resourceId: String(r.ResourceId ?? ''),
       resourceName: String(r.ResourceName ?? ''),
       scheduleSetupId: String(r.ScheduleSetupID ?? ''),
+      // Booking needs the schedule's own ids too, not just the setup id — the
+      // captured payload carries the CAPTURED user's, and InSync refuses a
+      // booking made on one session against another's schedule.
+      scheduleId: String(r.ScheduleID ?? ''),
+      scheduleTypeId: String(r.ScheduleTypeID ?? ''),
     })),
     // Item6 is the scheduler directory: schedule <-> provider.
     schedulers: pick('Item6').map(r => ({
@@ -478,8 +490,10 @@ async function peerCalendar(cookie, { dateIso, providerId, template, scheduleSet
   for (const attempt of attempts) {
     const view = await loadCalendarView(cookie, { dateIso, resourceId: providerId, template, scheduleSetupId: attempt.scheduleSetupId });
     lastSchedulers = view.schedulers.length ? view.schedulers : lastSchedulers;
-    if (view.shown.some(r => r.resourceId === wanted)) {
-      return { ...view, via: attempt.via, scheduleSetupId: attempt.scheduleSetupId || view.shown.find(r => r.resourceId === wanted)?.scheduleSetupId || null };
+    const mine = view.shown.find(r => r.resourceId === wanted);
+    if (mine) {
+      return { ...view, via: attempt.via, schedule: mine,
+        scheduleSetupId: attempt.scheduleSetupId || mine.scheduleSetupId || null };
     }
   }
 
@@ -487,8 +501,9 @@ async function peerCalendar(cookie, { dateIso, providerId, template, scheduleSet
   const row = lastSchedulers.find(r => r.resourceId === wanted);
   if (row) {
     const view = await loadCalendarView(cookie, { dateIso, resourceId: providerId, template, scheduleSetupId: row.scheduleSetupId });
-    if (view.shown.some(r => r.resourceId === wanted)) {
-      return { ...view, via: `resolved schedule ${row.scheduleSetupId}`, scheduleSetupId: row.scheduleSetupId };
+    const mine = view.shown.find(r => r.resourceId === wanted);
+    if (mine) {
+      return { ...view, via: `resolved schedule ${row.scheduleSetupId}`, schedule: mine, scheduleSetupId: row.scheduleSetupId };
     }
   }
 

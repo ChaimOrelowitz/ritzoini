@@ -363,6 +363,17 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     setFields(params, t.time, 'VisitTime', 'AppointmentTime', 'SEVisitStartTime', 'SEEncounterStartTime', 'StartTime');
     setFields(params, t.dateTime, 'VisitDateTime', 'SEVisitStartDateTime', 'SEEncounterStartDateTime');
     setFields(params, ctx.duration, 'Duration', 'SEDuration', 'VisitDuration');
+
+    // The schedule the appointment is booked ON. The capture carries the
+    // CAPTURED user's (setup 1329 / schedule 1399), and InSync refuses a booking
+    // made on one login against another login's schedule — which is what an
+    // unexplained DataSave=false turned out to mean. Resolved per peer from
+    // their own calendar.
+    if (ctx.schedule) {
+      if (ctx.schedule.scheduleSetupId) setFields(params, ctx.schedule.scheduleSetupId, 'ScheduleSetupID');
+      if (ctx.schedule.scheduleId)      setFields(params, ctx.schedule.scheduleId, 'ScheduleID');
+      if (ctx.schedule.scheduleTypeId)  setFields(params, ctx.schedule.scheduleTypeId, 'ScheduleTypeID');
+    }
   }
 
   // Fields that LOOK like ids/dates but are deliberately blank or zero in the

@@ -92,8 +92,20 @@ function appointmentResult(body) {
         }
       }
     })(body);
-    const reason = [...new Set(diagnostics)].join('; ')
-      || 'InSync returned DataSave=false without an explanation';
+    // No *Message/*Error/*Warning field carried anything: fall back to naming the
+    // non-empty top-level keys, so a silent refusal is still diagnosable instead
+    // of being a dead end.
+    let reason = [...new Set(diagnostics)].join('; ');
+    if (!reason) {
+      const hints = Object.entries(body)
+        .filter(([, v]) => v !== null && v !== '' && v !== false && v !== 0 &&
+                           !(Array.isArray(v) && !v.length))
+        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : clean(v).slice(0, 80)}`)
+        .slice(0, 8);
+      reason = hints.length
+        ? `InSync gave no error text. Response carried: ${hints.join('; ')}`
+        : 'InSync returned DataSave=false and an otherwise empty response';
+    }
     throw new Error(`Appointment was not created: ${reason}`);
   }
   const visitId = recursiveId(body.BookAppoint || {}, new Set(['visitid']));
