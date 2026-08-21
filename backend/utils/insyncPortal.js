@@ -181,13 +181,33 @@ async function getSchedulerContext(cookie, { template, patientId, providerId, sc
     programManagementId:       num(extra.ProgramManagementID ?? book.ProgramManagementID),
   };
 
+  // The patient's payers. The captured booking is a self-pay test patient, so
+  // replaying it books an insured patient as self-pay with no payer id — which
+  // InSync refuses without saying why. Read per patient, like the program.
+  const payerOf = key => {
+    const row = (extra[key] || [])[0];
+    if (!row || !row.PatientPayerId) return null;
+    return {
+      patientPayerId: String(row.PatientPayerId),
+      payerPlanId: String(row.PayerPlanId ?? ''),
+      name: String(row.PayerPlanName ?? '').trim(),
+      isActive: row.IsActivePayer !== false,
+    };
+  };
+  const payers = {
+    primary: payerOf('SchedularPrimaryInsurance'),
+    secondary: payerOf('SchedularSecondaryInsurance'),
+    tertiary: payerOf('SchedularTertiaryInsurance'),
+  };
+  payers.selfPay = !payers.primary && !payers.secondary && !payers.tertiary;
+
   const posByType = new Map();
   for (const row of extra.lstPOSDetail || []) {
     const id = String(row?.EncounterTypeID ?? row?.POSID ?? '');
     if (id) posByType.set(id, row);
   }
 
-  return { cptMap, program, posDetail: extra.lstPOSDetail || [], posByType };
+  return { cptMap, program, payers, posDetail: extra.lstPOSDetail || [], posByType };
 }
 
 // Place of service, per encounter type. 1253 (at Home) is POS 12; 1246/1252/1273
@@ -219,7 +239,8 @@ async function resolveBilling(cookie, { template, patientId, providerId, schedul
     getPosForType(cookie, visitTypeId),
     getPatientProgram(cookie, { patientId, providerId, facilityId, dateIso }),
   ]);
-  return { ...row, ...program, posCode, posId, posDescription: describePos(ctx.posDetail, posCode) };
+  return { ...row, ...program, payers: ctx.payers, posCode, posId,
+    posDescription: describePos(ctx.posDetail, posCode) };
 }
 
 // The booking context's facility, read from the captured request rather than

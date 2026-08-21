@@ -951,7 +951,8 @@ async function executeRun(runId, { mode, sign, noteIds }) {
                 `another patient's program — check the client's program in InSync.`);
         }
         await log('info', 'billing',
-          `Type ${r.visit_type_id}: CPT ${billing.cptCode} map ${billing.cptMapId}` +
+          `Type ${r.visit_type_id}: ${billing.payers?.selfPay ? 'self-pay' : 'payer ' + (billing.payers?.primary?.name || '?')}` +
+          `, CPT ${billing.cptCode} map ${billing.cptMapId}` +
           `${billing.m1 ? ` modifier ${billing.m1}` : ' no modifier'}` +
           `, ${billing.units} unit(s), POS ${billing.posCode}, program ${billing.programManagementDetailId}`);
 

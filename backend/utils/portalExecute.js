@@ -185,6 +185,22 @@ function applyBilling(result, b) {
     setFields(params, b.programManagementDetailId, 'ProgramManagementDetailID');
     setFields(params, b.programManagementId, 'ProgramManagementID');
   }
+
+  // The patient's payers, same reasoning: the capture is a self-pay test
+  // patient, and booking an insured patient as self-pay with no payer id is
+  // refused with no message.
+  const pay = b.payers;
+  if (pay) {
+    for (const { params } of Object.values(result)) {
+      setFields(params, pay.primary?.patientPayerId || '', 'PrimaryPatientPayerID');
+      setFields(params, pay.secondary?.patientPayerId || '', 'SecondaryPatientPayerID');
+      setFields(params, pay.tertiary?.patientPayerId || '', 'TertiaryPatientPayerID');
+      setFields(params, pay.primary?.isActive ? 'true' : 'false', 'PrimaryIsActivePayer');
+      if (pay.primary?.name) setFields(params, pay.primary.name, 'SchedulerPrimaryPayerName');
+      setFields(params, pay.selfPay ? 'true' : 'false', 'SelfPay');
+      setFields(params, pay.selfPay ? 'Yes' : 'No', 'SelfPayStr');
+    }
+  }
 }
 
 // Refuse to send a payload whose program enrolment is missing or still belongs
@@ -329,14 +345,13 @@ function preparePayloads({ templates, ctx, visitId, encounterId, signingPin, cap
     }
   }
 
-  // VisitTypeDescription is deliberately stale in the request that succeeded —
-  // VisitTypeID is what InSync binds on. (The nested VisitHistory / PMAlertData
-  // blocks are restored at the very end, after every substitution pass.)
-  if (result.appointment) {
-    const orig = templates.appointment.params;
-    const k = 'objBookAppointmentss[VisitTypeDescription]';
-    if (k in orig) result.appointment.params[k] = orig[k];
-  }
+  // app.py restores VisitTypeDescription from the capture, which was safe there
+  // because it only ever ran one encounter type — the captured description WAS
+  // the right one. Here it means telling InSync the type is 1253 while naming
+  // 1273, so it carries the selected type's own name instead.
+  //
+  // (The nested VisitHistory / PMAlertData blocks are restored at the very end,
+  // after every substitution pass.)
 
   if (result.encounter) {
     const enc = result.encounter.params;
@@ -460,6 +475,72 @@ function restoreNestedBlocks(result, templates) {
 }
 
 // --- execution -------------------------------------------------------------
+
+// The browser runs a dozen calls before SaveBookAppointment — billable audit,
+// default service provider, credential config, fee schedule, payer and program
+// validation, overlap checks. Same lesson as the close: InSync builds the
+// booking out of session state these establish, and posting the payload alone
+// comes back DataSave=false with every message field null.
+async function runBookingPreamble(cookie, ctx, log) {
+  const { patientId, providerId, visitTypeId, visitDate, startTime, duration,
+          programDetailId, programId, payerId, cptCode, m1 } = ctx;
+  const steps = [
+    ['/EncounterDetail/SetSEAuditLogBillable', {
+      IsBillable: 'true', IsManuallyChanged: 'false', IsSetFrom: '2',
+      EncounterId: '0', IsbillableFrom: '4',
+    }],
+    ['/Scheduler/GetDefaultServiceProvider', {
+      payerPlanId: '-1', ResourceId: providerId, EncounterType: visitTypeId, Patientid: patientId,
+    }],
+    ['/CredentialConfiguration/GetCredentialConfigForVisit', {
+      PracticeId: '0', ResourceId: providerId, EncounterTypeId: visitTypeId,
+      VisitDate: visitDate, CredentialConfigID: '', IsFromScheduler: 'true',
+    }],
+    ['/FeeSchedule/GetFeeScheduleExpectedAllowable', {}],
+    ['/Scheduler/PreviousVisitBookAppointmentAlert', {
+      PatientGroupId: '0', PatientIds: patientId, VisitTypeId: visitTypeId,
+      IsWarningYes: '0', DateToCheckFrom: visitDate, ProviderId: providerId,
+    }],
+    ['/CommonFunctions/GetValidationForPayerRestrictConfiguration', {
+      'CPTModifierList[0][CPTCode]': cptCode || '', 'CPTModifierList[0][M1]': m1 || '0',
+      'CPTModifierList[0][M2]': '0', 'CPTModifierList[0][M3]': '0', 'CPTModifierList[0][M4]': '0',
+      PatientPayerID: payerId || '', PatientID: patientId, VisitDate: visitDate,
+      EncounterTypeID: visitTypeId, IsFromScheduler: 'true',
+    }],
+    ['/ProgramManagement/ProgramManagementGetAlertData', {
+      FromWhichPage: '1', PatientId: patientId, ProgramManagementDetailID: programDetailId,
+      EncounterTypeID: visitTypeId, Duration: String(duration), VisitID: '0',
+      EncounterID: '0', ChargeID: '0', VisitStatus: '3', IsBillable: 'true',
+    }],
+    ['/ProgramManagement/GetProgramCptBaseAlertAndWarningDetail', {
+      ModuleType: '1', CPTCodes: cptCode || '', ProgramID: programId || '',
+      EncounterTypeID: visitTypeId, IsBillable: 'true', VisitDate: visitDate,
+      VisitStatus: '3', VisitID: '',
+    }],
+    ['/ProgramManagement/ProgramManagementValidate', {
+      VisitDate: visitDate, ProgramManagementDetailID: programDetailId,
+    }],
+    ['/EncounterDetail/GetCarePlanReviewAlterMessage', {
+      PatientId: patientId, ProviderId: providerId,
+      EncounterTypeId: visitTypeId, isFromBookAppoinment: 'true',
+    }],
+    ['/Scheduler/CheckOverlappingOnSameDate', {
+      VisitDate: visitDate, PatientIDs: patientId, StartTime: startTime,
+      VisitTypeID: visitTypeId, VisitID: '0', ScheduleID: '0',
+      Duration: String(duration), DisplayEncounterTimeLog: 'true',
+    }],
+  ];
+
+  for (const [path, params] of steps) {
+    const res = await post(path, params, cookie);
+    const text = (await res.text()).trim();
+    // These answer empty or a benign object. A restriction or alert here is
+    // InSync objecting to the booking, and it says so before the save does.
+    if (/"(RestrictWhileBookingAppOrEnc|ShowAlert)"\s*:\s*true|RestrictCptCodes"\s*:\s*"[^"]+"/i.test(text)) {
+      await log('warn', 'appointment', `${path.split('/').pop()}: ${text.slice(0, 200)}`);
+    }
+  }
+}
 
 // Replay the validation calls the close screen makes. Each carries the window,
 // and together they are what puts the encounter — and its times — into the
@@ -590,6 +671,15 @@ async function executeNote({ templates: pack, ctx, cookie, existing, signingPin,
     await log('info', 'appointment', `Reusing existing appointment VisitID ${visitId}`);
   } else {
     const prep = preparePayloads({ templates, ctx, capturedVisitTypeId, visitId: '0', encounterId: '0', signingPin: '' });
+    const when = appointmentClock(ctx.sessionDate, ctx.sessionStartMinutes, ctx.duration);
+    await runBookingPreamble(cookie, {
+      patientId: ctx.patientId, providerId: ctx.providerId, visitTypeId: ctx.visitTypeId,
+      visitDate: when.date, startTime: when.time, duration: ctx.duration,
+      programDetailId: ctx.billing?.programManagementDetailId || '',
+      programId: ctx.billing?.programManagementId || '',
+      payerId: ctx.billing?.payers?.primary?.patientPayerId || '',
+      cptCode: ctx.billing?.cptCode || '', m1: ctx.billing?.m1 || '0',
+    }, log);
     const { body } = await send(prep, 'appointment', cookie, log);
     visitId = appointmentResult(body);
     await log('info', 'appointment', `Created appointment VisitID ${visitId}`);
@@ -662,6 +752,6 @@ module.exports = {
   NOTE_FIELDS, ANSWER_CONTROLS, PEER_INTERVENTIONS, REQUIRED_STEPS,
   buildNoteFields, interventionLabels, preparePayloads, executeNote, appointmentClock,
   patchDynamicHtml, escHtml, unescHtml, StepError,
-  noteStepFor, templatesFor, applyCosign, runClosePreamble, restoreNestedBlocks,
+  noteStepFor, templatesFor, applyCosign, runClosePreamble, runBookingPreamble, restoreNestedBlocks,
   isOffsiteType: name => parseInsyncTypeName(name).offsite,
 };
