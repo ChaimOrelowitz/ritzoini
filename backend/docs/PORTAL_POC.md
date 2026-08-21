@@ -254,6 +254,12 @@ encounters. So none of it is taken from the capture. `resolveBilling()` in
 The extractor blanks all eighteen fields, so a regression fails loudly rather
 than quietly billing the captured type's numbers.
 
+InSync remains the source of truth, but `SaveBookAppointment` still expects the
+populated booking model back: after the dialog resolves CPT, modifiers, units,
+map id and POS, the final appointment request posts those returned values just
+as InSync's browser does. Omitting them leaves an empty CPT/POS model and InSync
+silently answers `DataSave=false`.
+
 ### Three things the rewrite has to get right
 
 - **`SEEncounterDetails_SECPTCode` uses an underscore.** `keyMatches()` normalises

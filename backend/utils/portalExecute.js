@@ -165,11 +165,10 @@ function two(n) { return String(n).padStart(2, '0'); }
 // InSync owns billing. CPT, modifiers, units, the CPT-map id and place of
 // service are resolved from the encounter type, and the billable units from the
 // encounter window at close -- which is why the window is the thing worth
-// getting right. The extractor blanks all of those fields so the captured type's
-// numbers cannot be replayed, and nothing here fills them back in.
-//
-// resolveBilling is still called: it is how the patient's program enrolment is
-// found, and its CPT/POS values are logged so a run says what InSync will bill.
+// getting right. The extractor blanks all captured values so the captured
+// type's numbers cannot be replayed; resolveBilling reads the selected type's
+// values live from InSync and applyBilling puts that populated model back onto
+// the booking and encounter forms, matching what InSync's browser posts.
 
 function cptComposite(b) { return `${b.cptCode}#*#&*&${b.cptMapId}`; }
 
@@ -204,27 +203,21 @@ function applyBilling(result, b) {
     if (b.billingProvider?.id) setFields(params, b.billingProvider.id, 'BillingProviderId');
   }
 
-  // The CPT grid and place of service, on the ENCOUNTER forms only.
+  // The CPT grid and place of service, on every form that carries them.
   //
-  // These are InSync's to decide, and the BOOKING must not assert them -- it
-  // posts them only because InSync had already filled the dialog in, so sending
-  // our own is how SaveBookAppointment ends up refusing with DataSave=false.
-  //
-  // The encounter forms are the opposite case. They are replays of a form that
-  // already had these fields filled, and OUR OWN EXTRACTOR blanks them so the
-  // captured type's numbers can never be replayed for a different type. Leaving
-  // them blank is not deferring to InSync -- it is posting an empty CPT grid,
-  // and AddEditStartEncounter answers that with a 500. So they are written back
-  // here, from what InSync itself just said for the selected type: resolveBilling
-  // reads the CPT map, modifiers, units and POS live, per type and per patient.
+  // InSync decides these values when the booking dialog is populated, but its
+  // browser posts that populated model back to SaveBookAppointment. The two
+  // proven booking implementations do the same. Omitting the values after
+  // reading them live leaves an empty CPT/POS model and SaveBookAppointment
+  // answers DataSave=false with no message. The encounter forms also need the
+  // same values because the extractor deliberately blanks the captured type's
+  // billing. Every value written here came from InSync for this patient/type.
   const composite = cptComposite(b);
   const mods = modifierLabels(b);
   const procedureDesc = `${b.cptCode} - ${b.cptDescription}`
     + (mods ? ` (Modifiers: ${mods}; Units: ${b.units})` : ` (Units: ${b.units})`) + ' |';
 
-  for (const [step, { params }] of Object.entries(result)) {
-    if (step === 'appointment') continue;
-
+  for (const [, { params }] of Object.entries(result)) {
     setFields(params, b.cptMapId,       'EncounterTypeCPTMapID');
     setFields(params, b.cptCode,        'CPT_Code', 'CPTCode');
     setFields(params, b.cptDescription, 'CPT_Description');
@@ -259,8 +252,8 @@ function applyBilling(result, b) {
 // the extractor blanks every billing field, so a step we forget to fill goes out
 // as an empty CPT grid and InSync answers with a 500 and no explanation.
 //
-// The BOOKING is exempt by design — its billing is InSync's to fill in, so
-// there is nothing there to check.
+// The booking is checked too: InSync fills these values in its dialog, and the
+// final save must post that populated model back just like the browser does.
 function assertBilling(result, b, forbidden = []) {
   const problems = [];
 
@@ -286,7 +279,6 @@ function assertBilling(result, b, forbidden = []) {
     SEPOSCode: b.posCode,
   };
   for (const [step, { params }] of Object.entries(result)) {
-    if (step === 'appointment') continue;
     for (const [name, want] of Object.entries(expect)) {
       for (const [k, v] of Object.entries(params)) {
         if (!keyMatches(k, [name])) continue;
