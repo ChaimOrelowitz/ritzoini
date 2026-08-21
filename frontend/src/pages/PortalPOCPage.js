@@ -316,18 +316,29 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
                   <label style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--gray-600)' }}>
                     {meta.label || control}
                     <span style={{ fontWeight: 400, color: 'var(--gray-400)' }}>
-                      {' '}· {control}{isManual ? ' · entered here' : ` · portal: ${meta.source}`}
+                      {' '}· {control}
+                      {!isManual && ` · portal: ${meta.source}`}
+                      {isManual && meta.mirrors && !r.manual?.[control] && ' · auto-filled from the interventions — edit to elaborate'}
+                      {isManual && meta.mirrors && r.manual?.[control] && ' · edited'}
+                      {isManual && !meta.mirrors && ' · entered here'}
                     </span>
                   </label>
                   {isManual ? (
-                    <textarea className="form-input" rows={2} defaultValue={r.manual?.[control] || ''}
+                    <textarea
+                      className="form-input" rows={2}
+                      // Show what will actually be SENT, not just the operator
+                      // override. ControlId_7 is auto-filled from the
+                      // interventions, and rendering only `manual` made a
+                      // populated field look empty on screen.
+                      key={`${control}-${r.manual?.[control] ?? ''}-${value ?? ''}`}
+                      defaultValue={r.manual?.[control] || value || ''}
                       disabled={busy || row.status === 'done'}
                       placeholder={meta.offsiteOnly
                         ? 'Required by the Offsite template — the portal export carries no field for it'
                         : 'The portal export carries no field for this'}
                       onBlur={e => {
                         const v = e.target.value;
-                        if (v !== (r.manual?.[control] || '')) patch({ manual: { [control]: v } });
+                        if (v !== (r.manual?.[control] || value || '')) patch({ manual: { [control]: v } });
                       }}
                       style={{ width: '100%', fontSize: '0.78rem', fontFamily: 'inherit' }} />
                   ) : (
