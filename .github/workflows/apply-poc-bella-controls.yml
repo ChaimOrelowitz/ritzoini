@@ -1,0 +1,204 @@
+name: Apply Bella POC controls
+
+on:
+  push:
+    branches:
+      - portal-poc-session-overrides-status-filter
+    paths:
+      - .github/workflows/apply-poc-bella-controls.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: portal-poc-session-overrides-status-filter
+          fetch-depth: 0
+
+      - name: Apply focused Portal POC changes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected 1 match, found {count}: {old[:120]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          # Backend: edit the staged note itself. The rest of the existing POC
+          # already uses these values for calendar lookup, booking, encounter
+          # timing, overlap checks, close time and processed history.
+          backend = 'backend/routes/portalPoc.js'
+
+          replace_once(backend,
+          "    const resolution = { ...row.resolution };\n    if (req.body.visit_type_override !== undefined) {\n",
+          "    const resolution = { ...row.resolution };\n"
+          "    const note = { ...(row.note || {}) };\n"
+          "    let sessionChanged = false;\n\n"
+          "    // Bella may correct the CRM's date, start time or duration before\n"
+          "    // the note goes to InSync. The staged note is the source of truth:\n"
+          "    // whatever is on this review row is what every downstream step uses.\n"
+          "    if (req.body.session_date !== undefined) {\n"
+          "      const v = String(req.body.session_date || '').trim();\n"
+          "      if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(v) || Number.isNaN(Date.parse(`${v}T00:00:00Z`))) {\n"
+          "        return res.status(400).json({ error: 'Session date must be a valid YYYY-MM-DD date' });\n"
+          "      }\n"
+          "      note.sessionDate = v;\n"
+          "      sessionChanged = true;\n"
+          "    }\n"
+          "    if (req.body.session_start_minutes !== undefined) {\n"
+          "      const mins = Number(req.body.session_start_minutes);\n"
+          "      if (!Number.isInteger(mins) || mins < 0 || mins > 1439) {\n"
+          "        return res.status(400).json({ error: 'Session start time is invalid' });\n"
+          "      }\n"
+          "      note.sessionStartMinutes = mins;\n"
+          "      const h = Math.floor(mins / 60), m = mins % 60;\n"
+          "      const ap = h >= 12 ? 'PM' : 'AM';\n"
+          "      note.sessionStartClock = `${h % 12 || 12}:${String(m).padStart(2, '0')} ${ap}`;\n"
+          "      sessionChanged = true;\n"
+          "    }\n"
+          "    if (req.body.duration_minutes !== undefined) {\n"
+          "      const duration = Number(req.body.duration_minutes);\n"
+          "      if (!Number.isInteger(duration) || duration <= 0 || duration > 1440) {\n"
+          "        return res.status(400).json({ error: 'Duration must be a positive whole number of minutes' });\n"
+          "      }\n"
+          "      note.durationMinutes = duration;\n"
+          "      resolution.duration = duration;\n"
+          "      sessionChanged = true;\n"
+          "    }\n"
+          "    if (sessionChanged) delete resolution.calendar_hold;\n\n"
+          "    if (req.body.visit_type_override !== undefined) {\n")
+
+          replace_once(backend,
+          "    const keep = (row.flags || []).filter(f => f.field !== 'note' && f.field !== 'encounter_type');\n",
+          "    const keep = (row.flags || []).filter(f =>\n"
+          "      f.field !== 'note' && f.field !== 'encounter_type' &&\n"
+          "      !(sessionChanged && f.field === 'encounter'));\n")
+
+          replace_once(backend,
+          "    const { fields, warnings } = X.buildNoteFields(row.note, {\n",
+          "    const { fields, warnings } = X.buildNoteFields(note, {\n")
+
+          replace_once(backend,
+          "    resolution.needs = ready ? [] : neededActions(resolution, flags, row.note);\n\n    const patch = { resolution, flags, updated_at: new Date().toISOString() };\n",
+          "    resolution.needs = ready ? [] : neededActions(resolution, flags, note);\n\n"
+          "    const patch = { resolution, flags, note, updated_at: new Date().toISOString() };\n")
+
+          # Frontend: three ordinary editable fields plus status filter.
+          front = 'frontend/src/pages/PortalPOCPage.js'
+
+          replace_once(front,
+          "const clockOf = mins => {\n  if (mins === null || mins === undefined || Number.isNaN(Number(mins))) return '—';\n  const h = Math.floor(mins / 60), mi = mins % 60;\n  const ampm = h >= 12 ? 'PM' : 'AM';\n  return `${h % 12 === 0 ? 12 : h % 12}:${String(mi).padStart(2, '0')} ${ampm}`;\n};\n",
+          "const clockOf = mins => {\n  if (mins === null || mins === undefined || Number.isNaN(Number(mins))) return '—';\n  const h = Math.floor(mins / 60), mi = mins % 60;\n  const ampm = h >= 12 ? 'PM' : 'AM';\n  return `${h % 12 === 0 ? 12 : h % 12}:${String(mi).padStart(2, '0')} ${ampm}`;\n};\n\n"
+          "const timeInputOf = mins => {\n"
+          "  const n = Number(mins);\n"
+          "  if (!Number.isFinite(n)) return '';\n"
+          "  return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;\n"
+          "};\n\n"
+          "const minutesFromTime = value => {\n"
+          "  const m = String(value || '').match(/^(\\d{2}):(\\d{2})$/);\n"
+          "  if (!m) return null;\n"
+          "  return Number(m[1]) * 60 + Number(m[2]);\n"
+          "};\n")
+
+          replace_once(front,
+          "  const manualFields = (r.note_fields && Object.keys(r.note_fields)) || [];\n",
+          "  const manualFields = (r.note_fields && Object.keys(r.note_fields)) || [];\n"
+          "  const sessionLocked = busy || running || row.status === 'done' || row.status === 'duplicate';\n")
+
+          replace_once(front,
+          "        <td style={td}>\n          {fmtDate(note.sessionDate)}\n          <div style={{ color: 'var(--gray-400)', fontSize: '0.72rem' }}>\n            {clockOf(note.sessionStartMinutes)} · {note.durationMinutes} min\n          </div>\n        </td>\n",
+          "        <td style={{ ...td, minWidth: 245 }}>\n"
+          "          <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>\n"
+          "            <input type=\"date\" className=\"form-input\" key={`date-${note.sessionDate}`}\n"
+          "              defaultValue={note.sessionDate || ''} disabled={sessionLocked}\n"
+          "              onBlur={e => { if (e.target.value && e.target.value !== note.sessionDate) patch({ session_date: e.target.value }); }}\n"
+          "              title=\"Date that will be used in InSync\"\n"
+          "              style={{ width: 128, padding: '4px 5px', fontSize: '0.74rem' }} />\n"
+          "            <input type=\"time\" className=\"form-input\" key={`time-${note.sessionStartMinutes}`}\n"
+          "              defaultValue={timeInputOf(note.sessionStartMinutes)} disabled={sessionLocked}\n"
+          "              onBlur={e => {\n"
+          "                const mins = minutesFromTime(e.target.value);\n"
+          "                if (mins !== null && mins !== Number(note.sessionStartMinutes)) patch({ session_start_minutes: mins });\n"
+          "              }}\n"
+          "              title=\"Start time that will be used in InSync\"\n"
+          "              style={{ width: 92, padding: '4px 5px', fontSize: '0.74rem' }} />\n"
+          "            <input type=\"number\" className=\"form-input\" min=\"1\" step=\"1\"\n"
+          "              key={`dur-${note.durationMinutes}`} defaultValue={note.durationMinutes || ''} disabled={sessionLocked}\n"
+          "              onBlur={e => {\n"
+          "                const mins = Number(e.target.value);\n"
+          "                if (Number.isInteger(mins) && mins > 0 && mins !== Number(note.durationMinutes)) patch({ duration_minutes: mins });\n"
+          "              }}\n"
+          "              title=\"Duration in minutes that will be used in InSync\"\n"
+          "              style={{ width: 70, padding: '4px 5px', fontSize: '0.74rem' }} />\n"
+          "            <span style={{ color: 'var(--gray-400)', fontSize: '0.7rem' }}>min</span>\n"
+          "          </div>\n"
+          "        </td>\n")
+
+          replace_once(front,
+          "  const [filterPeer, setFilterPeer] = useState('');\n  const [filterClient, setFilterClient] = useState('');\n",
+          "  const [filterPeer, setFilterPeer] = useState('');\n"
+          "  const [filterClient, setFilterClient] = useState('');\n"
+          "  const [filterStatus, setFilterStatus] = useState('');\n")
+
+          replace_once(front,
+          "  const visible = notes.filter(n =>\n    (!filterPeer || n.note.peerName === filterPeer) &&\n    (!filterClient || n.note.clientName === filterClient));\n",
+          "  const statusMatches = n => {\n"
+          "    if (!filterStatus) return true;\n"
+          "    if (filterStatus === 'insync') return n.status === 'done' || n.status === 'duplicate';\n"
+          "    return n.status === filterStatus;\n"
+          "  };\n\n"
+          "  const visible = notes.filter(n =>\n"
+          "    (!filterPeer || n.note.peerName === filterPeer) &&\n"
+          "    (!filterClient || n.note.clientName === filterClient) &&\n"
+          "    statusMatches(n));\n")
+
+          replace_once(front,
+          "            {(filterPeer || filterClient) && (\n",
+          "            <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)' }}>\n"
+          "              Status{' '}\n"
+          "              <select className=\"form-select\" style={{ fontSize: '0.78rem', minWidth: 150 }}\n"
+          "                value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>\n"
+          "                <option value=\"\">All statuses</option>\n"
+          "                <option value=\"ready\">Ready ({counts.ready || 0})</option>\n"
+          "                <option value=\"insync\">In InSync ({(counts.done || 0) + (counts.duplicate || 0)})</option>\n"
+          "                <option value=\"failed\">Failed ({counts.failed || 0})</option>\n"
+          "                <option value=\"needs_attention\">Needs attention ({counts.needs_attention || 0})</option>\n"
+          "                <option value=\"skipped\">Skipped ({counts.skipped || 0})</option>\n"
+          "              </select>\n"
+          "            </label>\n"
+          "            {(filterPeer || filterClient || filterStatus) && (\n")
+
+          replace_once(front,
+          "                onClick={() => { setFilterPeer(''); setFilterClient(''); }}>Clear filters</button>\n",
+          "                onClick={() => { setFilterPeer(''); setFilterClient(''); setFilterStatus(''); }}>Clear filters</button>\n")
+
+          PY
+
+      - name: Run backend tests
+        working-directory: backend
+        run: npm test
+
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: npm run build
+
+      - name: Commit focused changes and remove helper workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/apply-poc-bella-controls.yml
+          git add backend/routes/portalPoc.js frontend/src/pages/PortalPOCPage.js
+          git commit -m "Add editable Portal POC session fields and status filter"
+          git push origin HEAD:portal-poc-session-overrides-status-filter
