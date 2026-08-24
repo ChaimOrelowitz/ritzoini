@@ -18,6 +18,18 @@ const clockOf = mins => {
   return `${h % 12 === 0 ? 12 : h % 12}:${String(mi).padStart(2, '0')} ${ampm}`;
 };
 
+const timeInputOf = mins => {
+  const n = Number(mins);
+  if (!Number.isFinite(n)) return '';
+  return `${String(Math.floor(n / 60)).padStart(2, '0')}:${String(n % 60).padStart(2, '0')}`;
+};
+
+const minutesFromTime = value => {
+  const m = String(value || '').match(/^(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+};
+
 const STATUS_STYLE = {
   ready:           { bg: '#dcfce7', fg: '#166534', label: 'Ready' },
   needs_attention: { bg: '#fef9c3', fg: '#854d0e', label: 'Needs attention' },
@@ -66,9 +78,6 @@ const td = { padding: '8px', fontSize: '0.82rem', verticalAlign: 'top', borderTo
 // InSync patient. Ambiguity must never resolve itself.
 // ---------------------------------------------------------------------------
 
-// InSync matches patients on "Last, First" and returns nothing for "First Last",
-// so the manual search has to start where resolution starts — otherwise typing
-// the name straight off the row finds nobody.
 function lastFirst(full) {
   const parts = String(full || '').trim().split(/\s+/).filter(Boolean);
   if (parts.length < 2) return parts.join(' ');
@@ -170,6 +179,7 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
   const note = row.note || {};
   const flags = row.flags || [];
   const manualFields = (r.note_fields && Object.keys(r.note_fields)) || [];
+  const sessionLocked = busy || running || row.status === 'done' || row.status === 'duplicate';
 
   async function patch(body) {
     setBusy(true);
@@ -202,10 +212,32 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
               onClick={() => onConfirmClient(row)}>Confirm patient…</button>
           )}
         </td>
-        <td style={td}>
-          {fmtDate(note.sessionDate)}
-          <div style={{ color: 'var(--gray-400)', fontSize: '0.72rem' }}>
-            {clockOf(note.sessionStartMinutes)} · {note.durationMinutes} min
+        <td style={{ ...td, minWidth: 250 }}>
+          <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input type="date" className="form-input" key={`date-${note.sessionDate}`}
+              defaultValue={note.sessionDate || ''} disabled={sessionLocked}
+              onBlur={e => {
+                if (e.target.value && e.target.value !== note.sessionDate) patch({ session_date: e.target.value });
+              }}
+              title="Date that will be used in InSync"
+              style={{ width: 128, padding: '4px 5px', fontSize: '0.74rem' }} />
+            <input type="time" className="form-input" key={`time-${note.sessionStartMinutes}`}
+              defaultValue={timeInputOf(note.sessionStartMinutes)} disabled={sessionLocked}
+              onBlur={e => {
+                const mins = minutesFromTime(e.target.value);
+                if (mins !== null && mins !== Number(note.sessionStartMinutes)) patch({ session_start_minutes: mins });
+              }}
+              title="Start time that will be used in InSync"
+              style={{ width: 92, padding: '4px 5px', fontSize: '0.74rem' }} />
+            <input type="number" className="form-input" min="1" step="1"
+              key={`dur-${note.durationMinutes}`} defaultValue={note.durationMinutes || ''} disabled={sessionLocked}
+              onBlur={e => {
+                const mins = Number(e.target.value);
+                if (Number.isInteger(mins) && mins > 0 && mins !== Number(note.durationMinutes)) patch({ duration_minutes: mins });
+              }}
+              title="Duration in minutes that will be used in InSync"
+              style={{ width: 68, padding: '4px 5px', fontSize: '0.74rem' }} />
+            <span style={{ color: 'var(--gray-400)', fontSize: '0.7rem' }}>min</span>
           </div>
         </td>
         <td style={{ ...td, minWidth: 240 }}>
@@ -240,8 +272,6 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
         <td style={{ ...td, textAlign: 'right', whiteSpace: 'nowrap' }}>
           {row.status === 'ready' && (
             <>
-              {/* Per-note execution. The batch GO runs everything Ready; this
-                  runs exactly this row, which is how you do the first live one. */}
               <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
                 disabled={busy || running} onClick={() => onRunOne(row, 'dry_run')}>
                 Dry run
@@ -255,9 +285,6 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
             </>
           )}
           {r.calendar_hold && (
-            // The hold survives re-resolution on purpose, so clearing it is an
-            // explicit act. The next run re-checks the calendar regardless, so
-            // this cannot push a note past a genuinely closed encounter.
             <>
               <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
                 disabled={busy || running}
@@ -273,9 +300,6 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
               <br />
             </>
           )}
-          {/* Entered by hand. The calendar check only catches a manual entry
-              when it landed on the peer's own appointment; typed straight into
-              another one it is invisible, so this is the way to say so. */}
           {r.marked_entered_by ? (
             <>
               <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px', marginBottom: 4 }}
@@ -363,10 +387,6 @@ function ReviewRow({ runId, row, onChanged, onConfirmClient, onRunOne, running, 
                   {isManual ? (
                     <textarea
                       className="form-input" rows={2}
-                      // Show what will actually be SENT, not just the operator
-                      // override. ControlId_7 is auto-filled from the
-                      // interventions, and rendering only `manual` made a
-                      // populated field look empty on screen.
                       key={`${control}-${r.manual?.[control] ?? ''}-${value ?? ''}`}
                       defaultValue={r.manual?.[control] || value || ''}
                       disabled={busy || row.status === 'done'}
@@ -449,7 +469,6 @@ function PeerEditor({ peer, onClose, onSaved }) {
   async function save() {
     setBusy(true); setErr('');
     const body = { ...form };
-    // An untouched secret field means "leave it as it is".
     if (!body.insync_password) delete body.insync_password;
     if (!body.signing_pin) delete body.signing_pin;
     try {
@@ -538,8 +557,6 @@ function PeerEditor({ peer, onClose, onSaved }) {
   );
 }
 
-// ---------------------------------------------------------------------------
-
 export default function PortalPOCPage() {
   const [tab, setTab] = useState('runs');
   const [status, setStatus] = useState(null);
@@ -547,17 +564,16 @@ export default function PortalPOCPage() {
   const [peers, setPeers] = useState([]);
   const [clients, setClients] = useState([]);
   const [processed, setProcessed] = useState([]);
-  const [current, setCurrent] = useState(null);      // { run, notes }
+  const [current, setCurrent] = useState(null);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
   const [editingPeer, setEditingPeer] = useState(null);
   const [confirmingClient, setConfirmingClient] = useState(null);
-  // Whether a run signs. Shared by the batch GO and the per-note buttons so the
-  // two can never mean different things.
   const [signOnRun, setSignOnRun] = useState(false);
   const [filterPeer, setFilterPeer] = useState('');
   const [filterClient, setFilterClient] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
   const fileRef = useRef(null);
   const lastEventId = useRef(0);
   const pollRef = useRef(null);
@@ -571,7 +587,6 @@ export default function PortalPOCPage() {
       api.get('/portal/processed').catch(() => []),
     ]);
     setStatus(s);
-    // Field metadata drives the review screen's note editor labels.
     if (s?.note_fields) window.__PORTAL_NOTE_FIELDS = s.note_fields;
     setRuns(Array.isArray(r) ? r : []);
     setPeers(Array.isArray(p) ? p : []);
@@ -598,8 +613,6 @@ export default function PortalPOCPage() {
     setCurrent(d);
   }, [current?.run?.id]);
 
-  // Follow a running batch. The run happens server-side and the log is the
-  // window into it — poll until the run stops reporting "executing".
   useEffect(() => {
     if (!current?.run?.id) return;
     if (current.run.status !== 'executing') { clearInterval(pollRef.current); return; }
@@ -613,7 +626,7 @@ export default function PortalPOCPage() {
         const d = await api.get(`/portal/runs/${current.run.id}`);
         setCurrent(d);
         if (d.run.status !== 'executing') { clearInterval(pollRef.current); loadStatic(); }
-      } catch { /* keep polling */ }
+      } catch { }
     }, 2000);
     return () => clearInterval(pollRef.current);
   }, [current?.run?.id, current?.run?.status, loadStatic]);
@@ -637,8 +650,6 @@ export default function PortalPOCPage() {
     finally { setBusy(''); }
   }
 
-  // Run exactly one note. Same endpoint as the batch, scoped by note_ids — which
-  // is how you send the first live encounter without committing to all of them.
   async function runOne(row, mode) {
     const who = `${row.note.clientName} — ${fmtDate(row.note.sessionDate)} ${row.note.sessionStartClock || ''}`;
     if (mode === 'live') {
@@ -647,8 +658,7 @@ export default function PortalPOCPage() {
         `This creates and closes a real encounter in InSync as ${row.resolution.peer_name || row.note.peerName}` +
         `${signOnRun ? ', and signs it with their PIN' : ', without signing'}.\n\nContinue?`)) return;
       if (signOnRun && !window.confirm(
-        `SIGNING\n\nThis commits a billable clinical note under ${row.resolution.peer_name || row.note.peerName}'s ` +
-        `credentials.\n\nSign it?`)) return;
+        `SIGNING\n\nThis commits a billable clinical note under ${row.resolution.peer_name || row.note.peerName}'s credentials.\n\nSign it?`)) return;
     }
     setBusy('execute');
     try {
@@ -666,16 +676,13 @@ export default function PortalPOCPage() {
     if (!readyCount) return alert('No rows are Ready. Resolve the flagged rows first.');
     if (mode === 'live') {
       if (!window.confirm(
-        `LIVE RUN\n\nThis creates and closes ${readyCount} real encounter(s) in InSync, ` +
-        `logged in as each peer.\n\nOnly rows marked Ready will run. Continue?`)) return;
+        `LIVE RUN\n\nThis creates and closes ${readyCount} real encounter(s) in InSync, logged in as each peer.\n\nOnly rows marked Ready will run. Continue?`)) return;
       if (sign && !window.confirm(
-        `SIGNING\n\nEach note will be signed with the peer's own PIN. A signed note is a ` +
-        `billable clinical record committed under that peer's credentials.\n\nSign after closing?`)) return;
+        `SIGNING\n\nEach note will be signed with the peer's own PIN. A signed note is a billable clinical record committed under that peer's credentials.\n\nSign after closing?`)) return;
     }
     setBusy('execute');
     try {
-      await api.post(`/portal/runs/${current.run.id}/execute`,
-        { mode, sign: !!sign, confirm: mode === 'live' });
+      await api.post(`/portal/runs/${current.run.id}/execute`, { mode, sign: !!sign, confirm: mode === 'live' });
       setEvents([]); lastEventId.current = 0;
       setCurrent(c => ({ ...c, run: { ...c.run, status: 'executing' } }));
     } catch (ex) { alert(ex.message); }
@@ -686,20 +693,22 @@ export default function PortalPOCPage() {
 
   const notes = current?.notes || [];
   const counts = notes.reduce((a, n) => ({ ...a, [n.status]: (a[n.status] || 0) + 1 }), {});
-
-  // Filter options come from the notes themselves, so they can only ever offer
-  // something that is actually in this upload.
   const peerNames = [...new Set(notes.map(n => n.note.peerName).filter(Boolean))].sort();
   const clientNames = [...new Set(notes
     .filter(n => !filterPeer || n.note.peerName === filterPeer)
     .map(n => n.note.clientName).filter(Boolean))].sort();
 
+  const statusMatches = n => {
+    if (!filterStatus) return true;
+    if (filterStatus === 'insync') return n.status === 'done' || n.status === 'duplicate';
+    return n.status === filterStatus;
+  };
+
   const visible = notes.filter(n =>
     (!filterPeer || n.note.peerName === filterPeer) &&
-    (!filterClient || n.note.clientName === filterClient));
+    (!filterClient || n.note.clientName === filterClient) &&
+    statusMatches(n));
 
-  // Peer -> client -> notes. A peer works one InSync session at a time and a
-  // client is one chart, so that is the order the work actually happens in.
   const grouped = [];
   for (const row of visible) {
     const peerName = row.note.peerName || '(no peer)';
@@ -733,40 +742,29 @@ export default function PortalPOCPage() {
     <div style={{ padding: '24px 32px', maxWidth: 1240, margin: '0 auto' }}>
       <h2 style={{ margin: '0 0 2px' }}>Portal POC</h2>
       <p style={{ color: 'var(--gray-400)', fontSize: '0.82rem', margin: '0 0 16px' }}>
-        Transcribe finished peer-support notes from the portal into InSync — as each peer,
-        after review.
+        Transcribe finished peer-support notes from the portal into InSync — as each peer, after review.
       </p>
 
       {status?.error && <Banner tone="error">Status check failed: {status.error}</Banner>}
       {status && !status.credentials_configured && (
         <Banner tone="error">
-          <strong>PORTAL_CRED_KEY is not set.</strong> Peer InSync passwords and signing PINs
-          cannot be stored or read until it is. Generate one with
-          {' '}<code>node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"</code>
-          {' '}and set it in the backend environment.
+          <strong>PORTAL_CRED_KEY is not set.</strong> Peer InSync passwords and signing PINs cannot be stored or read until it is.
         </Banner>
       )}
       {status && !status.admin_insync_configured && (
         <Banner tone="error">
-          <strong>Admin InSync login is not configured.</strong> Resolution (peer, client and
-          encounter-type lookups) cannot run without it.
+          <strong>Admin InSync login is not configured.</strong> Resolution cannot run without it.
         </Banner>
       )}
       {status && status.captured_visit_type_id && (
         <Banner tone="info">
-          CPT code, modifiers, units and place of service are read from InSync for whichever
-          encounter type each note resolves to — they are never taken from the stored request
-          templates (captured against type <strong>{status.captured_visit_type_id}</strong>).
-          Offsite types are switched off: the portal has no field for the justification their
-          note form requires.
+          CPT code, modifiers, units and place of service are read from InSync for whichever encounter type each note resolves to.
+          Offsite types are switched off.
         </Banner>
       )}
       {status && status.missing_captures?.length > 0 && (
         <Banner tone="warn">
-          <strong>Live execution is blocked.</strong> No captured request template for:{' '}
-          <strong>{status.missing_captures.join(', ')}</strong>. Dry runs work and prepare every
-          other payload. To unblock, capture those calls in a HAR and run{' '}
-          <code>node scripts/extract-insync-captures.js &lt;har-dir&gt;</code>.
+          <strong>Live execution is blocked.</strong> No captured request template for: <strong>{status.missing_captures.join(', ')}</strong>.
         </Banner>
       )}
 
@@ -781,21 +779,14 @@ export default function PortalPOCPage() {
         ))}
       </div>
 
-      {/* ---- Uploads ---- */}
       {tab === 'runs' && (
         <>
           <div style={card}>
             <h3 style={{ margin: '0 0 8px', fontSize: '0.95rem' }}>Upload a portal export</h3>
-            <p style={{ color: 'var(--gray-400)', fontSize: '0.8rem', margin: '0 0 10px' }}>
-              The JSON the Chrome extension exports from portal.linksnetwork.com. Notes already
-              processed — or already marked entered in InSync by the portal — are staged as
-              duplicates and excluded.
-            </p>
             <input ref={fileRef} type="file" accept="application/json,.json"
               onChange={e => e.target.files?.[0] && upload(e.target.files[0])}
               disabled={busy === 'upload'} />
           </div>
-
           <div style={card}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead><tr>
@@ -824,10 +815,8 @@ export default function PortalPOCPage() {
         </>
       )}
 
-      {/* ---- Review ---- */}
       {tab === 'review' && !current && (
-        <div style={card}><p style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>
-          Pick an upload from the Uploads tab.</p></div>
+        <div style={card}><p style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Pick an upload from the Uploads tab.</p></div>
       )}
 
       {tab === 'review' && current && (
@@ -842,10 +831,7 @@ export default function PortalPOCPage() {
             <button className="btn btn-outline" onClick={reresolve} disabled={busy || running}>
               {busy === 'resolve' ? 'Resolving…' : 'Re-resolve'}
             </button>
-            <button className="btn btn-outline" onClick={() => execute('dry_run', false)} disabled={busy || running}
-              title="Signs in as each peer read-only to check their calendar. Writes nothing.">
-              Dry run
-            </button>
+            <button className="btn btn-outline" onClick={() => execute('dry_run', false)} disabled={busy || running}>Dry run</button>
             <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8rem', cursor: 'pointer' }}>
               <input type="checkbox" checked={signOnRun} onChange={e => setSignOnRun(e.target.checked)} />
               Sign after closing
@@ -857,10 +843,7 @@ export default function PortalPOCPage() {
           </div>
 
           <Banner tone="info">
-            Only rows marked <strong>Ready</strong> run. Everything else lists what it needs in the
-            Status column. Each Ready row can be dry-run or sent live on its own — start with one —
-            or use GO to run every Ready row. Whether an appointment already exists is only knowable
-            once signed in as the peer, so it resolves during the run.
+            Date, start time and duration below are the values that will be used in InSync. They default from the CRM JSON and can be corrected before running.
           </Banner>
 
           <div style={{ ...card, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', paddingTop: 12, paddingBottom: 12 }}>
@@ -881,9 +864,21 @@ export default function PortalPOCPage() {
                 {clientNames.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </label>
-            {(filterPeer || filterClient) && (
+            <label style={{ fontSize: '0.78rem', color: 'var(--gray-600)' }}>
+              Status{' '}
+              <select className="form-select" style={{ fontSize: '0.78rem', minWidth: 150 }}
+                value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+                <option value="">All statuses</option>
+                <option value="ready">Ready ({counts.ready || 0})</option>
+                <option value="insync">In InSync ({(counts.done || 0) + (counts.duplicate || 0)})</option>
+                <option value="failed">Failed ({counts.failed || 0})</option>
+                <option value="needs_attention">Needs attention ({counts.needs_attention || 0})</option>
+                <option value="skipped">Skipped ({counts.skipped || 0})</option>
+              </select>
+            </label>
+            {(filterPeer || filterClient || filterStatus) && (
               <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
-                onClick={() => { setFilterPeer(''); setFilterClient(''); }}>Clear filters</button>
+                onClick={() => { setFilterPeer(''); setFilterClient(''); setFilterStatus(''); }}>Clear filters</button>
             )}
             <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--gray-400)' }}>
               showing {visible.length} of {notes.length} note{notes.length === 1 ? '' : 's'}
@@ -891,7 +886,7 @@ export default function PortalPOCPage() {
           </div>
 
           <div style={{ ...card, overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}>
               <thead><tr>
                 <th style={th}>Peer</th><th style={th}>Client</th><th style={th}>Session</th>
                 <th style={th}>Encounter type</th><th style={th}>Appointment</th>
@@ -900,30 +895,20 @@ export default function PortalPOCPage() {
               {grouped.map(group => (
                 <tbody key={group.peer}>
                   <tr>
-                    <td colSpan={7} style={{
-                      padding: '10px 8px 6px', borderTop: '2px solid var(--navy)',
-                      fontWeight: 700, fontSize: '0.85rem', color: 'var(--navy)',
-                      background: 'var(--gray-50, #fafafa)',
-                    }}>
+                    <td colSpan={7} style={{ padding: '10px 8px 6px', borderTop: '2px solid var(--navy)', fontWeight: 700, fontSize: '0.85rem', color: 'var(--navy)', background: 'var(--gray-50, #fafafa)' }}>
                       {group.peer}
                       <span style={{ fontWeight: 400, color: 'var(--gray-400)', fontSize: '0.75rem' }}>
-                        {' '}· {group.count} note{group.count === 1 ? '' : 's'} ·{' '}
-                        {group.clients.length} client{group.clients.length === 1 ? '' : 's'} ·{' '}
-                        {group.ready} ready
+                        {' '}· {group.count} note{group.count === 1 ? '' : 's'} · {group.clients.length} client{group.clients.length === 1 ? '' : 's'} · {group.ready} ready
                       </span>
                     </td>
                   </tr>
                   {group.clients.map(client => (
                     <Fragment key={client.client}>
                       <tr>
-                        <td colSpan={7} style={{
-                          padding: '6px 8px 4px 26px', borderTop: '1px solid var(--gray-100)',
-                          fontWeight: 600, fontSize: '0.78rem', color: 'var(--gray-600)',
-                        }}>
+                        <td colSpan={7} style={{ padding: '6px 8px 4px 26px', borderTop: '1px solid var(--gray-100)', fontWeight: 600, fontSize: '0.78rem', color: 'var(--gray-600)' }}>
                           {client.client}
                           <span style={{ fontWeight: 400, color: 'var(--gray-400)' }}>
-                            {' '}· {client.rows.length} note{client.rows.length === 1 ? '' : 's'} ·{' '}
-                            {client.ready} ready
+                            {' '}· {client.rows.length} note{client.rows.length === 1 ? '' : 's'} · {client.ready} ready
                           </span>
                         </td>
                       </tr>
@@ -949,11 +934,7 @@ export default function PortalPOCPage() {
             <h3 style={{ margin: '0 0 8px', fontSize: '0.9rem' }}>
               Activity log {running && <span style={{ color: 'var(--gray-400)', fontWeight: 400 }}>· running…</span>}
             </h3>
-            <div style={{
-              background: '#0f172a', color: '#e2e8f0', borderRadius: 6, padding: 12,
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-              fontSize: '0.74rem', maxHeight: 320, overflowY: 'auto', lineHeight: 1.6,
-            }}>
+            <div style={{ background: '#0f172a', color: '#e2e8f0', borderRadius: 6, padding: 12, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.74rem', maxHeight: 320, overflowY: 'auto', lineHeight: 1.6 }}>
               {events.length === 0 && <div style={{ color: '#64748b' }}>No activity yet.</div>}
               {events.map(e => (
                 <div key={e.id} style={{ color: e.level === 'error' ? '#fca5a5' : e.level === 'warn' ? '#fcd34d' : '#e2e8f0' }}>
@@ -967,7 +948,6 @@ export default function PortalPOCPage() {
         </>
       )}
 
-      {/* ---- Peers ---- */}
       {tab === 'peers' && (
         <div style={card}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -989,8 +969,7 @@ export default function PortalPOCPage() {
                   <td style={td}>{p.has_pin ? '✓ on file' : <span style={{ color: '#991b1b' }}>missing</span>}</td>
                   <td style={td}>{p.is_active ? 'Yes' : 'No'}</td>
                   <td style={{ ...td, textAlign: 'right' }}>
-                    <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }}
-                      onClick={() => setEditingPeer(p)}>Edit</button>
+                    <button className="btn btn-outline" style={{ fontSize: '0.72rem', padding: '2px 8px' }} onClick={() => setEditingPeer(p)}>Edit</button>
                   </td>
                 </tr>
               ))}
@@ -1000,14 +979,9 @@ export default function PortalPOCPage() {
         </div>
       )}
 
-      {/* ---- Clients ---- */}
       {tab === 'clients' && (
         <div style={card}>
           <h3 style={{ margin: '0 0 4px', fontSize: '0.95rem' }}>Confirmed client bindings</h3>
-          <p style={{ color: 'var(--gray-400)', fontSize: '0.8rem', margin: '0 0 10px' }}>
-            Each portal client is bound to an InSync patient once, by hand. Later runs reuse the
-            binding instead of re-searching. Remove one only if it is wrong.
-          </p>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead><tr>
               <th style={th}>Portal client</th><th style={th}>DOB</th><th style={th}>InSync patient</th>
@@ -1037,7 +1011,6 @@ export default function PortalPOCPage() {
         </div>
       )}
 
-      {/* ---- History ---- */}
       {tab === 'history' && (
         <div style={card}>
           <h3 style={{ margin: '0 0 10px', fontSize: '0.95rem' }}>Processed notes</h3>
