@@ -17,6 +17,10 @@ function fmtTime(hm) {
   const h = +m[1];
   return `${h % 12 || 12}:${m[2]} ${h >= 12 ? 'PM' : 'AM'}`;
 }
+// Zoho Status ("Active" / "Completed") → a css-safe key for badges + filtering.
+function statusKey(s) {
+  return String(s || '').trim().toLowerCase();
+}
 // Activity minus the numbers, e.g. "Surprise Crafts 5:20" → "Surprise Crafts".
 function activityText(a) {
   return String(a || '').replace(/\d[\d:.]*/g, '').replace(/\s+/g, ' ').trim();
@@ -32,6 +36,7 @@ export default function RosterPage() {
   const [msg, setMsg] = useState('');
 
   const [instructors, setInstructors] = useState([]);
+  const [filter, setFilter] = useState('total');
   const load = useCallback(async () => {
     try {
       const [r, ins] = await Promise.all([api.getRoster(), api.getInstructors().catch(() => [])]);
@@ -96,8 +101,16 @@ export default function RosterPage() {
 
   if (!rows && !error) return <div className="loading-screen"><div className="spinner" /></div>;
 
+  const all = rows || [];
+  const stats = {
+    total:     all.length,
+    active:    all.filter(g => statusKey(g.status) === 'active').length,
+    completed: all.filter(g => statusKey(g.status) === 'completed').length,
+  };
+  const visible = filter === 'total' ? all : all.filter(g => statusKey(g.status) === filter);
+
   const byDay = {};
-  (rows || []).forEach(g => { (byDay[g.class_day || 'Unscheduled'] ||= []).push(g); });
+  visible.forEach(g => { (byDay[g.class_day || 'Unscheduled'] ||= []).push(g); });
   // Within each day, order groups by start time (early → late; blanks last).
   Object.values(byDay).forEach(list =>
     list.sort((a, b) => (a.start_time || '99:99').localeCompare(b.start_time || '99:99')));
@@ -116,7 +129,7 @@ export default function RosterPage() {
         </button>
       </div>
       <p style={{ margin: '0 0 18px', fontSize: '0.85rem', color: 'var(--gray-500)' }}>
-        Your groups, synced from Zoho. {rows?.length || 0} groups
+        Your groups, synced from Zoho. {visible.length} group{visible.length !== 1 ? 's' : ''}
         {missingPhones > 0 && (
           <span style={{ color: '#b45309', fontWeight: 600 }}> · ⚠ {missingPhones} missing an instructor phone</span>
         )}
@@ -125,9 +138,34 @@ export default function RosterPage() {
       {error && <div className="alert alert-error" style={{ marginBottom: 14 }}>{error}</div>}
       {msg && <div className="alert alert-success" style={{ marginBottom: 14 }}>{msg}</div>}
 
+      <div className="stats-row" style={{ marginBottom: 24 }}>
+        {[
+          { key: 'total',     label: 'Total Groups', value: stats.total,     color: 'var(--navy)' },
+          { key: 'active',    label: 'Active',       value: stats.active,    color: '#10b981'     },
+          { key: 'completed', label: 'Completed',    value: stats.completed, color: '#6b7280'     },
+        ].map(({ key, label, value, color }) => (
+          <div
+            key={key}
+            className="stat-card"
+            onClick={() => setFilter(key)}
+            style={{
+              cursor: 'pointer',
+              outline: filter === key ? `2px solid ${color}` : '2px solid transparent',
+              transition: 'outline 0.15s, box-shadow 0.15s',
+              boxShadow: filter === key ? `0 0 0 1px ${color}20` : undefined,
+            }}
+          >
+            <div className="stat-value" style={{ color }}>{value}</div>
+            <div className="stat-label">{label}</div>
+          </div>
+        ))}
+      </div>
+
       {days.length === 0 && !error && (
         <div style={{ padding: 32, textAlign: 'center', color: 'var(--gray-400)' }}>
-          No groups. Click “Sync from Zoho” to pull the latest.
+          {all.length === 0
+            ? 'No groups. Click “Sync from Zoho” to pull the latest.'
+            : `No ${filter} groups.`}
         </div>
       )}
 
@@ -155,7 +193,14 @@ export default function RosterPage() {
                         <a href={zohoSessionUrl(g.id)} target="_blank" rel="noreferrer" style={{ color: '#6941C6', textDecoration: 'none' }}
                            title="Not linked to a Ritzoini group — opens the Zoho record">{g.group_name} ↗</a>
                       )}
-                      {g.session_code && <div style={{ fontSize: '0.68rem', color: 'var(--gray-400)', fontWeight: 400 }}>{g.session_code}</div>}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
+                        {g.session_code && <span style={{ fontSize: '0.68rem', color: 'var(--gray-400)', fontWeight: 400 }}>{g.session_code}</span>}
+                        {g.status && (
+                          <span className={`badge badge-${statusKey(g.status)}`} style={{ fontSize: '0.58rem', padding: '1px 7px' }}>
+                            {g.status}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td style={td}>{g.group_activity || '—'}</td>
                     <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtTime(g.start_time) || '—'}</td>
