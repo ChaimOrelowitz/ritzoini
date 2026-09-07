@@ -72,7 +72,12 @@ const SECTION_LABELS = [
 const NOTE_HEADINGS = [
   // Longest-first: "Plan / Visit Codes" and "Treatment Plan" must win over the
   // bare "Plan" they contain.
-  { label: 'What activities took place, and for how long' },
+  // `question` — InSync emits this label as a literal question and ends it with
+  // a "?", never a colon: "…and for how long?</span></label>". Scoped to this
+  // label deliberately — accepting a bare "?" terminator for every label would
+  // let narrative like "what was the plan?" register as a Plan heading. This
+  // phrase is long and distinctive enough never to be prose.
+  { label: 'What activities took place, and for how long', question: true },
   { label: 'Location of the Meeting' },
   { label: 'Electronically Signed', colonless: true, anywhere: true },
   { label: "Patient's Response/Content" },
@@ -155,7 +160,7 @@ function findHeadings(text) {
   const structuredInput = /\n/.test(text);
   const hits = [];
 
-  for (const { label, colonless, anywhere } of NOTE_HEADINGS) {
+  for (const { label, colonless, anywhere, question } of NOTE_HEADINGS) {
     const body = headingBody(label);
 
     if (structuredInput) {
@@ -167,6 +172,7 @@ function findHeadings(text) {
       // "Plan:" is mid-line, so it is prose, not a boundary.
       const line = new RegExp(
         `(?:^|\\n)[ \\t]*(?:[*+\\-•][ \\t]+)?(?:\\*\\*)?[ \\t]*(?:${body})(?:\\*\\*)?`
+        + (question ? '[ \\t]*\\??' : '')
         + `(?:[ \\t]*:[ \\t]*(?:\\*(?!\\*))?[ \\t]*` + (colonless || anywhere ? `|[ \\t]*(?=\\n|$)|[ \\t]+` : `|[ \\t]*(?=\\n|$)`) + `)`,
         'gi');
       for (let m; (m = line.exec(text)) !== null; ) {
@@ -193,7 +199,8 @@ function findHeadings(text) {
       const flat = new RegExp(
         `(?<![A-Za-z])(?:${body})[ \\t]*:`
         + (anywhere ? `|(?<![A-Za-z])(?:${body})(?![A-Za-z])` : '')
-        + (colonless && !anywhere ? `|(?<![A-Za-z])(?:${body})(?=\\s+[A-Z0-9*\\[•])` : ''),
+        + (colonless && !anywhere ? `|(?<![A-Za-z])(?:${body})(?=\\s+[A-Z0-9*\\[•])` : '')
+        + (question ? `|(?<![A-Za-z])(?:${body})[ \\t]*\\?` : ''),
         'g');
       for (let m; (m = flat.exec(text)) !== null; ) {
         hits.push({ label, start: m.index, valueStart: m.index + m[0].length, len: label.length });
@@ -502,9 +509,16 @@ function splitSections(text) {
     // Every section ends at the NEXT recognised heading of ANY kind — which is
     // what keeps "Diagnosis" out of Plan, "Visit Codes" out of Diagnosis, and so
     // on, instead of relying on a per-field terminator list.
-    const end = i + 1 < headings.length ? headings[i + 1].start : text.length;
-    out[s.key] = headingValue(text, headings[i].valueStart, end);
-    from = i + 1;
+    // InSync sometimes emits the same label twice — "Plan: *" (the required-
+    // field marker) on one line, then "Plan:" again, then the content. The first
+    // copy ends at the second and yields nothing, so step past any empty
+    // same-label repeat rather than reporting the section as absent.
+    let j = i;
+    while (j + 1 < headings.length && headings[j + 1].label === s.label
+           && !headingValue(text, headings[j].valueStart, headings[j + 1].start)) j++;
+    const end = j + 1 < headings.length ? headings[j + 1].start : text.length;
+    out[s.key] = headingValue(text, headings[j].valueStart, end);
+    from = j + 1;
   }
   return out;
 }
@@ -628,10 +642,54 @@ function sessionPreamble(note) {
   return (m ? narrative.slice(0, m.index) : narrative).replace(/\s+/g, ' ').trim();
 }
 
+// Guard against silently shipping an empty section that the note plainly has.
+//
+// The activities field read "" for every note ever reviewed because InSync ends
+// that heading with "?" and findHeadings only accepted ":" — the text was still
+// there, misfiled into the previous section. Nothing caught it, because a blank
+// field is indistinguishable from a genuinely blank field. This makes the two
+// distinguishable: if the source carries the heading followed by substantive
+// content and the derived section is still empty, that is a parser failure.
+//
+// Loud, never fatal in production: a note shape we have not seen yet must not
+// stall the ingest queue. Under NODE_ENV=test or PS_STRICT_SECTIONS=1 it throws,
+// so the regression suite fails instead of printing a warning nobody reads.
+const SECTION_ASSERT_MIN_CHARS = 40;
+
+function assertSectionsDerived(note, source, secs) {
+  const problems = [];
+  for (const { key, label } of SECTION_LABELS) {
+    if (secs[key]) continue;
+    // Locate the heading in the source and look at what follows it. This must
+    // NOT re-implement findHeadings — sharing its logic would mean sharing its
+    // blind spot and staying silent for the same reason. So it looks only for
+    // the label followed by either terminator InSync uses, ":" or "?", which is
+    // exactly the distinction findHeadings got wrong. The punctuation IS
+    // required: "Plan" alone also occurs inside "Treatment Plan" and
+    // "Plan / Visit Codes", neither of which is the narrative Plan section.
+    const re = new RegExp('(?<![A-Za-z])(?:' + headingBody(label) + ')[ \\t]*[:?]', 'i');
+    const m = re.exec(source);
+    if (!m) continue;
+    const after = source.slice(m.index + m[0].length).replace(/\s+/g, ' ').trim();
+    if (after.length < SECTION_ASSERT_MIN_CHARS) continue;
+    problems.push({ key, label, followingText: after.slice(0, 160) });
+  }
+  if (!problems.length) return;
+
+  const eid = note.eid || note.encounterId || '(unknown eid)';
+  const lines = problems.map(p =>
+    `  ${p.key} ("${p.label}") is empty, but the note continues: ${JSON.stringify(p.followingText)}`);
+  const msg = `[PS payload] eid=${eid}: ${problems.length} section(s) present in the note but empty in the review payload — the parser missed a heading, do NOT send this to the model.\n${lines.join('\n')}`;
+  console.error(msg);
+  if (process.env.NODE_ENV === 'test' || process.env.PS_STRICT_SECTIONS === '1') throw new Error(msg);
+}
+
 // The exact JSON handed to the model as the user message. Never includes another
 // client's note, duplicate-partner text, or any comparison data.
 function buildReviewPayload(note, machineFlags = []) {
-  const secs = splitSections(sectionSource(note));
+  const source = sectionSource(note);
+  const secs = splitSections(source);
+  assertSectionsDerived(note, source, secs);
   const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
   return {
     review_version:      REVIEW_VERSION,
@@ -1577,4 +1635,6 @@ module.exports = {
   splitSections, prepareSections, compareSections, dupeVerdict,
   // exported for unit testing of heading-boundary parsing
   findHeadings, sectionByLabel, NOTE_HEADINGS,
+  // exported for unit testing of the review payload itself
+  buildReviewPayload, assertSectionsDerived, SECTION_LABELS,
 };
