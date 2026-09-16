@@ -4,7 +4,8 @@ const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
 const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
-const { ingestQueue, judgeNote, serializeNote, contentHash } = require('../utils/psIngest');
+const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote } = require('../utils/psIngest');
+const { CrmPortalClient, sourceOf } = require('../utils/crmPortal');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -26,6 +27,30 @@ async function buildEngine() {
     coreReviewPrompt: S.ps_prompt_core_review || '',
     offsitePrompt:    S.ps_prompt_offsite     || '',
   });
+}
+
+// The CRM (portal.linksnetwork.com) — the second note source. Its own login,
+// stored next to the InSync one.
+async function buildCrm() {
+  const { data: rows } = await supabase.from('app_settings').select('key, value')
+    .in('key', ['crm_portal_email', 'crm_portal_password']);
+  const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
+  return new CrmPortalClient({
+    email:    S.crm_portal_email    || process.env.CRM_PORTAL_EMAIL    || '',
+    password: S.crm_portal_password || process.env.CRM_PORTAL_PASSWORD || '',
+  });
+}
+
+// Latest pending/reopened row per eid — the server-side source of truth for the
+// CRM revision a decision targets (never trust a revision id from the browser).
+async function liveRowsByEid(eids) {
+  const out = new Map();
+  for (let i = 0; i < eids.length; i += 200) {
+    const { data } = await supabase.from('ps_notes')
+      .select('id, eid, status, note_data').in('eid', eids.slice(i, i + 200)).eq('status', 'pending');
+    for (const r of (data || [])) out.set(r.eid, r);
+  }
+  return out;
 }
 
 // GET /api/ps/cosign/scan — SSE: streams progress + delivers final result
@@ -73,23 +98,51 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
     const { notes, runId, delta = 0 } = req.body;
     if (!notes?.length) return res.status(400).json({ error: 'notes required' });
 
-    const engine = await buildEngine();
-    await engine.login();
-    const { signed, failed } = await engine.bulkSign(notes);
+    // Each note goes back to where it came from: InSync notes are co-signed in
+    // InSync, CRM notes are approved in the CRM.
+    const insyncNotes = notes.filter(n => sourceOf(n.eid) === 'insync');
+    const crmNotes    = notes.filter(n => sourceOf(n.eid) === 'crm');
+    let signed = 0, failed = 0;
+    const errors = [];
 
-    if (runId && signed > 0) {
-      const { data: run } = await supabase.from('ps_scan_runs').select('signed_count').eq('id', runId).maybeSingle();
-      await supabase.from('ps_scan_runs').update({ signed_count: (run?.signed_count || 0) + signed + delta }).eq('id', runId);
+    if (insyncNotes.length) {
+      const engine = await buildEngine();
+      await engine.login();
+      const r = await engine.bulkSign(insyncNotes);
+      signed += r.signed; failed += r.failed;
+
+      if (runId && r.signed > 0) {
+        const { data: run } = await supabase.from('ps_scan_runs').select('signed_count').eq('id', runId).maybeSingle();
+        await supabase.from('ps_scan_runs').update({ signed_count: (run?.signed_count || 0) + r.signed + delta }).eq('id', runId);
+      }
+
+      // Flip the persistent queue: the notes we just signed leave 'pending'.
+      const eids = insyncNotes.map(n => n.eid).filter(Boolean);
+      if (eids.length)
+        await supabase.from('ps_notes')
+          .update({ status: 'signed', actioned_at: new Date().toISOString() })
+          .in('eid', eids).eq('status', 'pending');
     }
 
-    // Flip the persistent queue: the notes we just signed leave 'pending'.
-    const eids = notes.map(n => n.eid).filter(Boolean);
-    if (eids.length)
-      await supabase.from('ps_notes')
-        .update({ status: 'signed', actioned_at: new Date().toISOString() })
-        .in('eid', eids).eq('status', 'pending');
+    if (crmNotes.length) {
+      const crm = await buildCrm();
+      await crm.login();
+      const rows = await liveRowsByEid(crmNotes.map(n => n.eid));
+      for (const n of crmNotes) {
+        const row = rows.get(n.eid);
+        const revisionId = row?.note_data?.revisionId;
+        if (!revisionId) { failed++; errors.push({ eid: n.eid, message: 'Not pending here — pull CRM notes again' }); continue; }
+        const r = await crm.decide(revisionId, 'approve');
+        if (!r.ok) { failed++; errors.push({ eid: n.eid, message: r.message }); continue; }
+        // Unlike the InSync batch, a CRM decision reports per note, so only
+        // confirmed approvals leave 'pending'.
+        await supabase.from('ps_notes')
+          .update({ status: 'signed', actioned_at: new Date().toISOString() }).eq('id', row.id);
+        signed++;
+      }
+    }
 
-    res.json({ signed, failed });
+    res.json({ signed, failed, errors });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -103,8 +156,15 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
     const { notes } = req.body;
     if (!notes?.length) return res.status(400).json({ error: 'notes required' });
 
-    const engine = await buildEngine();
-    await engine.login();
+    // Log in only to the sources this batch actually touches.
+    const hasInsync = notes.some(n => sourceOf(n.eid) === 'insync');
+    const hasCrm    = notes.some(n => sourceOf(n.eid) === 'crm');
+    let engine = null, crm = null, crmRows = new Map();
+    if (hasInsync) { engine = await buildEngine(); await engine.login(); }
+    if (hasCrm) {
+      crm = await buildCrm(); await crm.login();
+      crmRows = await liveRowsByEid(notes.filter(n => sourceOf(n.eid) === 'crm').map(n => n.eid));
+    }
 
     // Email settings for the reopen notification (editable in Settings tab).
     // ps_reopen_email_enabled is the Reviewer's master on/off switch: with it
@@ -122,10 +182,18 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
 
     const results = [];
     for (const n of notes) {
-      if (!n.eid || !n.pid) { results.push({ eid: n.eid || null, ok: false, message: 'Missing encounter id' }); continue; }
+      const fromCrm = sourceOf(n.eid) === 'crm';
+      if (!n.eid || (!fromCrm && !n.pid)) { results.push({ eid: n.eid || null, ok: false, message: 'Missing encounter id' }); continue; }
       let r;
       try {
-        r = { eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) };
+        if (fromCrm) {
+          const revisionId = crmRows.get(n.eid)?.note_data?.revisionId;
+          r = revisionId
+            ? { eid: n.eid, ...(await crm.decide(revisionId, 'reopen', n.reason || '')) }
+            : { eid: n.eid, ok: false, message: 'Not pending here — pull CRM notes again' };
+        } else {
+          r = { eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) };
+        }
       } catch (e) {
         results.push({ eid: n.eid, ok: false, message: e.message });
         continue;
@@ -166,6 +234,7 @@ function psNoteView(row) {
   if (f.clone) flags.push(f.clone.reason);
   return {
     id: row.id, eid: row.eid, version: row.version,
+    source: sourceOf(row.eid), revisionId: nd.revisionId || null,
     status: row.status, verdict: row.ai_verdict,
     patientName: row.patient_name, peerName: row.peer_name,
     visitDatetime: row.visit_datetime, visitDate: row.visit_date, mrn: row.mrn,
@@ -285,18 +354,25 @@ router.get('/cosign/dates', requireAuth, requireCoSign, async (req, res) => {
 // GET /api/ps/cosign/pull — SSE: incremental ingest (login → download → dedup →
 // judge new/revised → persist). Read-only against InSync (no sign/reopen). Auth
 // via ?token= because EventSource can't set headers.
-router.get('/cosign/pull', async (req, res) => {
+// Auth for the SSE pulls, via ?token= because EventSource can't set headers.
+// Same rule as requireCoSign, hand-rolled because the middleware chain can't run
+// here (no Authorization header). Payroll-only accounts stay locked out —
+// requireAuth's chokepoint never sees these requests. Returns false after
+// responding when access is refused.
+async function sseCoSignAuth(req, res) {
   const token = req.query.token;
-  if (!token) return res.status(401).json({ error: 'Missing token' });
+  if (!token) { res.status(401).json({ error: 'Missing token' }); return false; }
   const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
-  if (authErr || !user) return res.status(401).json({ error: 'Invalid token' });
-  // Same rule as requireCoSign, hand-rolled because the middleware chain can't
-  // run here (no Authorization header). Payroll-only accounts stay locked out —
-  // requireAuth's chokepoint never sees this request.
+  if (authErr || !user) { res.status(401).json({ error: 'Invalid token' }); return false; }
   const { data: profile } = await supabase.from('profiles')
     .select('role, ps_cosign, ps_payroll_only').eq('id', user.id).single();
   const mayCoSign = (profile?.role === 'admin' || profile?.ps_cosign === true) && !profile?.ps_payroll_only;
-  if (!mayCoSign) return res.status(403).json({ error: 'Co-Sign Review access required' });
+  if (!mayCoSign) { res.status(403).json({ error: 'Co-Sign Review access required' }); return false; }
+  return true;
+}
+
+router.get('/cosign/pull', async (req, res) => {
+  if (!(await sseCoSignAuth(req, res))) return;
 
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -321,6 +397,29 @@ router.get('/cosign/pull', async (req, res) => {
   }
 });
 
+// GET /api/ps/cosign/pull-crm — SSE: the same incremental ingest, from the CRM's
+// supervisor-review queue. Read-only against the CRM (no approve/reopen).
+router.get('/cosign/pull-crm', async (req, res) => {
+  if (!(await sseCoSignAuth(req, res))) return;
+
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+
+  try {
+    const engine = await buildEngine();
+    const crm    = await buildCrm();
+    const stats  = await ingestCrmQueue(engine, crm, { onProgress: (msg, pct) => send('progress', { msg, pct }) });
+    send('done', { stats });
+  } catch (err) {
+    send('error', { message: err.message });
+  } finally {
+    res.end();
+  }
+});
+
 // POST /api/ps/cosign/rejudge — re-run the AI on ONE already-stored note (new
 // prompt / fresh verdict) with NO InSync round-trip. Body: { id }.
 router.post('/cosign/rejudge', requireAuth, requireCoSign, async (req, res) => {
@@ -334,16 +433,9 @@ router.post('/cosign/rejudge', requireAuth, requireCoSign, async (req, res) => {
     const note = { ...(row.note_data || {}), eid: row.eid };
     note.visitDateObj = engine._parseDate(note.visitDatetime || row.visit_datetime);
 
-    // Duplicate pool = current pending notes, minus this one (per spec).
-    // Prepared once; the comparison itself makes no AI calls.
-    const { data: pend } = await supabase.from('ps_notes')
-      .select('eid, mrn, patient_name, visit_date, note_data').eq('status', 'pending').neq('id', id);
-    const corpus = (pend || []).map(r => engine.prepareDupeEntry({
-      eid: r.eid, mrn: r.mrn || r.note_data?.mrn || '',
-      patientName: r.note_data?.patientName || r.patient_name || '',
-      visitDate: r.note_data?.visitDate || r.visit_date || '',
-      fullNoteText: r.note_data?.fullNoteText || '',
-    }));
+    // Duplicate pool = current pending notes from the SAME source, minus this
+    // one (per spec). Prepared once; the comparison itself makes no AI calls.
+    const corpus = await pendingCorpus(engine, sourceOf(row.eid), { excludeId: id });
 
     // force: a manual rejudge deliberately bypasses fingerprint reuse — the
     // operator asked for a fresh opinion. Exactly one AI call either way.
@@ -398,13 +490,16 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
             anthropic_api_key, prompt_core_review, prompt_offsite,
-            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled } = req.body;
+            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled,
+            crm_email, crm_password } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
       insync_provider_id: provider_id,
       insync_username,
       insync_password,
+      crm_portal_email:    crm_email,
+      crm_portal_password: crm_password,
       anthropic_api_key,
       // Empty string is meaningful: it clears the override and reverts to the
       // shipped default (the engine falls back when the stored value is blank).
@@ -469,9 +564,11 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
                 'insync_username','insync_password','anthropic_api_key',
                 'ps_prompt_core_review','ps_prompt_offsite',
                 'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to',
-                'ps_reopen_email_enabled']);
+                'ps_reopen_email_enabled', 'crm_portal_email', 'crm_portal_password']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
+    crm_email:         S.crm_portal_email    || '',
+    crm_password:      S.crm_portal_password || '',
     no_school_start:   S.ps_no_school_start || '07/01',
     no_school_end:     S.ps_no_school_end   || '08/31',
     provider_id:       S.insync_provider_id  || '2317',

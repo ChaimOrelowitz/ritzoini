@@ -30,6 +30,13 @@ function Chip({ color, children }) {
   );
 }
 
+// Where a note came from. Notes arrive from InSync and from the CRM, get the same
+// review, and go back to their own source on sign / reopen.
+const SOURCE_LABEL = { insync: 'InSync', crm: 'CRM' };
+function SourceChip({ source }) {
+  return <Chip color={source === 'crm' ? 'orange' : 'blue'}>{SOURCE_LABEL[source] || 'InSync'}</Chip>;
+}
+
 // ── AI review + duplicate chips ───────────────────────────────────────────────
 
 // Colour and label per AI decision. Deliberately separate from the duplicate
@@ -940,7 +947,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
 
         <div style={{ padding: '18px 24px', display: 'flex', flexDirection: 'column', gap: 18 }}>
           <p style={{ margin: 0, fontSize: '0.82rem', color: 'var(--gray-600)' }}>
-            Reopening sends the note back to the peer for revision. Billed encounters cannot be reopened.
+            Reopening sends the note back to the peer for revision. Billed InSync encounters cannot be reopened; CRM notes need a reason.
             {ctx.notes.length > 1 && ' Each note keeps its own reason — edit any of them below, or set one reason for all.'}
           </p>
 
@@ -1102,7 +1109,7 @@ function PromptProvenance() {
 
 function SettingsTab() {
   const [form, setForm] = useState({
-    insync_username: '', insync_password: '', anthropic_api_key: '',
+    insync_username: '', insync_password: '', crm_email: '', crm_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_core_review: '', prompt_offsite: '',
     qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '', reopen_email_enabled: true,
@@ -1112,12 +1119,15 @@ function SettingsTab() {
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
   const [showPass, setShowPass] = useState(false);
+  const [showCrmPass, setShowCrmPass] = useState(false);
 
   useEffect(() => {
     api.get('/ps/cosign/settings').then(s => {
       setForm({
         insync_username:   s.insync_username   || '',
         insync_password:   s.insync_password   || '',
+        crm_email:         s.crm_email         || '',
+        crm_password:      s.crm_password      || '',
         anthropic_api_key: s.anthropic_api_key || '',
         no_school_start:   s.no_school_start   || '',
         no_school_end:     s.no_school_end     || '',
@@ -1184,6 +1194,33 @@ function SettingsTab() {
       </section>
 
       <section style={sectionStyle}>
+        <p style={sectionLabel}>CRM Credentials</p>
+        <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+          The portal.linksnetwork.com login whose Supervisor Review queue is pulled. Only notes assigned to this supervisor come in.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <div>
+            <label style={lbl}>Email</label>
+            <input className="form-input" value={form.crm_email} onChange={set('crm_email')} placeholder="CRM login email" style={{ width: '100%' }} />
+          </div>
+          <div>
+            <label style={lbl}>Password</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                type={showCrmPass ? 'text' : 'password'}
+                className="form-input" value={form.crm_password} onChange={set('crm_password')}
+                placeholder="CRM password" style={{ width: '100%', paddingRight: 68 }}
+              />
+              <button type="button" onClick={() => setShowCrmPass(p => !p)} style={{
+                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--gray-500)',
+              }}>{showCrmPass ? 'Hide' : 'Show'}</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section style={sectionStyle}>
         <p style={sectionLabel}>Anthropic (Claude) API Key</p>
         <input
           type="password" className="form-input" value={form.anthropic_api_key} onChange={set('anthropic_api_key')}
@@ -1222,7 +1259,7 @@ function SettingsTab() {
         <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
           {form.reopen_email_enabled
             ? 'On — reopening a note emails a PDF of it to the recipient below. '
-            : 'Off — notes still reopen in InSync and still move to “Waiting on Peer”; no email goes out. '}
+            : 'Off — notes still reopen in InSync or the CRM and still move to “Waiting on Peer”; no email goes out. '}
           You can also silence a single batch from the Reopen dialog without changing this switch.
           The “From” address must be a domain verified in Resend — otherwise leave it blank (system default) and set Reply-to to your work email.
         </p>
@@ -1700,12 +1737,13 @@ function QueueTab() {
   });
   const [fPeer,   setFPeer]   = useState(new Set());
   const [fLen,    setFLen]    = useState(new Set());
+  const [fSource, setFSource] = useState(new Set());
   const [dFrom,   setDFrom]   = useState('');
   const [dTo,     setDTo]     = useState('');
   const [datePicker, setDatePicker] = useState(false);
   const esRef = useRef(null);
 
-  const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); };
+  const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setFSource(new Set()); setDFrom(''); setDTo(''); };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1724,10 +1762,12 @@ function QueueTab() {
   useEffect(() => { load(); }, [load]);
   useEffect(() => () => { if (esRef.current) esRef.current.close(); }, []);
   // Filter options are drawn from the current view's notes, so reset on switch.
-  useEffect(() => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setDFrom(''); setDTo(''); }, [view]);
+  useEffect(() => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setFSource(new Set()); setDFrom(''); setDTo(''); }, [view]);
 
   // `dates` — MM/DD/YYYY keys from the date picker. Omitted pulls the whole queue.
-  async function startPull(dates = null) {
+  // `source` — 'insync' (the co-sign queue) or 'crm' (the CRM's supervisor-review
+  // queue, which has no date picker).
+  async function startPull(dates = null, source = 'insync') {
     if (pulling) return;
     setDatePicker(false);
     setPulling(true);
@@ -1737,7 +1777,8 @@ function QueueTab() {
     if (!token) { alert('Not logged in'); setPulling(false); return; }
 
     const dq = dates && dates.length ? `&dates=${encodeURIComponent(dates.join(','))}` : '';
-    const es = new EventSource(`${API}/api/ps/cosign/pull?token=${encodeURIComponent(token)}${dq}`);
+    const endpoint = source === 'crm' ? 'pull-crm' : 'pull';
+    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${source === 'crm' ? '' : dq}`);
     esRef.current = es;
     es.onmessage = e => {
       try {
@@ -1747,7 +1788,7 @@ function QueueTab() {
           const s = msg.stats || {};
           setPulling(false); setProgress(null); es.close();
           load();
-          alert(`Pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}.`);
+          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}.`);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -1763,8 +1804,11 @@ function QueueTab() {
     setBusyIds(s => new Set([...s, ...ids]));
     try {
       const slim = list.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId }));
-      const { signed, failed } = await api.post('/ps/cosign/sign', { notes: slim });
-      alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.`);
+      const { signed, failed, errors = [] } = await api.post('/ps/cosign/sign', { notes: slim });
+      const detail = errors.length
+        ? '\n\n' + errors.map(e => `${list.find(n => n.eid === e.eid)?.patientName || e.eid}: ${e.message}`).join('\n')
+        : '';
+      alert(`${label}: ${signed} signed${failed > 0 ? `, ${failed} failed` : ''}.${detail}`);
       await load();
     } catch (ex) { alert('Sign error: ' + ex.message); }
     finally { setBusyIds(s => { const n = new Set(s); ids.forEach(i => n.delete(i)); return n; }); }
@@ -1789,7 +1833,7 @@ function QueueTab() {
   }
 
   async function openVersions(eid) {
-    try { setVersionsModal(await api.get(`/ps/cosign/notes/${eid}/versions`)); }
+    try { setVersionsModal(await api.get(`/ps/cosign/notes/${encodeURIComponent(eid)}/versions`)); }
     catch (ex) { alert(ex.message); }
   }
 
@@ -1802,7 +1846,8 @@ function QueueTab() {
   const clientOpts = uniq(n => n.patientName);
   const peerOpts   = uniq(n => n.peerName);
   const lenOpts    = uniq(n => n.totalTime);
-  const hasFilter  = fClient.size || fPeer.size || fLen.size || dFrom || dTo;
+  const sourceOpts = uniq(n => SOURCE_LABEL[n.source] || 'InSync');
+  const hasFilter  = fClient.size || fPeer.size || fLen.size || fSource.size || dFrom || dTo;
 
   const fromD = dFrom ? new Date(dFrom + 'T00:00:00') : null;
   const toD   = dTo   ? new Date(dTo   + 'T23:59:59') : null;
@@ -1810,6 +1855,7 @@ function QueueTab() {
     if (fClient.size && !fClient.has(n.patientName)) return false;
     if (fPeer.size   && !fPeer.has(n.peerName))      return false;
     if (fLen.size    && !fLen.has(n.totalTime))      return false;
+    if (fSource.size && !fSource.has(SOURCE_LABEL[n.source] || 'InSync')) return false;
     if (fromD || toD) {
       const d = parseVisit(n.visitDate);
       if (d) { if (fromD && d < fromD) return false; if (toD && d > toD) return false; }
@@ -1831,6 +1877,7 @@ function QueueTab() {
       <MultiFilter label="Client"  options={clientOpts} selected={fClient} onChange={setFClient} />
       <MultiFilter label="Peer"    options={peerOpts}   selected={fPeer}   onChange={setFPeer} />
       <MultiFilter label="Length"  options={lenOpts}    selected={fLen}    onChange={setFLen} />
+      <MultiFilter label="Source"  options={sourceOpts} selected={fSource} onChange={setFSource} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span style={{ fontSize: '0.75rem', color: 'var(--gray-500)' }}>Date</span>
         <input type="date" className="form-input" value={dFrom} onChange={e => setDFrom(e.target.value)} style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
@@ -1848,7 +1895,7 @@ function QueueTab() {
 
   function signClean() {
     if (!clean.length) return;
-    if (!window.confirm(`Sign all ${clean.length} clean notes? This co-signs them in InSync.`)) return;
+    if (!window.confirm(`Sign all ${clean.length} clean notes? InSync notes are co-signed in InSync; CRM notes are approved in the CRM.`)) return;
     signNotes(clean, 'Bulk sign clean');
   }
   function toggleAll() {
@@ -1871,6 +1918,7 @@ function QueueTab() {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>{note.patientName}</span>
+            <SourceChip source={note.source} />
             {note.version > 1 && <Chip color="gray">v{note.version}</Chip>}
             {view === 'archive' && <Chip color={note.status === 'signed' ? 'gray' : 'blue'}>{note.status}</Chip>}
           </div>
@@ -1906,8 +1954,8 @@ function QueueTab() {
             </button>
           )}
           {view === 'queue' && (
-            <button className="btn btn-gold btn-xs" onClick={() => signNotes([note], 'Sign')} disabled={busy}>
-              {busy ? '…' : 'Sign'}
+            <button className="btn btn-gold btn-xs" onClick={() => signNotes([note], note.source === 'crm' ? 'Approve' : 'Sign')} disabled={busy}>
+              {busy ? '…' : note.source === 'crm' ? 'Approve' : 'Sign'}
             </button>
           )}
         </div>
@@ -1942,6 +1990,9 @@ function QueueTab() {
           <button className="btn btn-gold btn-sm" onClick={() => startPull()} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
             {pulling ? 'Pulling…' : '⟳ Pull new notes'}
           </button>
+          <button className="btn btn-outline btn-sm" onClick={() => startPull(null, 'crm')} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+            ⟳ Pull CRM notes
+          </button>
         </div>
       </div>
 
@@ -1957,7 +2008,7 @@ function QueueTab() {
 
           {notes.length === 0 && (
             <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
-              Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync.
+              Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync, or <strong>Pull CRM notes</strong> for the CRM.
             </div>
           )}
           {notes.length > 0 && filtered.length === 0 && (

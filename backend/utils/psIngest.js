@@ -18,11 +18,48 @@
 
 const crypto = require('crypto');
 const supabase = require('../db/supabase');
+const { CRM_PREFIX, NO_CONTEXT_FLAG, sourceOf, crmRevisionToNote, findInsyncContext } = require('./crmPortal');
+
+// Notes arrive from two sources — InSync and the CRM (utils/crmPortal.js) — and
+// get identical treatment, with ONE exception: duplicate comparison never crosses
+// sources. A CRM note is compared only with pending CRM notes, an InSync note
+// only with pending InSync notes. The source is carried by the eid (`crm:` prefix).
+function whereSource(query, source) {
+  return source === 'crm'
+    ? query.like('eid', `${CRM_PREFIX}%`)
+    : query.not('eid', 'like', `${CRM_PREFIX}%`);
+}
+
+// The pending pool for one source, prepared for duplicate comparison.
+async function pendingCorpus(engine, source, { excludeId = null } = {}) {
+  let q = supabase.from('ps_notes')
+    .select('id, eid, mrn, patient_name, visit_date, note_data').eq('status', 'pending');
+  q = whereSource(q, source);
+  if (excludeId) q = q.neq('id', excludeId);
+  const { data } = await q;
+  return (data || []).map(r => engine.prepareDupeEntry({
+    eid:          r.eid,
+    mrn:          r.mrn || r.note_data?.mrn || '',
+    patientName:  r.note_data?.patientName || r.patient_name || '',
+    visitDate:    r.note_data?.visitDate   || r.visit_date   || '',
+    fullNoteText: r.note_data?.fullNoteText || '',
+    structuredText: r.note_data?.structuredText || '',
+  }));
+}
+
+// Track 1 for either source. A CRM note with no InSync chart to borrow age /
+// diagnosis / treatment plan from can't be fully checked, so it never lands in
+// the clean stack.
+function machineChecks(engine, note) {
+  const flags = engine.checkNote(note);
+  if (sourceOf(note.eid) === 'crm' && !note.chartContext) flags.push(NO_CONTEXT_FLAG);
+  return flags;
+}
 
 // Hash of the note's full parsed text — the fingerprint used to tell "already
 // have this" from "this came back revised".
 function contentHash(note) {
-  const basis = note.fullNoteText || note.noteText || '';
+  const basis = note.hashBasis || note.fullNoteText || note.noteText || '';
   return crypto.createHash('sha256').update(basis).digest('hex');
 }
 
@@ -91,7 +128,7 @@ function assembleJudged(machine, dupe, review, reused) {
 }
 
 async function judgeNote(engine, note, corpus, { priorReview = null, force = false } = {}) {
-  const machine = engine.checkNote(note);            // 1
+  const machine = machineChecks(engine, note);       // 1
   const dupe    = engine.findDupe(note, corpus);     // 2 — synchronous, no network
   const { review, reused } = await reviewFor(engine, note, machine, { priorReview, force }); // 3
   return assembleJudged(machine, dupe, review, reused);
@@ -123,6 +160,7 @@ function summaryFlagOf(review) {
 function serializeNote(note) {
   const nd = { ...note };
   delete nd.visitDateObj;
+  delete nd.hashBasis;
   return nd;
 }
 
@@ -179,19 +217,52 @@ async function ingestQueue(engine, { onProgress, dates = null } = {}) {
   const dateSet = dates && dates.length ? new Set(dates) : null;
   const { notes, cantLoad } = await engine.fetchNotes(report, { dates: dateSet });
 
-  // Pending pool for duplicate comparison (status='pending' ONLY, per spec).
-  // Section bigrams are precomputed ONCE here via prepareDupeEntry and reused for
-  // every comparison in this pull — never recomputed per pair.
-  const { data: pendingRows } = await supabase.from('ps_notes')
-    .select('eid, mrn, patient_name, visit_date, note_data').eq('status', 'pending');
-  const corpus = (pendingRows || []).map(r => engine.prepareDupeEntry({
-    eid:          r.eid,
-    mrn:          r.mrn || r.note_data?.mrn || '',
-    patientName:  r.note_data?.patientName || r.patient_name || '',
-    visitDate:    r.note_data?.visitDate   || r.visit_date   || '',
-    fullNoteText: r.note_data?.fullNoteText || '',
-    structuredText: r.note_data?.structuredText || '',
-  }));
+  return ingestNotes(engine, { source: 'insync', notes, cantLoad, report });
+}
+
+// CRM entry: login → queue → load each revision → borrow InSync chart context →
+// the same dedup/judge/persist path as InSync.
+async function ingestCrmQueue(engine, crm, { onProgress, findContext } = {}) {
+  const report = (m, p) => { if (onProgress) onProgress(m, p); };
+  findContext = findContext || findInsyncContext;
+
+  report('Logging into the CRM...', 2);
+  await crm.login();
+
+  report('Fetching CRM review queue...', 5);
+  const items = await crm.fetchQueue();
+
+  const notes = [], cantLoad = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    report(`Loading CRM note ${i + 1} of ${items.length}...`,
+      10 + Math.floor((i / Math.max(items.length, 1)) * 65));
+    try {
+      const rev = await crm.fetchRevision(it.revisionId);
+      const context = await findContext(rev.clientName);
+      notes.push(crmRevisionToNote(rev, context));
+    } catch (err) {
+      console.error(`[PS CRM ingest] revision ${it.revisionId}: ${err.message}`);
+      const stub = crmRevisionToNote({
+        id: it.revisionId, sessionNoteId: it.sessionNoteId, revisionOrdinal: it.revisionOrdinal,
+        clientName: it.clientName, peerName: it.peerName,
+        snapshot: { sessionDate: it.sessionDate, sessionStartMinutes: it.sessionStartMinutes, durationMinutes: it.durationMinutes },
+      });
+      cantLoad.push({ eid: stub.eid, pid: null, source: 'crm', revisionId: it.revisionId,
+                      sessionNoteId: it.sessionNoteId, peerName: stub.peerName, patientName: stub.patientName,
+                      visitDate: stub.visitDate, visitDatetime: stub.visitDatetime });
+    }
+  }
+
+  return ingestNotes(engine, { source: 'crm', notes, cantLoad, report });
+}
+
+// Shared by both sources: dedup → judge new/revised → persist.
+async function ingestNotes(engine, { source, notes, cantLoad, report }) {
+  // Pending pool for duplicate comparison (status='pending' ONLY, per spec, and
+  // this source ONLY). Section bigrams are precomputed ONCE here via
+  // prepareDupeEntry and reused for every comparison in this pull.
+  const corpus = await pendingCorpus(engine, source);
 
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
                   reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,
@@ -226,7 +297,7 @@ async function ingestQueue(engine, { onProgress, dates = null } = {}) {
       continue;
     }
 
-    const machine = engine.checkNote(note);        // track 1
+    const machine = machineChecks(engine, note);   // track 1
     const dupe    = engine.findDupe(note, corpus); // track 2 — order-dependent
     // Progressive pending pool: later notes in this same batch compare against it.
     corpus.push(engine.prepareDupeEntry(note));
@@ -310,5 +381,6 @@ async function priorReviewFor(eid) {
   return data?.ai_flags?.review || null;
 }
 
-module.exports = { ingestQueue, decideAction, judgeNote, reviewFor, assembleJudged,
+module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, pendingCorpus, whereSource, machineChecks,
+                   decideAction, judgeNote, reviewFor, assembleJudged,
                    contentHash, serializeNote, priorReviewFor };
