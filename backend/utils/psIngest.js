@@ -254,7 +254,41 @@ async function ingestCrmQueue(engine, crm, { onProgress, findContext } = {}) {
     }
   }
 
-  return ingestNotes(engine, { source: 'crm', notes, cantLoad, report });
+  const stats = await ingestNotes(engine, { source: 'crm', notes, cantLoad, report });
+  stats.closed = await closeVanishedCrmNotes(items, report);
+  return stats;
+}
+
+// The CRM's queue is the whole truth about what is still yours to act on: its
+// detail endpoint 404s as soon as a revision leaves your queue (approved or
+// reopened by someone else, reassigned to another supervisor, or — in the CRM's
+// "observe" mode — sent to InSync by Peer Admin). A note we still hold as pending
+// that is no longer in that queue can never be approved from here, so it is
+// closed out of the queue rather than left unsignable. Those sessions come back
+// through the InSync co-sign queue in the normal way.
+// Close one CRM note out of the queue: it is no longer actionable in the CRM.
+async function closeCrmNote(id, noteData) {
+  const { data: row } = await supabase.from('ps_notes').select('ai_flags').eq('id', id).maybeSingle();
+  await supabase.from('ps_notes').update({
+    status: 'superseded',
+    actioned_at: new Date().toISOString(),
+    ai_flags: { ...(row?.ai_flags || {}), crmClosed: {
+      at: new Date().toISOString(),
+      revisionId: noteData?.revisionId || null,
+      reason: 'No longer in the CRM review queue — approved, reopened or sent to InSync elsewhere',
+    } },
+  }).eq('id', id);
+}
+
+async function closeVanishedCrmNotes(items, report) {
+  const live = new Set((items || []).map(i => i.revisionId));
+  let q = supabase.from('ps_notes').select('id, eid, ai_flags, note_data').eq('status', 'pending');
+  const { data: rows } = await whereSource(q, 'crm');
+  const gone = (rows || []).filter(r => r.note_data?.revisionId && !live.has(r.note_data.revisionId));
+  if (!gone.length) return 0;
+  report(`Closing ${gone.length} note(s) no longer in the CRM queue...`, 99);
+  for (const r of gone) await closeCrmNote(r.id, r.note_data);
+  return gone.length;
 }
 
 // Shared by both sources: dedup → judge new/revised → persist.
@@ -381,6 +415,6 @@ async function priorReviewFor(eid) {
   return data?.ai_flags?.review || null;
 }
 
-module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, pendingCorpus, whereSource, machineChecks,
+module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, closeVanishedCrmNotes, closeCrmNote, pendingCorpus, whereSource, machineChecks,
                    decideAction, judgeNote, reviewFor, assembleJudged,
                    contentHash, serializeNote, priorReviewFor };

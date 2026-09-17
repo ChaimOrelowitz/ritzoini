@@ -1833,7 +1833,7 @@ function QueueTab() {
           const s = msg.stats || {};
           setPulling(false); setProgress(null); es.close();
           load();
-          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}.`);
+          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}.`);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();

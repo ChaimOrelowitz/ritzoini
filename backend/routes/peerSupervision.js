@@ -4,7 +4,7 @@ const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
 const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
-const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote } = require('../utils/psIngest');
+const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote } = require('../utils/psIngest');
 const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
         receiveSession, sessionStatus } = require('../utils/crmPortal');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
@@ -122,7 +122,18 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
         const revisionId = row?.note_data?.revisionId;
         if (!revisionId) { failed++; errors.push({ eid: n.eid, message: 'Not pending here — pull CRM notes again' }); continue; }
         const r = await crm.decide(revisionId, 'approve');
-        if (!r.ok) { failed++; errors.push({ eid: n.eid, message: r.message }); continue; }
+        if (!r.ok) {
+          failed++;
+          // HTTP 404 = the revision left this supervisor's CRM queue, so it can
+          // never be approved from here. Close it out instead of leaving it stuck.
+          if (/HTTP 404/.test(r.message || '')) {
+            await closeCrmNote(row.id, row.note_data);
+            errors.push({ eid: n.eid, message: 'No longer in the CRM review queue (approved, reopened or sent to InSync elsewhere) — removed from the queue here' });
+          } else {
+            errors.push({ eid: n.eid, message: r.message });
+          }
+          continue;
+        }
         // Unlike the InSync batch, a CRM decision reports per note, so only
         // confirmed approvals leave 'pending'.
         await supabase.from('ps_notes')
@@ -180,6 +191,11 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
           r = revisionId
             ? { eid: n.eid, ...(await crm.decide(revisionId, 'reopen', n.reason || '')) }
             : { eid: n.eid, ok: false, message: 'Not pending here — pull CRM notes again' };
+          if (!r.ok && /HTTP 404/.test(r.message || '')) {
+            const row = crmRows.get(n.eid);
+            if (row) await closeCrmNote(row.id, row.note_data);
+            r.message = 'No longer in the CRM review queue (approved, reopened or sent to InSync elsewhere) — removed from the queue here';
+          }
         } else {
           r = { eid: n.eid, ...(await engine.reopenNote({ eid: n.eid, pid: n.pid, reason: n.reason || '' })) };
         }
