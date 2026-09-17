@@ -117,6 +117,30 @@ class CrmPortalClient {
     await writeSession({ ...saved, cookies: Object.fromEntries(this.jar), lastValidAt: now, invalidAt: null, account: who });
   }
 
+  // What the CRM's own page does on a timer so a session doesn't go idle. Ritzoini
+  // does the same (utils/crmKeepAlive.js) so the session the extension sent stays
+  // usable without anyone logging in again.
+  async touch() {
+    const saved = await readSession();
+    if (!saved?.cookies) return { ok: false, message: 'no CRM session stored' };
+    this.jar = new Map(Object.entries(saved.cookies));
+    let res;
+    try {
+      res = await fetch(`${CRM_BASE}/api/auth/session/touch`, {
+        method: 'POST', headers: this._headers({ Accept: 'application/json' }), redirect: 'manual', cache: 'no-store',
+      });
+    } catch (err) { return { ok: false, message: `could not reach the CRM: ${err.message}` }; }
+    this._addCookies(res);
+    const now = new Date().toISOString();
+    if (res.status === 401 || res.status === 403) {
+      if (!saved.invalidAt) await writeSession({ ...saved, invalidAt: now });
+      return { ok: false, expired: true, message: 'the CRM ended this session' };
+    }
+    if (res.status !== 200) return { ok: false, message: `touch returned HTTP ${res.status}` };
+    await writeSession({ ...saved, cookies: Object.fromEntries(this.jar), lastValidAt: now, invalidAt: null });
+    return { ok: true, message: 'session kept alive' };
+  }
+
   async _getJson(path, label) {
     const res = await fetch(`${CRM_BASE}${path}`, {
       headers: this._headers({ Accept: 'application/json' }), redirect: 'manual', cache: 'no-store',

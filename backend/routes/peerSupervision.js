@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
-const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
+const { DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote } = require('../utils/psIngest');
 const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
@@ -12,23 +12,8 @@ const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils
 
 // ── Co-Sign ───────────────────────────────────────────────────────────────────
 
-async function buildEngine() {
-  const { data: rows } = await supabase.from('app_settings').select('key, value')
-    .in('key', ['insync_username','insync_password','insync_provider_id',
-                'ps_no_school_start','ps_no_school_end','anthropic_api_key',
-                'ps_prompt_core_review','ps_prompt_offsite']);
-  const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
-  return new InsyncCoSignEngine({
-    username:      S.insync_username    || process.env.INSYNC_USERNAME      || '',
-    password:      S.insync_password    || process.env.INSYNC_PASSWORD      || '',
-    anthropicKey:  S.anthropic_api_key  || process.env.ANTHROPIC_API_KEY    || '',
-    providerId:    S.insync_provider_id || process.env.INSYNC_PROVIDER_ID   || '2317',
-    noSchoolStart: S.ps_no_school_start || '',
-    noSchoolEnd:   S.ps_no_school_end   || '',
-    coreReviewPrompt: S.ps_prompt_core_review || '',
-    offsitePrompt:    S.ps_prompt_offsite     || '',
-  });
-}
+// Built in utils/psEngine.js so the CRM keep-alive timer builds it identically.
+const buildEngine = require('../utils/psEngine').buildPsEngine;
 
 // Latest pending/reopened row per eid — the server-side source of truth for the
 // CRM revision a decision targets (never trust a revision id from the browser).
@@ -454,6 +439,17 @@ router.get('/cosign/crm-status', requireAuth, requireCoSign, async (req, res) =>
 router.post('/cosign/crm-extension-token', requireAuth, requireAdmin, async (req, res) => {
   try { res.json({ token: await rotateExtensionToken() }); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/ps/cosign/crm-keepalive — ping the CRM so the stored session doesn't
+// go idle (x-cron-secret). The web service already does this on its own timer;
+// this is for an external scheduler, which matters if the service ever sleeps.
+router.post('/cosign/crm-keepalive', async (req, res) => {
+  const secret   = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'] || req.query.secret;
+  if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
+  const r = await require('../utils/crmKeepAlive').touchOnce();
+  res.status(r.ok ? 200 : 409).json(r);
 });
 
 // POST /api/ps/cosign/crm-cron — hourly CRM pull for an external scheduler

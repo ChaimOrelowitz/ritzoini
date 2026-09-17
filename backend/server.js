@@ -224,5 +224,8 @@ app.listen(PORT, async () => {
   await loadEmailEnabled();
   await loadDeliveryMode();
   await loadZohoRefreshToken();
+  // Keeps the CRM session the Chrome extension sent from going idle, and pulls
+  // the CRM review queue on a timer (CRM_AUTO=off disables both).
+  require('./utils/crmKeepAlive').startCrmKeepAlive();
   console.log(`Ritzoini API running on port ${PORT} (email_enabled: ${getEmailEnabled()}, soap_note_delivery: ${getDeliveryMode()})`);
 });
