@@ -65,6 +65,10 @@ class CrmPortalClient {
     });
     this._addCookies(res);
     const loc = res.headers.get('location') || '';
+    // Password accepted, but the CRM wants a second step: it emails a one-time
+    // sign-in link that must be opened in the same session.
+    if (/\/signin\/check-email/i.test(loc))
+      throw new Error('CRM password accepted, but the CRM requires email verification (it just emailed a one-time sign-in link) — this pull cannot finish the sign-in yet');
     if (res.status >= 400 || /signin|error=/i.test(loc) || !this.jar.size)
       throw new Error('CRM login failed — check the CRM email/password in ⚙ Settings');
     // A redirect alone doesn't prove the session took — confirm it.
