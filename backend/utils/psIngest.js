@@ -18,7 +18,8 @@
 
 const crypto = require('crypto');
 const supabase = require('../db/supabase');
-const { CRM_PREFIX, NO_CONTEXT_FLAG, sourceOf, crmRevisionToNote, findInsyncContext } = require('./crmPortal');
+const { CRM_PREFIX, NO_CONTEXT_FLAG, sourceOf, crmRevisionToNote, findInsyncContext,
+        loadCrmApprovals, crmApprovalFor } = require('./crmPortal');
 
 // Notes arrive from two sources — InSync and the CRM (utils/crmPortal.js) — and
 // get identical treatment, with ONE exception: duplicate comparison never crosses
@@ -104,10 +105,13 @@ async function reviewFor(engine, note, machine, { priorReview = null, force = fa
 
 // Fold the three tracks into one verdict. Pure — no I/O — so it can run after a
 // parallel review wave without changing anything about the outcome.
-function assembleJudged(machine, dupe, review, reused) {
+function assembleJudged(machine, dupe, review, reused, crmApproved = null) {
   const flags = {
     machine,
     clone:     dupe || null,
+    // Set when this session was already approved in the CRM, which is why no AI
+    // review was run for it here.
+    crmApproved,
     // Backward-compatible short line for components not yet reading `review`.
     coherence: summaryFlagOf(review),
     offsite:   offsiteSummary(review),
@@ -298,9 +302,15 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   // prepareDupeEntry and reused for every comparison in this pull.
   const corpus = await pendingCorpus(engine, source);
 
+  // Sessions already approved in the CRM skip the AI review when they arrive
+  // from InSync — same note, same tokens. The free checks (duration, minor,
+  // duplicate) still run, so a note only lands in the clean stack if nothing
+  // mechanical objects.
+  const crmApprovals = source === 'insync' ? await loadCrmApprovals() : new Map();
+
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
                   reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,
-                  aiCalls: 0, aiReused: 0 };
+                  aiCalls: 0, aiReused: 0, crmApproved: 0 };
   const aiCallsAtStart = engine.aiCallCount || 0;
 
   // ── Pass 1 — dedup + the two mechanical tracks. Strictly serial and in order:
@@ -335,7 +345,8 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
     const dupe    = engine.findDupe(note, corpus); // track 2 — order-dependent
     // Progressive pending pool: later notes in this same batch compare against it.
     corpus.push(engine.prepareDupeEntry(note));
-    work.push({ note, hash, existing, action, machine, dupe });
+    work.push({ note, hash, existing, action, machine, dupe,
+                crmApproved: crmApprovalFor(note, crmApprovals) });
   }
 
   // ── Pass 2 — the AI reviews, in parallel. This is the whole runtime of a pull
@@ -349,17 +360,21 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
       // A revision keeps the prior version's review only if the fingerprint still
       // matches (it won't, if the content changed) — this is what makes a re-pull
       // of an unchanged note cost zero AI calls.
-      const priorReview = w.existing ? await priorReviewFor(w.note.eid) : null;
-      const { review, reused } = await reviewFor(engine, w.note, w.machine, { priorReview });
-      w.judged = assembleJudged(w.machine, w.dupe, review, reused);
+      if (w.crmApproved) {           // approved in the CRM — no second AI review
+        w.judged = assembleJudged(w.machine, w.dupe, null, false, w.crmApproved);
+      } else {
+        const priorReview = w.existing ? await priorReviewFor(w.note.eid) : null;
+        const { review, reused } = await reviewFor(engine, w.note, w.machine, { priorReview });
+        w.judged = assembleJudged(w.machine, w.dupe, review, reused);
+      }
     } catch (err) {
       // A single failed review must not sink the wave — record it as an error
       // verdict so the note still lands in the queue for a human.
       w.judged = assembleJudged(w.machine, w.dupe,
-        { decision: 'AI_REVIEW_ERROR', error: `Review failed: ${err.message}` }, false);
+        { decision: 'AI_REVIEW_ERROR', error: `Review failed: ${err.message}` }, false, w.crmApproved);
     }
     reviewed++;
-    report(`AI review ${reviewed} of ${work.length}...`,
+    report(`Reviewing ${reviewed} of ${work.length}...`,
       82 + Math.floor((reviewed / Math.max(work.length, 1)) * 16));
   }
   if (work.length) await runReview(work[0]);
@@ -370,6 +385,7 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   // partner-flag writes stay deterministic.
   for (const { note, hash, existing, action, judged } of work) {
     if (judged.aiCalled) stats.aiCalls++; else if (judged.flags.review) stats.aiReused++;
+    if (judged.flags.crmApproved) stats.crmApproved++;
 
     // Option (b): a possible duplicate pulls its pending partner into the
     // flagged queue too, so neither half can be bulk-signed by accident. This

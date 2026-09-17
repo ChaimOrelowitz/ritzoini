@@ -387,6 +387,49 @@ async function sessionStatus() {
   };
 }
 
-module.exports = { CrmPortalClient, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
+// ── "I already approved this in the CRM" ───────────────────────────────────────
+//
+// The same session reaches the InSync co-sign queue after the peer signs it
+// there, so a note approved in the CRM would otherwise be AI-reviewed twice —
+// the same tokens for the same text. The InSync note is matched to the CRM note
+// by client, visit date and start time (never by text), and the review is then
+// skipped and the stored CRM review shown instead.
+
+const sessionKeyOf = (patientName, visitDate, startTimeStr) => {
+  const m = /(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(startTimeStr || '');
+  if (!m) return null;
+  const start = (Number(m[1]) % 12 + (/pm/i.test(m[3]) ? 12 : 0)) * 60 + Number(m[2]);
+  const name = nameTokens(patientName);
+  return name && visitDate ? `${name}|${visitDate}|${start}` : null;
+};
+
+// Every session approved in the CRM, keyed for that match. Built once per pull.
+async function loadCrmApprovals() {
+  const { data } = await supabase.from('ps_notes')
+    .select('eid, patient_name, visit_date, actioned_at, note_data')
+    .like('eid', `${CRM_PREFIX}%`).eq('status', 'signed');
+  const index = new Map();
+  for (const r of (data || [])) {
+    const key = sessionKeyOf(r.note_data?.patientName || r.patient_name, r.note_data?.visitDate || r.visit_date,
+                             r.note_data?.startTimeStr);
+    if (!key) continue;
+    index.set(key, {
+      crmEid: r.eid,
+      sessionNoteId: r.note_data?.sessionNoteId || null,
+      revisionId: r.note_data?.revisionId || null,
+      approvedAt: r.actioned_at || null,
+    });
+  }
+  return index;
+}
+
+// The CRM approval for an InSync note, or null.
+function crmApprovalFor(note, index) {
+  if (!index || !index.size) return null;
+  const key = sessionKeyOf(note.patientName, note.visitDate, note.startTimeStr);
+  return key ? index.get(key) || null : null;
+}
+
+module.exports = { CrmPortalClient, loadCrmApprovals, crmApprovalFor, sessionKeyOf, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
                    receiveSession, sessionStatus, fingerprintOf, crmRevisionToNote, findInsyncContext, nameTokens,
                    sourceOf, CRM_PREFIX, NO_CONTEXT_FLAG };

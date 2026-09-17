@@ -12,9 +12,10 @@ const assert = require('assert');
 process.env.SUPABASE_URL = 'http://stub.invalid';
 process.env.SUPABASE_SERVICE_KEY = 'stub';
 
-const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, fingerprintOf } = require('../utils/crmPortal');
+const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, fingerprintOf,
+        sessionKeyOf, crmApprovalFor } = require('../utils/crmPortal');
 const E = require('../utils/peerSupervisorEngine');
-const { contentHash, machineChecks, decideAction, whereSource } = require('../utils/psIngest');
+const { contentHash, machineChecks, decideAction, whereSource, assembleJudged } = require('../utils/psIngest');
 
 let passed = 0;
 function test(name, fn) {
@@ -147,6 +148,32 @@ test('a session fingerprint ignores cookie order and changes with any value', ()
   assert.strictEqual(fingerprintOf({ other: 'y', serenity_session: 'x' }), a);
   assert.notStrictEqual(fingerprintOf({ serenity_session: 'z', other: 'y' }), a);
   assert.ok(!a.includes('x'));
+});
+
+test('a CRM-approved session is recognised when it arrives from InSync', () => {
+  // The CRM writes "First Last", InSync "Last, First" — same session either way.
+  const key = sessionKeyOf('Test Client', '09/15/2026', '11:15 AM');
+  assert.ok(key);
+  assert.strictEqual(sessionKeyOf('Client, Test', '09/15/2026', '11:15 AM'), key);
+  const index = new Map([[key, { crmEid: 'crm:x', approvedAt: '2026-09-17T19:00:00.000Z' }]]);
+  const insyncNote = { patientName: 'Client, Test', visitDate: '09/15/2026', startTimeStr: '11:15 AM' };
+  assert.ok(crmApprovalFor(insyncNote, index));
+  // A different session that day is not the approved one.
+  assert.strictEqual(crmApprovalFor({ ...insyncNote, startTimeStr: '02:00 PM' }, index), null);
+  assert.strictEqual(crmApprovalFor({ ...insyncNote, visitDate: '09/16/2026' }, index), null);
+  assert.strictEqual(crmApprovalFor({ ...insyncNote, patientName: 'Other, Someone' }, index), null);
+});
+
+test('a CRM-approved note is clean with no AI review, unless a free check objects', () => {
+  const approval = { crmEid: 'crm:x', approvedAt: '2026-09-17T19:00:00.000Z' };
+  const clean = assembleJudged([], null, null, false, approval);
+  assert.strictEqual(clean.verdict, 'clean');
+  assert.strictEqual(clean.flags.review, null);
+  assert.strictEqual(clean.aiCalled, false);
+  assert.deepStrictEqual(clean.flags.crmApproved, approval);
+  // Duration/minor findings and duplicates cost nothing and still flag it.
+  assert.strictEqual(assembleJudged(['3-hour session'], null, null, false, approval).verdict, 'flagged');
+  assert.strictEqual(assembleJudged([], { partnerEid: '1' }, null, false, approval).verdict, 'flagged');
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);

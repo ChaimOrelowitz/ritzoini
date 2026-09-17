@@ -240,6 +240,9 @@ function psNoteView(row) {
   return {
     id: row.id, eid: row.eid, version: row.version,
     source: sourceOf(row.eid), revisionId: nd.revisionId || null,
+    // Set when this session was already approved in the CRM — why it carries no
+    // AI review of its own.
+    crmApproved: f.crmApproved || null,
     status: row.status, verdict: row.ai_verdict,
     patientName: row.patient_name, peerName: row.peer_name,
     visitDatetime: row.visit_datetime, visitDate: row.visit_date, mrn: row.mrn,

@@ -33,6 +33,15 @@ function Chip({ color, children }) {
 // Where a note came from. Notes arrive from InSync and from the CRM, get the same
 // review, and go back to their own source on sign / reopen.
 const SOURCE_LABEL = { insync: 'InSync', crm: 'CRM' };
+// Approved in the CRM already, so the AI review was skipped here rather than
+// paying for the same review twice.
+function CrmApprovedChip({ note }) {
+  if (!note.crmApproved) return null;
+  const when = note.crmApproved.approvedAt
+    ? new Date(note.crmApproved.approvedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
+  return <Chip color="gray">{`CRM approved${when ? ` ${when}` : ''} · no AI re-review`}</Chip>;
+}
+
 function SourceChip({ source }) {
   return <Chip color={source === 'crm' ? 'orange' : 'blue'}>{SOURCE_LABEL[source] || 'InSync'}</Chip>;
 }
@@ -437,6 +446,17 @@ function MessageBlock({ title, body, tone }) {
 function AiReviewPanel({ note }) {
   const [showRaw, setShowRaw] = useState(false);
   const r = note.review;
+  // Approved in the CRM, so no AI review was run here — the same note was already
+  // reviewed when it came from the CRM, and re-reviewing it costs the same tokens
+  // twice. Re-judge still forces a fresh review when you want one.
+  if (!r && note.crmApproved) return (
+    <div style={{ fontSize: '0.82rem', color: 'var(--gray-600)', background: '#f8fafc',
+      border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '10px 12px' }}>
+      <strong>No AI review — you approved this session in the CRM</strong>
+      {note.crmApproved.approvedAt && <> on {new Date(note.crmApproved.approvedAt).toLocaleString()}</>}.
+      It went straight to the ready-to-sign stack. Use <em>Re-judge</em> if you want an AI review anyway.
+    </div>
+  );
   if (!r) return (
     <div style={{ fontSize: '0.82rem', color: 'var(--gray-400)', fontStyle: 'italic' }}>
       No AI review stored for this note version.
@@ -1833,7 +1853,7 @@ function QueueTab() {
           const s = msg.stats || {};
           setPulling(false); setProgress(null); es.close();
           load();
-          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}.`);
+          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}${s.crmApproved ? `, ${s.crmApproved} skipped AI review (approved in the CRM)` : ''}.`);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -1976,6 +1996,7 @@ function QueueTab() {
               .filter(f => !/possible duplicate/i.test(f))
               .map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
             <DupeChip note={note} />
+            <CrmApprovedChip note={note} />
             <AiDecisionChip decision={note.aiDecision} />
             <OffsiteChip offsite={note.offsite} />
           </div>
