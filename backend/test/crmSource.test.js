@@ -12,7 +12,7 @@ const assert = require('assert');
 process.env.SUPABASE_URL = 'http://stub.invalid';
 process.env.SUPABASE_SERVICE_KEY = 'stub';
 
-const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, isPublicHostname } = require('../utils/crmPortal');
+const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, fingerprintOf } = require('../utils/crmPortal');
 const E = require('../utils/peerSupervisorEngine');
 const { contentHash, machineChecks, decideAction, whereSource } = require('../utils/psIngest');
 
@@ -142,10 +142,11 @@ test('client names match across "First Last" and "Last, First"', () => {
   assert.notStrictEqual(nameTokens('Test Client'), nameTokens('Client, Other'));
 });
 
-test('the pasted sign-in link can only reach public hostnames', () => {
-  for (const h of ['portal.linksnetwork.com', 'click.mail.example.com']) assert.ok(isPublicHostname(h), h);
-  for (const h of ['localhost', '127.0.0.1', '169.254.169.254', '[::1]', 'db.internal', 'printer.local', 'intranet'])
-    assert.ok(!isPublicHostname(h), h);
+test('a session fingerprint ignores cookie order and changes with any value', () => {
+  const a = fingerprintOf({ serenity_session: 'x', other: 'y' });
+  assert.strictEqual(fingerprintOf({ other: 'y', serenity_session: 'x' }), a);
+  assert.notStrictEqual(fingerprintOf({ serenity_session: 'z', other: 'y' }), a);
+  assert.ok(!a.includes('x'));
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);

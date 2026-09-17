@@ -5,7 +5,8 @@ const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth
 const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote } = require('../utils/psIngest');
-const { CrmPortalClient, sourceOf, clearCrmSession } = require('../utils/crmPortal');
+const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
+        receiveSession, sessionStatus } = require('../utils/crmPortal');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -26,18 +27,6 @@ async function buildEngine() {
     noSchoolEnd:   S.ps_no_school_end   || '',
     coreReviewPrompt: S.ps_prompt_core_review || '',
     offsitePrompt:    S.ps_prompt_offsite     || '',
-  });
-}
-
-// The CRM (portal.linksnetwork.com) — the second note source. Its own login,
-// stored next to the InSync one.
-async function buildCrm() {
-  const { data: rows } = await supabase.from('app_settings').select('key, value')
-    .in('key', ['crm_portal_email', 'crm_portal_password']);
-  const S = Object.fromEntries((rows || []).map(r => [r.key, r.value]));
-  return new CrmPortalClient({
-    email:    S.crm_portal_email    || process.env.CRM_PORTAL_EMAIL    || '',
-    password: S.crm_portal_password || process.env.CRM_PORTAL_PASSWORD || '',
   });
 }
 
@@ -125,7 +114,7 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
     }
 
     if (crmNotes.length) {
-      const crm = await buildCrm();
+      const crm = new CrmPortalClient();
       await crm.login();
       const rows = await liveRowsByEid(crmNotes.map(n => n.eid));
       for (const n of crmNotes) {
@@ -162,7 +151,7 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
     let engine = null, crm = null, crmRows = new Map();
     if (hasInsync) { engine = await buildEngine(); await engine.login(); }
     if (hasCrm) {
-      crm = await buildCrm(); await crm.login();
+      crm = new CrmPortalClient(); await crm.login();
       crmRows = await liveRowsByEid(notes.filter(n => sourceOf(n.eid) === 'crm').map(n => n.eid));
     }
 
@@ -409,29 +398,60 @@ router.get('/cosign/pull-crm', async (req, res) => {
   const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 
   try {
-    // ?resend=1 — the user lost or can't use the emailed link: drop the waiting
-    // sign-in so this pull asks the CRM for a fresh email.
-    if (req.query.resend === '1') await clearCrmSession();
     const engine = await buildEngine();
-    const crm    = await buildCrm();
+    const crm    = new CrmPortalClient();
     const stats  = await ingestCrmQueue(engine, crm, { onProgress: (msg, pct) => send('progress', { msg, pct }) });
     send('done', { stats });
   } catch (err) {
-    // The CRM wants its emailed sign-in link — the page asks for it, then pulls again.
-    send(err.code === 'CRM_VERIFY' ? 'verify' : 'error', { message: err.message });
+    send('error', { message: err.message });
   } finally {
     res.end();
   }
 });
 
-// POST /api/ps/cosign/crm-verify — finish the CRM sign-in with the one-time link
-// the CRM emailed. Body: { link }. The session is saved and reused by later pulls.
-router.post('/cosign/crm-verify', requireAuth, requireCoSign, async (req, res) => {
+// ── CRM session hand-off (crm-session-extension/) ────────────────────────────
+
+// POST /api/ps/cosign/crm-session — the Chrome extension sends the CRM cookies of
+// a browser that's logged into the CRM. Auth is the extension token from
+// Settings (x-extension-token), not a Ritzoini login: the extension runs in the
+// background with no user session. Body: { cookies: {name: value}, sentFrom }.
+router.post('/cosign/crm-session', async (req, res) => {
   try {
-    const crm = await buildCrm();
-    await crm.verifyLink(req.body.link);
-    res.json({ ok: true });
+    if (!(await checkExtensionToken(req.headers['x-extension-token'])))
+      return res.status(401).json({ error: 'Invalid extension token — copy it again from Co-Sign ⚙ Settings' });
+    const result = await receiveSession(req.body || {});
+    res.status(result.accepted ? 200 : 422).json(result);
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET /api/ps/cosign/crm-status — is Ritzoini holding a working CRM session?
+router.get('/cosign/crm-status', requireAuth, requireCoSign, async (req, res) => {
+  try { res.json(await sessionStatus()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/ps/cosign/crm-extension-token — make a new extension token (the old
+// one stops working). Returned once, for pasting into the extension.
+router.post('/cosign/crm-extension-token', requireAuth, requireAdmin, async (req, res) => {
+  try { res.json({ token: await rotateExtensionToken() }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST /api/ps/cosign/crm-cron — hourly CRM pull for an external scheduler
+// (x-cron-secret). Uses whatever session the extension last sent; if it has
+// expired the run fails with that message and the next extension check-in fixes it.
+router.post('/cosign/crm-cron', async (req, res) => {
+  const secret   = process.env.CRON_SECRET;
+  const provided = req.headers['x-cron-secret'] || req.query.secret;
+  if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const engine = await buildEngine();
+    const stats  = await ingestCrmQueue(engine, new CrmPortalClient());
+    res.json({ ok: true, stats });
+  } catch (err) {
+    console.error(`[PS CRM cron] ${err.message}`);
+    res.status(err.code === 'CRM_SESSION' ? 409 : 500).json({ error: err.message });
+  }
 });
 
 // POST /api/ps/cosign/rejudge — re-run the AI on ONE already-stored note (new
@@ -504,26 +524,13 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
             anthropic_api_key, prompt_core_review, prompt_offsite,
-            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled,
-            crm_email, crm_password } = req.body;
-    // A changed CRM login invalidates the saved CRM session (it belongs to the
-    // old account).
-    if (crm_email !== undefined || crm_password !== undefined) {
-      const { data: cur } = await supabase.from('app_settings').select('key, value')
-        .in('key', ['crm_portal_email', 'crm_portal_password']);
-      const C = Object.fromEntries((cur || []).map(r => [r.key, r.value]));
-      if ((crm_email !== undefined && crm_email !== (C.crm_portal_email || ''))
-          || (crm_password !== undefined && crm_password !== (C.crm_portal_password || '')))
-        await clearCrmSession();
-    }
+            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
       insync_provider_id: provider_id,
       insync_username,
       insync_password,
-      crm_portal_email:    crm_email,
-      crm_portal_password: crm_password,
       anthropic_api_key,
       // Empty string is meaningful: it clears the override and reverts to the
       // shipped default (the engine falls back when the stored value is blank).
@@ -588,11 +595,9 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
                 'insync_username','insync_password','anthropic_api_key',
                 'ps_prompt_core_review','ps_prompt_offsite',
                 'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to',
-                'ps_reopen_email_enabled', 'crm_portal_email', 'crm_portal_password']);
+                'ps_reopen_email_enabled']);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
-    crm_email:         S.crm_portal_email    || '',
-    crm_password:      S.crm_portal_password || '',
     no_school_start:   S.ps_no_school_start || '07/01',
     no_school_end:     S.ps_no_school_end   || '08/31',
     provider_id:       S.insync_provider_id  || '2317',

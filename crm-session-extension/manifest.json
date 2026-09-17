@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Ritzoini CRM Session",
+  "version": "1.0",
+  "description": "Sends this browser's portal.linksnetwork.com session to Ritzoini so it can pull and act on CRM peer notes.",
+  "permissions": ["cookies", "alarms", "storage"],
+  "host_permissions": [
+    "https://portal.linksnetwork.com/*",
+    "https://ritzoini.onrender.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Ritzoini CRM Session" }
+}

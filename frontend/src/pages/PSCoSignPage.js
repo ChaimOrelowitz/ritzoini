@@ -1107,9 +1107,82 @@ function PromptProvenance() {
   );
 }
 
+const agoText = iso => {
+  if (!iso) return '—';
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.floor(mins / 60);
+  return h < 48 ? `${h} hr ${mins % 60} min ago` : `${Math.floor(h / 24)} days ago`;
+};
+const spanText = (from, to) => {
+  if (!from || !to) return null;
+  const mins = Math.round((new Date(to) - new Date(from)) / 60000);
+  return mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} hr ${mins % 60} min`;
+};
+
+// The CRM can't be signed into from the server (it emails a one-time link and
+// waits for a click), so the Ritzoini CRM extension sends the session of a
+// browser that's already logged in. This shows whether Ritzoini holds a working
+// one and hands out the token the extension needs.
+function CrmConnection() {
+  const [st, setSt] = useState(null);
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => { api.get('/ps/cosign/crm-status').then(setSt).catch(() => setSt(null)); }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function newToken() {
+    if (st?.hasToken && !window.confirm('Make a new token? Extensions using the old one stop sending sessions until you paste the new one in.')) return;
+    setBusy(true);
+    try { setToken((await api.post('/ps/cosign/crm-extension-token', {})).token); load(); }
+    catch (ex) { alert(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  const small = { margin: '0 0 8px', fontSize: '0.8rem', color: 'var(--gray-600)' };
+  return (
+    <section style={sectionStyle}>
+      <p style={sectionLabel}>CRM Connection</p>
+      {!st ? <p style={small}>Loading…</p> : (
+        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 'var(--radius)', fontSize: '0.82rem',
+          background: st.connected ? '#f0fdf4' : '#fef2f2', border: `1px solid ${st.connected ? '#bbf7d0' : '#fecaca'}` }}>
+          <div style={{ fontWeight: 700, color: st.connected ? '#15803d' : '#b91c1c' }}>
+            {st.connected ? `Connected${st.account?.email ? ` as ${st.account.email}` : ''}`
+              : st.invalidAt ? 'Session expired — open the CRM in Chrome with the extension' : 'Not connected yet'}
+          </div>
+          {st.receivedAt && (
+            <div style={{ color: 'var(--gray-600)', marginTop: 4, lineHeight: 1.6 }}>
+              Last sent by extension: {agoText(st.receivedAt)}{st.sentFrom ? ` (${st.sentFrom})` : ''}<br />
+              Last confirmed working: {agoText(st.lastValidAt)}<br />
+              This session started: {agoText(st.startedAt)}
+              {st.invalidAt && <><br />Expired after about {spanText(st.startedAt, st.invalidAt)}</>}
+              {st.previous?.invalidAt && <><br />Previous session lasted about {spanText(st.previous.startedAt, st.previous.invalidAt)}</>}
+            </div>
+          )}
+        </div>
+      )}
+      <p style={small}>
+        Install the <strong>Ritzoini CRM Session</strong> extension (repo folder <code>crm-session-extension/</code>) in Chrome on every machine you use,
+        paste the token below into its popup, and stay logged into the CRM in that browser. The extension sends the session when you log in and about hourly.
+      </p>
+      <button className="btn btn-outline btn-sm" onClick={newToken} disabled={busy}>
+        {busy ? '…' : st?.hasToken ? 'Make a new extension token' : 'Make extension token'}
+      </button>
+      {token && (
+        <div style={{ marginTop: 10 }}>
+          <label style={lbl}>Extension token — copy it now, it won't be shown again</label>
+          <input className="form-input" readOnly value={token} onFocus={e => e.target.select()} style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.78rem' }} />
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SettingsTab() {
   const [form, setForm] = useState({
-    insync_username: '', insync_password: '', crm_email: '', crm_password: '', anthropic_api_key: '',
+    insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_core_review: '', prompt_offsite: '',
     qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '', reopen_email_enabled: true,
@@ -1119,15 +1192,12 @@ function SettingsTab() {
   const [saving,   setSaving]   = useState(false);
   const [saved,    setSaved]    = useState(false);
   const [showPass, setShowPass] = useState(false);
-  const [showCrmPass, setShowCrmPass] = useState(false);
 
   useEffect(() => {
     api.get('/ps/cosign/settings').then(s => {
       setForm({
         insync_username:   s.insync_username   || '',
         insync_password:   s.insync_password   || '',
-        crm_email:         s.crm_email         || '',
-        crm_password:      s.crm_password      || '',
         anthropic_api_key: s.anthropic_api_key || '',
         no_school_start:   s.no_school_start   || '',
         no_school_end:     s.no_school_end     || '',
@@ -1193,32 +1263,7 @@ function SettingsTab() {
         </div>
       </section>
 
-      <section style={sectionStyle}>
-        <p style={sectionLabel}>CRM Credentials</p>
-        <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-          The portal.linksnetwork.com login whose Supervisor Review queue is pulled. Only notes assigned to this supervisor come in.
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div>
-            <label style={lbl}>Email</label>
-            <input className="form-input" value={form.crm_email} onChange={set('crm_email')} placeholder="CRM login email" style={{ width: '100%' }} />
-          </div>
-          <div>
-            <label style={lbl}>Password</label>
-            <div style={{ position: 'relative' }}>
-              <input
-                type={showCrmPass ? 'text' : 'password'}
-                className="form-input" value={form.crm_password} onChange={set('crm_password')}
-                placeholder="CRM password" style={{ width: '100%', paddingRight: 68 }}
-              />
-              <button type="button" onClick={() => setShowCrmPass(p => !p)} style={{
-                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
-                background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', color: 'var(--gray-500)',
-              }}>{showCrmPass ? 'Hide' : 'Show'}</button>
-            </div>
-          </div>
-        </div>
-      </section>
+      <CrmConnection />
 
       <section style={sectionStyle}>
         <p style={sectionLabel}>Anthropic (Claude) API Key</p>
@@ -1548,55 +1593,6 @@ function DatePickerModal({ onClose, onPull }) {
   );
 }
 
-// The CRM signs a new device in with a one-time link it emails. The link only
-// works in the session the backend started, so it has to be pasted here rather
-// than opened — opening it in the browser uses it up.
-function CrmVerifyModal({ message, onClose, onVerified, onResend }) {
-  const [link, setLink] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  async function submit() {
-    setBusy(true);
-    try {
-      await api.post('/ps/cosign/crm-verify', { link: link.trim() });
-      onVerified();
-    } catch (ex) { alert(ex.message); }
-    finally { setBusy(false); }
-  }
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}
-      onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 560, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
-        <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Finish CRM sign-in</h3>
-          <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
-        </div>
-        <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--gray-700)' }}>{message}</p>
-          <ol style={{ margin: 0, paddingLeft: 18, fontSize: '0.82rem', color: 'var(--gray-600)', lineHeight: 1.6 }}>
-            <li>Open the newest sign-in email from the CRM.</li>
-            <li><strong>Don't click the link</strong> — right-click it and choose <em>Copy link address</em>. Clicking uses it up.</li>
-            <li>Paste it below. The link expires 30 minutes after the email was sent.</li>
-          </ol>
-          <textarea className="form-input" rows={3} value={link} onChange={e => setLink(e.target.value)} disabled={busy}
-            placeholder="https://portal.linksnetwork.com/…" style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }} />
-          <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--gray-500)' }}>
-            After this, pulls reuse the sign-in until the CRM ends the session.
-          </p>
-        </div>
-        <div style={{ padding: '14px 22px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-          <button className="btn btn-outline btn-sm" onClick={onResend} disabled={busy}>Email me a new link</button>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-outline btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
-            <button className="btn btn-gold btn-sm" onClick={submit} disabled={busy || !link.trim()}>{busy ? 'Signing in…' : 'Sign in & pull'}</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function StatTile({ label, val, color }) {
   return (
     <div style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 130, textAlign: 'center' }}>
@@ -1790,7 +1786,6 @@ function QueueTab() {
   const [dFrom,   setDFrom]   = useState('');
   const [dTo,     setDTo]     = useState('');
   const [datePicker, setDatePicker] = useState(false);
-  const [crmVerify,  setCrmVerify]  = useState(null);   // message while the CRM wants its emailed link
   const esRef = useRef(null);
 
   const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setFSource(new Set()); setDFrom(''); setDTo(''); };
@@ -1817,7 +1812,7 @@ function QueueTab() {
   // `dates` — MM/DD/YYYY keys from the date picker. Omitted pulls the whole queue.
   // `source` — 'insync' (the co-sign queue) or 'crm' (the CRM's supervisor-review
   // queue, which has no date picker).
-  async function startPull(dates = null, source = 'insync', { resend = false } = {}) {
+  async function startPull(dates = null, source = 'insync') {
     if (pulling) return;
     setDatePicker(false);
     setPulling(true);
@@ -1828,8 +1823,7 @@ function QueueTab() {
 
     const dq = dates && dates.length ? `&dates=${encodeURIComponent(dates.join(','))}` : '';
     const endpoint = source === 'crm' ? 'pull-crm' : 'pull';
-    const extra = source === 'crm' ? (resend ? '&resend=1' : '') : dq;
-    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${extra}`);
+    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${source === 'crm' ? '' : dq}`);
     esRef.current = es;
     es.onmessage = e => {
       try {
@@ -1840,9 +1834,6 @@ function QueueTab() {
           setPulling(false); setProgress(null); es.close();
           load();
           alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}.`);
-        } else if (msg.type === 'verify') {
-          setPulling(false); setProgress(null); es.close();
-          setCrmVerify(msg.message);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -2163,15 +2154,6 @@ function QueueTab() {
               renderNote={note => <NoteRow key={note.id} note={note} />} />
           )}
         </div>
-      )}
-
-      {crmVerify && (
-        <CrmVerifyModal
-          message={crmVerify}
-          onClose={() => setCrmVerify(null)}
-          onVerified={() => { setCrmVerify(null); startPull(null, 'crm'); }}
-          onResend={() => { setCrmVerify(null); startPull(null, 'crm', { resend: true }); }}
-        />
       )}
 
       {datePicker && (

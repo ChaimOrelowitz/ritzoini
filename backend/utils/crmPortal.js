@@ -6,7 +6,7 @@
 // check and AI review (utils/psIngest.js).
 //
 // API (reverse-engineered from `dsc crm notes.har`):
-//   POST /api/auth/login                                  form: email, password, next → 303 + session cookie
+//   (sign-in: never done here — see the session hand-off below)
 //   GET  /api/peer-services/supervisor-review/page        the queue (PENDING revisions assigned to this login)
 //   GET  /api/peer-services/supervisor-review/:rev/page   one revision, fields already structured
 //   POST /api/peer-services/supervisor-review/:rev/decision
@@ -22,6 +22,7 @@
 // ps_notes (findInsyncContext). No unambiguous match → a machine flag, so the
 // note can't be bulk-approved without a human seeing that alignment was unchecked.
 
+const crypto = require('crypto');
 const supabase = require('../db/supabase');
 
 const CRM_BASE  = 'https://portal.linksnetwork.com';
@@ -31,44 +32,45 @@ const NO_CONTEXT_FLAG = 'No InSync chart match for this client — age, diagnosi
 
 const sourceOf = eid => (String(eid || '').startsWith(CRM_PREFIX) ? 'crm' : 'insync');
 
-// Sign-in is two steps for a new device: the password, then a one-time link the
-// CRM emails ("open it in this browser"). The link only works in the session the
-// password step created, so that half-finished session is kept and the link is
-// opened in it. The finished session is then saved and reused until the CRM ends
-// it, so the email step is only needed occasionally.
-const SESSION_KEY = 'crm_portal_session';   // { cookies, savedAt }
-const PENDING_KEY = 'crm_portal_pending';   // { cookies, email, at } — waiting on the emailed link
-const LINK_TTL_MS = 30 * 60 * 1000;         // the CRM's own link lifetime
+// Signing in: the CRM emails a one-time link to any new device, and that link
+// lands on a page that waits for a human click — a server can't get through it.
+// So the server never signs in. A Chrome extension (crm-session-extension/) in a
+// browser where you're already logged into the CRM sends that browser's session
+// cookies to Ritzoini (POST /api/ps/cosign/crm-session), and every pull, approve
+// and reopen runs on that session until the CRM ends it.
+//
+// Stored in app_settings under SESSION_KEY:
+//   { cookies, fingerprint, startedAt, receivedAt, lastValidAt, invalidAt, account, sentFrom }
+// startedAt is when this session was first seen and invalidAt when the CRM first
+// refused it — together they show how long a CRM session really lasts.
+const SESSION_KEY = 'crm_portal_session';
+const EXTENSION_TOKEN_KEY = 'crm_extension_token';
 
-class CrmVerificationRequired extends Error {
-  constructor(message) { super(message); this.code = 'CRM_VERIFY'; }
+class CrmSessionMissing extends Error {
+  constructor(message) { super(message); this.code = 'CRM_SESSION'; }
 }
 
 async function readSetting(key) {
   const { data } = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle();
-  if (!data?.value) return null;
-  try { return JSON.parse(data.value); } catch { return null; }
+  return data?.value ?? null;
 }
-async function writeSetting(key, value) {
-  if (value == null) await supabase.from('app_settings').delete().eq('key', key);
-  else await supabase.from('app_settings').upsert({ key, value: JSON.stringify(value) }, { onConflict: 'key' });
+async function readSession() {
+  const v = await readSetting(SESSION_KEY);
+  if (!v) return null;
+  try { return JSON.parse(v); } catch { return null; }
+}
+async function writeSession(value) {
+  await supabase.from('app_settings').upsert({ key: SESSION_KEY, value: JSON.stringify(value) }, { onConflict: 'key' });
 }
 
-// The pasted link is fetched by the server, so it may only go to ordinary public
-// hostnames (the CRM, or an email link-tracker in front of it) — never an IP
-// literal or an internal name.
-function isPublicHostname(host) {
-  const h = String(host || '').toLowerCase();
-  if (!h.includes('.') || h.endsWith('.local') || h.endsWith('.internal') || h === 'localhost') return false;
-  if (/^[\d.]+$/.test(h) || h.includes(':') || h.startsWith('[')) return false;
-  return true;
-}
+// Identifies one CRM session (for "is this the same session as before?")
+// without being usable as one.
+const fingerprintOf = cookies => crypto.createHash('sha256')
+  .update(JSON.stringify(Object.entries(cookies || {}).sort())).digest('hex').slice(0, 16);
 
 class CrmPortalClient {
-  constructor({ email, password } = {}) {
-    this.email    = email;
-    this.password = password;
-    this.jar      = new Map();
+  constructor() {
+    this.jar = new Map();
   }
 
   _addCookies(res) {
@@ -85,114 +87,34 @@ class CrmPortalClient {
              Cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join('; '), ...extra };
   }
 
-  _loadCookies(cookies) {
-    this.jar = new Map(Object.entries(cookies || {}));
-  }
-
-  _cookieObj() {
-    return Object.fromEntries(this.jar);
-  }
-
-  async _sessionValid() {
-    if (!this.jar.size) return false;
+  // Does the CRM accept the cookies in the jar? The signed-in account, or null.
+  async whoAmI() {
+    if (!this.jar.size) return null;
     const res = await fetch(`${CRM_BASE}/api/me/shell`, {
       headers: this._headers({ Accept: 'application/json' }), redirect: 'manual', cache: 'no-store',
     });
     this._addCookies(res);
-    if (res.status !== 200) return false;
-    try { return (await res.json()).ok === true; } catch { return false; }
+    if (res.status !== 200) return null;
+    try {
+      const j = await res.json();
+      return j.ok ? { email: j.user?.email || '', displayName: j.user?.displayName || '' } : null;
+    } catch { return null; }
   }
 
-  async _saveSession() {
-    await writeSetting(SESSION_KEY, { cookies: this._cookieObj(), savedAt: new Date().toISOString() });
-  }
-
-  // Reuse the saved session when the CRM still accepts it; otherwise the
-  // password step. Throws CrmVerificationRequired when the CRM wants the emailed
-  // link — without requesting a second email while an earlier link is still live,
-  // since each new request invalidates the previous link.
+  // Use the session the extension last sent. Throws CrmSessionMissing when there
+  // is none or the CRM no longer accepts it.
   async login() {
-    if (!this.email || !this.password) throw new Error('CRM login not set — add it in the Co-Sign ⚙ Settings tab');
-
-    const saved = await readSetting(SESSION_KEY);
-    if (saved?.cookies) {
-      this._loadCookies(saved.cookies);
-      if (await this._sessionValid()) { await this._saveSession(); return; }
-      await writeSetting(SESSION_KEY, null);
-      this.jar = new Map();
+    const saved = await readSession();
+    if (!saved?.cookies) throw new CrmSessionMissing('No CRM session yet — log into the CRM in Chrome with the Ritzoini CRM extension installed');
+    this.jar = new Map(Object.entries(saved.cookies));
+    const who = await this.whoAmI();
+    const now = new Date().toISOString();
+    if (!who) {
+      if (!saved.invalidAt) await writeSession({ ...saved, invalidAt: now });
+      throw new CrmSessionMissing('The CRM session expired — open the CRM in Chrome on any machine with the Ritzoini CRM extension to send a fresh one');
     }
-
-    const pending = await readSetting(PENDING_KEY);
-    if (pending?.cookies && pending.email === this.email && Date.now() - new Date(pending.at).getTime() < LINK_TTL_MS)
-      throw new CrmVerificationRequired('The CRM already emailed you a sign-in link — paste it to finish signing in');
-
-    await this.passwordStep();
-  }
-
-  async passwordStep() {
-    const res = await fetch(`${CRM_BASE}/api/auth/login`, {
-      method: 'POST',
-      headers: this._headers({
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Origin: CRM_BASE, Referer: `${CRM_BASE}/signin?next=%2Fapp`, Accept: 'text/html,*/*',
-      }),
-      body: new URLSearchParams({ next: '/app', email: this.email, password: this.password }).toString(),
-      redirect: 'manual',
-    });
-    this._addCookies(res);
-    const loc = res.headers.get('location') || '';
-    // Password accepted, but the CRM wants the emailed one-time link, opened in
-    // this same session. Keep the session so verifyLink can finish it.
-    if (/\/signin\/check-email/i.test(loc)) {
-      await writeSetting(PENDING_KEY, { cookies: this._cookieObj(), email: this.email, at: new Date().toISOString() });
-      throw new CrmVerificationRequired('The CRM emailed you a one-time sign-in link — paste it to finish signing in');
-    }
-    if (res.status >= 400 || /signin|error=/i.test(loc) || !this.jar.size)
-      throw new Error('CRM login failed — check the CRM email/password in ⚙ Settings');
-    // A redirect alone doesn't prove the session took — confirm it.
-    if (!(await this._sessionValid())) throw new Error('CRM login failed — session was not accepted');
-    await this._saveSession();
-  }
-
-  // Finish sign-in with the link from the CRM's email. Opens it inside the
-  // pending session, following redirects by hand so cookies set along the way
-  // are kept. Cookies are only ever sent to the CRM's own host; a link-tracking
-  // redirect in front of it is followed without them.
-  async verifyLink(link) {
-    let url;
-    try { url = new URL(String(link || '').trim()); } catch { throw new Error('That is not a link — copy the whole sign-in link from the email'); }
-    if (url.protocol !== 'https:') throw new Error('The sign-in link must start with https://');
-
-    const pending = await readSetting(PENDING_KEY);
-    if (!pending?.cookies) throw new Error('No sign-in is waiting — click Pull CRM notes to get a new email');
-    this._loadCookies(pending.cookies);
-
-    const crmHost = new URL(CRM_BASE).host;
-    let reachedCrm = false, lastStatus = 0, lastPath = '';
-    for (let hop = 0; hop < 10; hop++) {
-      if (url.protocol !== 'https:' || !isPublicHostname(url.hostname))
-        throw new Error('That link does not lead to the CRM — copy the sign-in link from the CRM email');
-      const onCrm = url.host === crmHost;
-      reachedCrm = reachedCrm || onCrm;
-      const res = await fetch(url, {
-        headers: onCrm ? this._headers({ Accept: 'text/html,*/*' }) : { 'User-Agent': CHROME_UA, Accept: 'text/html,*/*' },
-        redirect: 'manual',
-      });
-      if (onCrm) this._addCookies(res);
-      lastStatus = res.status; lastPath = url.pathname;
-      const loc = res.headers.get('location');
-      if (res.status >= 300 && res.status < 400 && loc) { url = new URL(loc, url); continue; }
-      break;
-    }
-    if (!reachedCrm) throw new Error('That link does not lead to the CRM — copy the sign-in link from the CRM email');
-
-    if (!(await this._sessionValid())) {
-      // A used or expired link, or a newer email superseded it. Start over.
-      await writeSetting(PENDING_KEY, null);
-      throw new Error(`The CRM did not accept that link (ended at ${lastPath}, HTTP ${lastStatus}). It may be expired, already opened, or replaced by a newer email — click Pull CRM notes to get a fresh one, and copy the link without clicking it`);
-    }
-    await writeSetting(PENDING_KEY, null);
-    await this._saveSession();
+    // The CRM may refresh cookies as the session is used; keep the newest.
+    await writeSession({ ...saved, cookies: Object.fromEntries(this.jar), lastValidAt: now, invalidAt: null, account: who });
   }
 
   async _getJson(path, label) {
@@ -401,11 +323,70 @@ async function findInsyncContext(clientName) {
   };
 }
 
-// Forget any saved or half-finished CRM sign-in (e.g. the login was changed).
-async function clearCrmSession() {
-  await writeSetting(SESSION_KEY, null);
-  await writeSetting(PENDING_KEY, null);
+// ── Session hand-off from the extension ────────────────────────────────────────
+
+// The extension authenticates with a long random token generated in Settings.
+async function checkExtensionToken(provided) {
+  const expected = await readSetting(EXTENSION_TOKEN_KEY);
+  if (!expected || !provided) return false;
+  const a = Buffer.from(String(provided)), b = Buffer.from(String(expected));
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-module.exports = { CrmPortalClient, CrmVerificationRequired, clearCrmSession, isPublicHostname, crmRevisionToNote, findInsyncContext, nameTokens,
+async function rotateExtensionToken() {
+  const token = crypto.randomBytes(32).toString('base64url');
+  await supabase.from('app_settings').upsert({ key: EXTENSION_TOKEN_KEY, value: token }, { onConflict: 'key' });
+  return token;
+}
+
+// Take a browser's CRM cookies. They're checked against the CRM from this server
+// before anything is stored, so the extension learns straight away whether a
+// session from its browser works here. A refused session never replaces a
+// working one.
+async function receiveSession({ cookies, sentFrom }) {
+  const clean = {};
+  for (const [k, v] of Object.entries(cookies || {}))
+    if (/^[\w.\-]{1,100}$/.test(k) && typeof v === 'string' && v.length <= 8192) clean[k] = v;
+  if (!Object.keys(clean).length) return { accepted: false, message: 'No CRM cookies — log into the CRM in this browser first' };
+
+  const client = new CrmPortalClient();
+  client.jar = new Map(Object.entries(clean));
+  const who = await client.whoAmI();
+  if (!who) return { accepted: false, message: 'The CRM refused this session from the Ritzoini server' };
+
+  const saved = await readSession();
+  const now = new Date().toISOString();
+  const fingerprint = fingerprintOf(clean);
+  const same = saved?.fingerprint === fingerprint;
+  await writeSession({
+    cookies: Object.fromEntries(client.jar),
+    fingerprint,
+    startedAt:   same ? saved.startedAt : now,
+    receivedAt:  now,
+    lastValidAt: now,
+    invalidAt:   null,
+    account:     who,
+    sentFrom:    String(sentFrom || '').slice(0, 120),
+    // Kept for measuring session lifetime: how long the previous one lasted.
+    previous: same ? saved.previous || null
+      : saved ? { startedAt: saved.startedAt, lastValidAt: saved.lastValidAt, invalidAt: saved.invalidAt } : null,
+  });
+  return { accepted: true, account: who, message: `Connected as ${who.email || who.displayName}` };
+}
+
+// What Settings shows — never the cookies.
+async function sessionStatus() {
+  const s = await readSession();
+  const hasToken = !!(await readSetting(EXTENSION_TOKEN_KEY));
+  if (!s) return { connected: false, hasToken };
+  return {
+    connected: !s.invalidAt, hasToken,
+    account: s.account || null, sentFrom: s.sentFrom || '',
+    startedAt: s.startedAt, receivedAt: s.receivedAt, lastValidAt: s.lastValidAt, invalidAt: s.invalidAt,
+    previous: s.previous || null,
+  };
+}
+
+module.exports = { CrmPortalClient, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
+                   receiveSession, sessionStatus, fingerprintOf, crmRevisionToNote, findInsyncContext, nameTokens,
                    sourceOf, CRM_PREFIX, NO_CONTEXT_FLAG };
