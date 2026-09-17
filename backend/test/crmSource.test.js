@@ -12,7 +12,7 @@ const assert = require('assert');
 process.env.SUPABASE_URL = 'http://stub.invalid';
 process.env.SUPABASE_SERVICE_KEY = 'stub';
 
-const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG } = require('../utils/crmPortal');
+const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, isPublicHostname } = require('../utils/crmPortal');
 const E = require('../utils/peerSupervisorEngine');
 const { contentHash, machineChecks, decideAction, whereSource } = require('../utils/psIngest');
 
@@ -140,6 +140,12 @@ test('duplicate pools never cross sources', () => {
 test('client names match across "First Last" and "Last, First"', () => {
   assert.strictEqual(nameTokens('Test Client'), nameTokens('Client, Test'));
   assert.notStrictEqual(nameTokens('Test Client'), nameTokens('Client, Other'));
+});
+
+test('the pasted sign-in link can only reach public hostnames', () => {
+  for (const h of ['portal.linksnetwork.com', 'click.mail.example.com']) assert.ok(isPublicHostname(h), h);
+  for (const h of ['localhost', '127.0.0.1', '169.254.169.254', '[::1]', 'db.internal', 'printer.local', 'intranet'])
+    assert.ok(!isPublicHostname(h), h);
 });
 
 console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);

@@ -5,7 +5,7 @@ const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth
 const { InsyncCoSignEngine, DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote } = require('../utils/psIngest');
-const { CrmPortalClient, sourceOf } = require('../utils/crmPortal');
+const { CrmPortalClient, sourceOf, clearCrmSession } = require('../utils/crmPortal');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -409,15 +409,29 @@ router.get('/cosign/pull-crm', async (req, res) => {
   const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 
   try {
+    // ?resend=1 — the user lost or can't use the emailed link: drop the waiting
+    // sign-in so this pull asks the CRM for a fresh email.
+    if (req.query.resend === '1') await clearCrmSession();
     const engine = await buildEngine();
     const crm    = await buildCrm();
     const stats  = await ingestCrmQueue(engine, crm, { onProgress: (msg, pct) => send('progress', { msg, pct }) });
     send('done', { stats });
   } catch (err) {
-    send('error', { message: err.message });
+    // The CRM wants its emailed sign-in link — the page asks for it, then pulls again.
+    send(err.code === 'CRM_VERIFY' ? 'verify' : 'error', { message: err.message });
   } finally {
     res.end();
   }
+});
+
+// POST /api/ps/cosign/crm-verify — finish the CRM sign-in with the one-time link
+// the CRM emailed. Body: { link }. The session is saved and reused by later pulls.
+router.post('/cosign/crm-verify', requireAuth, requireCoSign, async (req, res) => {
+  try {
+    const crm = await buildCrm();
+    await crm.verifyLink(req.body.link);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // POST /api/ps/cosign/rejudge — re-run the AI on ONE already-stored note (new
@@ -492,6 +506,16 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
             anthropic_api_key, prompt_core_review, prompt_offsite,
             qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled,
             crm_email, crm_password } = req.body;
+    // A changed CRM login invalidates the saved CRM session (it belongs to the
+    // old account).
+    if (crm_email !== undefined || crm_password !== undefined) {
+      const { data: cur } = await supabase.from('app_settings').select('key, value')
+        .in('key', ['crm_portal_email', 'crm_portal_password']);
+      const C = Object.fromEntries((cur || []).map(r => [r.key, r.value]));
+      if ((crm_email !== undefined && crm_email !== (C.crm_portal_email || ''))
+          || (crm_password !== undefined && crm_password !== (C.crm_portal_password || '')))
+        await clearCrmSession();
+    }
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,

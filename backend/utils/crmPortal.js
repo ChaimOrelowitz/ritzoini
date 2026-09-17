@@ -31,6 +31,39 @@ const NO_CONTEXT_FLAG = 'No InSync chart match for this client — age, diagnosi
 
 const sourceOf = eid => (String(eid || '').startsWith(CRM_PREFIX) ? 'crm' : 'insync');
 
+// Sign-in is two steps for a new device: the password, then a one-time link the
+// CRM emails ("open it in this browser"). The link only works in the session the
+// password step created, so that half-finished session is kept and the link is
+// opened in it. The finished session is then saved and reused until the CRM ends
+// it, so the email step is only needed occasionally.
+const SESSION_KEY = 'crm_portal_session';   // { cookies, savedAt }
+const PENDING_KEY = 'crm_portal_pending';   // { cookies, email, at } — waiting on the emailed link
+const LINK_TTL_MS = 30 * 60 * 1000;         // the CRM's own link lifetime
+
+class CrmVerificationRequired extends Error {
+  constructor(message) { super(message); this.code = 'CRM_VERIFY'; }
+}
+
+async function readSetting(key) {
+  const { data } = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle();
+  if (!data?.value) return null;
+  try { return JSON.parse(data.value); } catch { return null; }
+}
+async function writeSetting(key, value) {
+  if (value == null) await supabase.from('app_settings').delete().eq('key', key);
+  else await supabase.from('app_settings').upsert({ key, value: JSON.stringify(value) }, { onConflict: 'key' });
+}
+
+// The pasted link is fetched by the server, so it may only go to ordinary public
+// hostnames (the CRM, or an email link-tracker in front of it) — never an IP
+// literal or an internal name.
+function isPublicHostname(host) {
+  const h = String(host || '').toLowerCase();
+  if (!h.includes('.') || h.endsWith('.local') || h.endsWith('.internal') || h === 'localhost') return false;
+  if (/^[\d.]+$/.test(h) || h.includes(':') || h.startsWith('[')) return false;
+  return true;
+}
+
 class CrmPortalClient {
   constructor({ email, password } = {}) {
     this.email    = email;
@@ -52,8 +85,51 @@ class CrmPortalClient {
              Cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join('; '), ...extra };
   }
 
+  _loadCookies(cookies) {
+    this.jar = new Map(Object.entries(cookies || {}));
+  }
+
+  _cookieObj() {
+    return Object.fromEntries(this.jar);
+  }
+
+  async _sessionValid() {
+    if (!this.jar.size) return false;
+    const res = await fetch(`${CRM_BASE}/api/me/shell`, {
+      headers: this._headers({ Accept: 'application/json' }), redirect: 'manual', cache: 'no-store',
+    });
+    this._addCookies(res);
+    if (res.status !== 200) return false;
+    try { return (await res.json()).ok === true; } catch { return false; }
+  }
+
+  async _saveSession() {
+    await writeSetting(SESSION_KEY, { cookies: this._cookieObj(), savedAt: new Date().toISOString() });
+  }
+
+  // Reuse the saved session when the CRM still accepts it; otherwise the
+  // password step. Throws CrmVerificationRequired when the CRM wants the emailed
+  // link — without requesting a second email while an earlier link is still live,
+  // since each new request invalidates the previous link.
   async login() {
     if (!this.email || !this.password) throw new Error('CRM login not set — add it in the Co-Sign ⚙ Settings tab');
+
+    const saved = await readSetting(SESSION_KEY);
+    if (saved?.cookies) {
+      this._loadCookies(saved.cookies);
+      if (await this._sessionValid()) { await this._saveSession(); return; }
+      await writeSetting(SESSION_KEY, null);
+      this.jar = new Map();
+    }
+
+    const pending = await readSetting(PENDING_KEY);
+    if (pending?.cookies && pending.email === this.email && Date.now() - new Date(pending.at).getTime() < LINK_TTL_MS)
+      throw new CrmVerificationRequired('The CRM already emailed you a sign-in link — paste it to finish signing in');
+
+    await this.passwordStep();
+  }
+
+  async passwordStep() {
     const res = await fetch(`${CRM_BASE}/api/auth/login`, {
       method: 'POST',
       headers: this._headers({
@@ -65,15 +141,58 @@ class CrmPortalClient {
     });
     this._addCookies(res);
     const loc = res.headers.get('location') || '';
-    // Password accepted, but the CRM wants a second step: it emails a one-time
-    // sign-in link that must be opened in the same session.
-    if (/\/signin\/check-email/i.test(loc))
-      throw new Error('CRM password accepted, but the CRM requires email verification (it just emailed a one-time sign-in link) — this pull cannot finish the sign-in yet');
+    // Password accepted, but the CRM wants the emailed one-time link, opened in
+    // this same session. Keep the session so verifyLink can finish it.
+    if (/\/signin\/check-email/i.test(loc)) {
+      await writeSetting(PENDING_KEY, { cookies: this._cookieObj(), email: this.email, at: new Date().toISOString() });
+      throw new CrmVerificationRequired('The CRM emailed you a one-time sign-in link — paste it to finish signing in');
+    }
     if (res.status >= 400 || /signin|error=/i.test(loc) || !this.jar.size)
       throw new Error('CRM login failed — check the CRM email/password in ⚙ Settings');
     // A redirect alone doesn't prove the session took — confirm it.
-    const shell = await this._getJson('/api/me/shell', 'session check');
-    if (!shell.ok) throw new Error('CRM login failed — session was not accepted');
+    if (!(await this._sessionValid())) throw new Error('CRM login failed — session was not accepted');
+    await this._saveSession();
+  }
+
+  // Finish sign-in with the link from the CRM's email. Opens it inside the
+  // pending session, following redirects by hand so cookies set along the way
+  // are kept. Cookies are only ever sent to the CRM's own host; a link-tracking
+  // redirect in front of it is followed without them.
+  async verifyLink(link) {
+    let url;
+    try { url = new URL(String(link || '').trim()); } catch { throw new Error('That is not a link — copy the whole sign-in link from the email'); }
+    if (url.protocol !== 'https:') throw new Error('The sign-in link must start with https://');
+
+    const pending = await readSetting(PENDING_KEY);
+    if (!pending?.cookies) throw new Error('No sign-in is waiting — click Pull CRM notes to get a new email');
+    this._loadCookies(pending.cookies);
+
+    const crmHost = new URL(CRM_BASE).host;
+    let reachedCrm = false, lastStatus = 0, lastPath = '';
+    for (let hop = 0; hop < 10; hop++) {
+      if (url.protocol !== 'https:' || !isPublicHostname(url.hostname))
+        throw new Error('That link does not lead to the CRM — copy the sign-in link from the CRM email');
+      const onCrm = url.host === crmHost;
+      reachedCrm = reachedCrm || onCrm;
+      const res = await fetch(url, {
+        headers: onCrm ? this._headers({ Accept: 'text/html,*/*' }) : { 'User-Agent': CHROME_UA, Accept: 'text/html,*/*' },
+        redirect: 'manual',
+      });
+      if (onCrm) this._addCookies(res);
+      lastStatus = res.status; lastPath = url.pathname;
+      const loc = res.headers.get('location');
+      if (res.status >= 300 && res.status < 400 && loc) { url = new URL(loc, url); continue; }
+      break;
+    }
+    if (!reachedCrm) throw new Error('That link does not lead to the CRM — copy the sign-in link from the CRM email');
+
+    if (!(await this._sessionValid())) {
+      // A used or expired link, or a newer email superseded it. Start over.
+      await writeSetting(PENDING_KEY, null);
+      throw new Error(`The CRM did not accept that link (ended at ${lastPath}, HTTP ${lastStatus}). It may be expired, already opened, or replaced by a newer email — click Pull CRM notes to get a fresh one, and copy the link without clicking it`);
+    }
+    await writeSetting(PENDING_KEY, null);
+    await this._saveSession();
   }
 
   async _getJson(path, label) {
@@ -282,5 +401,11 @@ async function findInsyncContext(clientName) {
   };
 }
 
-module.exports = { CrmPortalClient, crmRevisionToNote, findInsyncContext, nameTokens,
+// Forget any saved or half-finished CRM sign-in (e.g. the login was changed).
+async function clearCrmSession() {
+  await writeSetting(SESSION_KEY, null);
+  await writeSetting(PENDING_KEY, null);
+}
+
+module.exports = { CrmPortalClient, CrmVerificationRequired, clearCrmSession, isPublicHostname, crmRevisionToNote, findInsyncContext, nameTokens,
                    sourceOf, CRM_PREFIX, NO_CONTEXT_FLAG };

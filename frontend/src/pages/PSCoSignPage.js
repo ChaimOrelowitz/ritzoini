@@ -1548,6 +1548,55 @@ function DatePickerModal({ onClose, onPull }) {
   );
 }
 
+// The CRM signs a new device in with a one-time link it emails. The link only
+// works in the session the backend started, so it has to be pasted here rather
+// than opened — opening it in the browser uses it up.
+function CrmVerifyModal({ message, onClose, onVerified, onResend }) {
+  const [link, setLink] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    try {
+      await api.post('/ps/cosign/crm-verify', { link: link.trim() });
+      onVerified();
+    } catch (ex) { alert(ex.message); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1100, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '60px 16px', overflowY: 'auto' }}
+      onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div style={{ background: 'white', borderRadius: 'var(--radius)', width: '100%', maxWidth: 560, boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ padding: '18px 22px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>Finish CRM sign-in</h3>
+          <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1.2rem', color: 'var(--gray-400)', padding: '4px 8px' }}>✕</button>
+        </div>
+        <div style={{ padding: '18px 22px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--gray-700)' }}>{message}</p>
+          <ol style={{ margin: 0, paddingLeft: 18, fontSize: '0.82rem', color: 'var(--gray-600)', lineHeight: 1.6 }}>
+            <li>Open the newest sign-in email from the CRM.</li>
+            <li><strong>Don't click the link</strong> — right-click it and choose <em>Copy link address</em>. Clicking uses it up.</li>
+            <li>Paste it below. The link expires 30 minutes after the email was sent.</li>
+          </ol>
+          <textarea className="form-input" rows={3} value={link} onChange={e => setLink(e.target.value)} disabled={busy}
+            placeholder="https://portal.linksnetwork.com/…" style={{ width: '100%', resize: 'vertical', fontFamily: 'inherit', fontSize: '0.82rem' }} />
+          <p style={{ margin: 0, fontSize: '0.76rem', color: 'var(--gray-500)' }}>
+            After this, pulls reuse the sign-in until the CRM ends the session.
+          </p>
+        </div>
+        <div style={{ padding: '14px 22px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-outline btn-sm" onClick={onResend} disabled={busy}>Email me a new link</button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-outline btn-sm" onClick={onClose} disabled={busy}>Cancel</button>
+            <button className="btn btn-gold btn-sm" onClick={submit} disabled={busy || !link.trim()}>{busy ? 'Signing in…' : 'Sign in & pull'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatTile({ label, val, color }) {
   return (
     <div style={{ background: 'white', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '12px 20px', minWidth: 130, textAlign: 'center' }}>
@@ -1741,6 +1790,7 @@ function QueueTab() {
   const [dFrom,   setDFrom]   = useState('');
   const [dTo,     setDTo]     = useState('');
   const [datePicker, setDatePicker] = useState(false);
+  const [crmVerify,  setCrmVerify]  = useState(null);   // message while the CRM wants its emailed link
   const esRef = useRef(null);
 
   const clearFilters = () => { setFClient(new Set()); setFPeer(new Set()); setFLen(new Set()); setFSource(new Set()); setDFrom(''); setDTo(''); };
@@ -1767,7 +1817,7 @@ function QueueTab() {
   // `dates` — MM/DD/YYYY keys from the date picker. Omitted pulls the whole queue.
   // `source` — 'insync' (the co-sign queue) or 'crm' (the CRM's supervisor-review
   // queue, which has no date picker).
-  async function startPull(dates = null, source = 'insync') {
+  async function startPull(dates = null, source = 'insync', { resend = false } = {}) {
     if (pulling) return;
     setDatePicker(false);
     setPulling(true);
@@ -1778,7 +1828,8 @@ function QueueTab() {
 
     const dq = dates && dates.length ? `&dates=${encodeURIComponent(dates.join(','))}` : '';
     const endpoint = source === 'crm' ? 'pull-crm' : 'pull';
-    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${source === 'crm' ? '' : dq}`);
+    const extra = source === 'crm' ? (resend ? '&resend=1' : '') : dq;
+    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${extra}`);
     esRef.current = es;
     es.onmessage = e => {
       try {
@@ -1789,6 +1840,9 @@ function QueueTab() {
           setPulling(false); setProgress(null); es.close();
           load();
           alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}.`);
+        } else if (msg.type === 'verify') {
+          setPulling(false); setProgress(null); es.close();
+          setCrmVerify(msg.message);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -2109,6 +2163,15 @@ function QueueTab() {
               renderNote={note => <NoteRow key={note.id} note={note} />} />
           )}
         </div>
+      )}
+
+      {crmVerify && (
+        <CrmVerifyModal
+          message={crmVerify}
+          onClose={() => setCrmVerify(null)}
+          onVerified={() => { setCrmVerify(null); startPull(null, 'crm'); }}
+          onResend={() => { setCrmVerify(null); startPull(null, 'crm', { resend: true }); }}
+        />
       )}
 
       {datePicker && (
