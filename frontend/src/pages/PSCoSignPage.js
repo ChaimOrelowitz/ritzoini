@@ -1531,19 +1531,34 @@ function fmtDateKey(key) {
 //
 // Duplicate detection compares against everything currently unsigned, so a wider
 // selection catches more copying — hence the note at the bottom.
+// 'YYYY-MM-DD' for an <input type="date">, n days before today.
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
 function DatePickerModal({ onClose, onPull }) {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
   const [dates,   setDates]   = useState([]);
   const [picked,  setPicked]  = useState(new Set());
+  // The visit-date window InSync is asked about. It only returns what it is
+  // asked for, so an old backlog needs this moved back — the default 90 days is
+  // what the live queue normally holds.
+  const [from,    setFrom]    = useState(isoDaysAgo(90));
+  const [to,      setTo]      = useState(isoDaysAgo(0));
 
-  useEffect(() => {
-    let live = true;
-    api.get('/ps/cosign/dates')
-      .then(d => { if (live) { setDates(d.dates || []); setLoading(false); } })
-      .catch(ex => { if (live) { setError(ex.message); setLoading(false); } });
-    return () => { live = false; };
+  const loadDates = useCallback((f, t) => {
+    setLoading(true); setError(''); setPicked(new Set());
+    const qs = new URLSearchParams({ ...(f ? { from: f } : {}), ...(t ? { to: t } : {}) }).toString();
+    return api.get(`/ps/cosign/dates${qs ? `?${qs}` : ''}`)
+      .then(d => { setDates(d.dates || []); setLoading(false); })
+      .catch(ex => { setError(ex.message); setLoading(false); });
   }, []);
+
+  // First open reads the default window; after that only the Search button reloads.
+  useEffect(() => { loadDates(isoDaysAgo(90), isoDaysAgo(0)); }, [loadDates]);
 
   const toggle = key => setPicked(p => {
     const n = new Set(p); n.has(key) ? n.delete(key) : n.add(key); return n;
@@ -1560,10 +1575,37 @@ function DatePickerModal({ onClose, onPull }) {
           <h3 style={{ margin: 0, fontSize: '1rem' }}>Pull by date</h3>
         </div>
         <div className="modal-body" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          {/* Search window — move it back to dig out an old backlog. */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 14,
+            padding: '10px 12px', background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)' }}>
+            <div>
+              <label style={lbl}>Visit dates from</label>
+              <input type="date" className="form-input" value={from} max={to} onChange={e => setFrom(e.target.value)}
+                style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
+            </div>
+            <div>
+              <label style={lbl}>to</label>
+              <input type="date" className="form-input" value={to} min={from} onChange={e => setTo(e.target.value)}
+                style={{ padding: '5px 8px', fontSize: '0.8rem' }} />
+            </div>
+            <button className="btn btn-outline btn-sm" disabled={loading} onClick={() => loadDates(from, to)}>
+              {loading ? 'Reading…' : 'Search InSync'}
+            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[[90, 'Last 90 days'], [365, 'Last year'], [1095, 'Last 3 years']].map(([days, label]) => (
+                <button key={days} className="btn btn-outline btn-xs" disabled={loading}
+                  onClick={() => { const f = isoDaysAgo(days), t = isoDaysAgo(0); setFrom(f); setTo(t); loadDates(f, t); }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           {loading && <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Reading the InSync queue…</div>}
           {error && <div style={{ color: '#b91c1c', fontSize: '0.85rem' }}>{error}</div>}
           {!loading && !error && dates.length === 0 && (
-            <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>Nothing is awaiting co-signature in InSync.</div>
+            <div style={{ color: 'var(--gray-400)', fontSize: '0.85rem' }}>
+              Nothing is awaiting co-signature in InSync with a visit date in this window. Try an earlier <strong>from</strong> date.
+            </div>
           )}
           {!loading && !error && dates.length > 0 && (
             <>
@@ -1603,7 +1645,7 @@ function DatePickerModal({ onClose, onPull }) {
           </span>
           <span style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-outline" onClick={onClose}>Cancel</button>
-            <button className="btn btn-gold" disabled={picked.size === 0} onClick={() => onPull([...picked])}>
+            <button className="btn btn-gold" disabled={picked.size === 0} onClick={() => onPull([...picked], { from, to })}>
               Pull selected
             </button>
           </span>
@@ -1832,7 +1874,10 @@ function QueueTab() {
   // `dates` — MM/DD/YYYY keys from the date picker. Omitted pulls the whole queue.
   // `source` — 'insync' (the co-sign queue) or 'crm' (the CRM's supervisor-review
   // queue, which has no date picker).
-  async function startPull(dates = null, source = 'insync') {
+  // `range` ({ from, to }) must match the window the dates were listed from: the
+  // pull asks InSync the same question, and InSync only returns visit dates it
+  // was asked for — so an old date picked from a widened window needs it too.
+  async function startPull(dates = null, source = 'insync', range = null) {
     if (pulling) return;
     setDatePicker(false);
     setPulling(true);
@@ -1843,7 +1888,9 @@ function QueueTab() {
 
     const dq = dates && dates.length ? `&dates=${encodeURIComponent(dates.join(','))}` : '';
     const endpoint = source === 'crm' ? 'pull-crm' : 'pull';
-    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${source === 'crm' ? '' : dq}`);
+    const rq = range && source !== 'crm'
+      ? `&${new URLSearchParams({ ...(range.from ? { from: range.from } : {}), ...(range.to ? { to: range.to } : {}) })}` : '';
+    const es = new EventSource(`${API}/api/ps/cosign/${endpoint}?token=${encodeURIComponent(token)}${source === 'crm' ? '' : dq + rq}`);
     esRef.current = es;
     es.onmessage = e => {
       try {
@@ -2178,7 +2225,7 @@ function QueueTab() {
       )}
 
       {datePicker && (
-        <DatePickerModal onClose={() => setDatePicker(false)} onPull={dates => startPull(dates)} />
+        <DatePickerModal onClose={() => setDatePicker(false)} onPull={(dates, range) => startPull(dates, 'insync', range)} />
       )}
 
       <NoteModal

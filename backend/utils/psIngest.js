@@ -211,7 +211,7 @@ async function ingestCantLoad(row, stats) {
 // `dates` (optional) is an array of MM/DD/YYYY keys from the date picker; only
 // those visit dates are downloaded and judged. Everything else is untouched —
 // notes on other dates are neither pulled nor altered.
-async function ingestQueue(engine, { onProgress, dates = null } = {}) {
+async function ingestQueue(engine, { onProgress, dates = null, range = {} } = {}) {
   const report = (m, p) => { if (onProgress) onProgress(m, p); };
 
   report('Logging into InSync...', 2);
@@ -219,7 +219,7 @@ async function ingestQueue(engine, { onProgress, dates = null } = {}) {
 
   report('Fetching co-sign queue...', 5);
   const dateSet = dates && dates.length ? new Set(dates) : null;
-  const { notes, cantLoad } = await engine.fetchNotes(report, { dates: dateSet });
+  const { notes, cantLoad } = await engine.fetchNotes(report, { dates: dateSet, range });
 
   return ingestNotes(engine, { source: 'insync', notes, cantLoad, report });
 }

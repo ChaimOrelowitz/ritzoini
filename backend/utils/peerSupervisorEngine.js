@@ -926,9 +926,20 @@ class InsyncCoSignEngine {
 
   // ── Fetch all pages ─────────────────────────────────────────────────────────
 
-  async fetchAllPages(onProgress) {
+  // `range` (optional) widens or moves the visit-date window InSync is asked
+  // about: { from, to } as 'YYYY-MM-DD' or Date. Default is the last 90 days,
+  // which is what the queue normally holds — an older backlog needs the window
+  // moved, since InSync filters server-side and never returns what wasn't asked for.
+  async fetchAllPages(onProgress, range = {}) {
+    const asDate = (v, fallback) => {
+      if (v instanceof Date && !isNaN(v)) return v;
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+      return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : fallback;
+    };
     const now  = new Date();
-    const from = new Date(now); from.setDate(from.getDate() - 90);
+    const to   = asDate(range.to, now);
+    const dflt = new Date(to); dflt.setDate(dflt.getDate() - 90);
+    const from = asDate(range.from, dflt);
     const fmt  = d => `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
 
     const baseParams = {
@@ -937,7 +948,7 @@ class InsyncCoSignEngine {
       'searchParamter[ProviderIds]':                 '',
       'searchParamter[EncounterTypeIds]':            '',
       'searchParamter[VisitDateFrom]':               fmt(from),
-      'searchParamter[VisitDateTo]':                 fmt(now),
+      'searchParamter[VisitDateTo]':                 fmt(to),
       'searchParamter[AssignToProviderIDs]':         this.providerId,
       'searchParamter[CoSignStatus]':                '0',
       'searchParamter[EncounterCategoryIds]':        '',
@@ -1519,9 +1530,9 @@ class InsyncCoSignEngine {
   // rows outside those dates are dropped BEFORE loadNote, which is the whole
   // point: loading a note costs three round-trips to InSync, so filtering the
   // cheap listing is what makes a one-day pull fast.
-  async fetchNotes(onProgress, { dates = null } = {}) {
+  async fetchNotes(onProgress, { dates = null, range = {} } = {}) {
     const report = (m, p) => { if (onProgress) onProgress(m, p); };
-    let rows = await this.fetchAllPages(report);
+    let rows = await this.fetchAllPages(report, range);
     if (dates && dates.size) rows = rows.filter(r => dates.has(dateKeyOf(r)));
     const total = rows.length;
     const notes = [], cantLoad = [];

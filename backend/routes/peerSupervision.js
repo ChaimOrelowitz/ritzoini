@@ -306,6 +306,14 @@ router.get('/cosign/notes/:eid/versions', requireAuth, requireCoSign, async (req
   res.json((data || []).map(psNoteView));
 });
 
+// The visit-date window to ask InSync about: ?from=YYYY-MM-DD&to=YYYY-MM-DD,
+// both optional (default: the last 90 days). This is what lets an old backlog be
+// found — InSync filters by visit date server-side.
+function rangeFrom(query) {
+  const ok = v => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : undefined);
+  return { from: ok(query.from), to: ok(query.to) };
+}
+
 // GET /api/ps/cosign/dates — the InSync co-sign queue grouped by visit date,
 // WITHOUT downloading a single note. The queue listing already carries each
 // row's visit date, so this is login + a few paged requests: seconds, not
@@ -315,7 +323,7 @@ router.get('/cosign/dates', requireAuth, requireCoSign, async (req, res) => {
   try {
     const engine = await buildEngine();
     await engine.login();
-    const rows = await engine.fetchAllPages();
+    const rows = await engine.fetchAllPages(null, rangeFrom(req.query));
 
     const eids = rows.map(r => r.eid).filter(Boolean);
     const known = new Set();
@@ -381,6 +389,7 @@ router.get('/cosign/pull', async (req, res) => {
     const stats = await ingestQueue(engine, {
       onProgress: (msg, pct) => send('progress', { msg, pct }),
       dates,
+      range: rangeFrom(req.query),
     });
     send('done', { stats });
   } catch (err) {
