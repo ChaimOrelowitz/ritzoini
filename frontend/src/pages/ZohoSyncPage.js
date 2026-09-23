@@ -63,7 +63,11 @@ export default function ZohoSyncPage() {
     setSyncing(true); setMsg(''); setError('');
     try {
       const r = await api.syncZohoGroups();
-      setMsg(`Fetched ${r.fetched} Zoho groups · linked ${r.aligned} new · ${r.alreadyLinked} already · ${r.unmatched.length} still unmatched`);
+      const a = r.alignment;
+      const alignMsg = a && a.sessionsAdded
+        ? ` · extended ${a.extended.length} group${a.extended.length !== 1 ? 's' : ''} (+${a.sessionsAdded} session${a.sessionsAdded !== 1 ? 's' : ''})`
+        : '';
+      setMsg(`Fetched ${r.fetched} Zoho groups · linked ${r.aligned} new · ${r.alreadyLinked} already · ${r.unmatched.length} still unmatched${alignMsg}`);
       await load();
     } catch (err) { setError(err.message); }
     finally { setSyncing(false); }

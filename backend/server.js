@@ -4,6 +4,7 @@ require('dotenv').config();
 const { getEmailEnabled, setEmailEnabled, loadEmailEnabled } = require('./utils/mailer');
 const { getDeliveryMode, setDeliveryMode, loadDeliveryMode } = require('./utils/soapNoteDelivery');
 const { zohoDiagnostic, zohoWriteTest, exchangeGrantCode, loadZohoRefreshToken, getOccurrenceRaw, syncZohoGroups, zohoLockBackfill, getRoster } = require('./utils/zohoCrm');
+const { alignGroupEndDates } = require('./utils/groupAlignment');
 const { requireAuth } = require('./middleware/auth');
 const supabase = require('./db/supabase');
 const { reflectZohoCancellations } = require('./routes/sessions');
@@ -214,6 +215,9 @@ app.post('/api/config/zoho-sync-groups', requireAuth, async (req, res) => {
     const result = await syncZohoGroups();
     try { result.cancellations = await reflectZohoCancellations(); }
     catch (e) { console.error('[zoho] reflect-cancellations failed:', e.message); result.cancellations = { error: e.message }; }
+    // Extend groups Zoho says run longer than the platform has sessions for.
+    try { result.alignment = await alignGroupEndDates({ apply: true }); }
+    catch (e) { console.error('[zoho] end-date alignment failed:', e.message); result.alignment = { error: e.message }; }
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });

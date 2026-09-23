@@ -93,7 +93,11 @@ export default function RosterPage() {
       const mine = await load();
       const c = r.cancellations;
       const cancelMsg = c && c.cancelled ? ` Cancelled ${c.cancelled} session${c.cancelled !== 1 ? 's' : ''}${c.skippedLocked ? `, skipped ${c.skippedLocked} locked` : ''}.` : '';
-      setMsg(`Synced ${r.fetched} Zoho groups (all therapists) — ${mine.length} are yours.${cancelMsg}`);
+      const a = r.alignment;
+      const alignMsg = a && a.sessionsAdded
+        ? ` Extended ${a.extended.length} group${a.extended.length !== 1 ? 's' : ''} to Zoho's end date, adding ${a.sessionsAdded} session${a.sessionsAdded !== 1 ? 's' : ''}${a.cancelledAdded ? ` (${a.cancelledAdded} already cancelled in Zoho)` : ''}.`
+        : '';
+      setMsg(`Synced ${r.fetched} Zoho groups (all therapists) — ${mine.length} are yours.${cancelMsg}${alignMsg}`);
     }
     catch (err) { setError('Sync failed: ' + err.message); }
     finally { setSyncing(false); }
