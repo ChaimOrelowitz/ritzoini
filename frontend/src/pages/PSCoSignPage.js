@@ -42,6 +42,12 @@ function CrmApprovedChip({ note }) {
   return <Chip color="gray">{`CRM approved${when ? ` ${when}` : ''} · no AI re-review`}</Chip>;
 }
 
+// Left in InSync for the InSync team rather than brought in to co-sign.
+function CrmHandledChip({ note }) {
+  if (!note.crmHandled) return null;
+  return <Chip color="orange">Left in InSync · CRM approved</Chip>;
+}
+
 function SourceChip({ source }) {
   return <Chip color={source === 'crm' ? 'orange' : 'blue'}>{SOURCE_LABEL[source] || 'InSync'}</Chip>;
 }
@@ -1206,6 +1212,7 @@ function SettingsTab() {
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_core_review: '', prompt_offsite: '',
     qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '', reopen_email_enabled: true,
+    crm_approved_stay_in_insync: true,
   });
   const [defaults, setDefaults] = useState({ prompt_core_review: '', prompt_offsite: '' });
   const [loading,  setLoading]  = useState(true);
@@ -1226,6 +1233,7 @@ function SettingsTab() {
         prompt_offsite:     s.prompt_offsite     || '',
         qa_email:          s.qa_email          || '',
         reopen_email_enabled: s.reopen_email_enabled !== false,
+        crm_approved_stay_in_insync: s.crm_approved_stay_in_insync !== false,
         qa_cc:             s.qa_cc             || '',
         reopen_from:       s.reopen_from       || '',
         reopen_reply_to:   s.reopen_reply_to   || '',
@@ -1284,6 +1292,23 @@ function SettingsTab() {
       </section>
 
       <CrmConnection />
+
+      <section style={sectionStyle}>
+        <p style={sectionLabel}>CRM-Approved Notes</p>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+          <input type="checkbox" checked={!!form.crm_approved_stay_in_insync}
+            onChange={e => setForm(f => ({ ...f, crm_approved_stay_in_insync: e.target.checked }))}
+            style={{ width: 16, height: 16 }} />
+          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--navy)' }}>
+            Leave CRM-approved notes in InSync
+          </span>
+        </label>
+        <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--gray-500)' }}>
+          {form.crm_approved_stay_in_insync
+            ? 'On — a session you approved in the CRM is left alone in InSync for the InSync team to work on. It is not pulled in, not AI-reviewed, and never appears in the stack to sign. Each one is recorded in the Archive as “Left in InSync”.'
+            : 'Off — a CRM-approved session comes back from InSync for your co-signature as normal (with no second AI review).'}
+        </p>
+      </section>
 
       <section style={sectionStyle}>
         <p style={sectionLabel}>Anthropic (Claude) API Key</p>
@@ -1900,7 +1925,7 @@ function QueueTab() {
           const s = msg.stats || {};
           setPulling(false); setProgress(null); es.close();
           load();
-          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}${s.crmApproved ? `, ${s.crmApproved} skipped AI review (approved in the CRM)` : ''}.`);
+          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}${s.crmApproved ? `, ${s.crmApproved} skipped AI review (approved in the CRM)` : ''}${s.leftInInsync ? `, ${s.leftInInsync} left in InSync (approved in the CRM)` : ''}.`);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -2043,6 +2068,7 @@ function QueueTab() {
               .filter(f => !/possible duplicate/i.test(f))
               .map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
             <DupeChip note={note} />
+            <CrmHandledChip note={note} />
             <CrmApprovedChip note={note} />
             <AiDecisionChip decision={note.aiDecision} />
             <OffsiteChip offsite={note.offsite} />

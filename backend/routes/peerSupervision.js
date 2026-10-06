@@ -6,7 +6,7 @@ const { DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = requir
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote } = require('../utils/psIngest');
 const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
-        receiveSession, sessionStatus } = require('../utils/crmPortal');
+        receiveSession, sessionStatus, STAY_IN_INSYNC_KEY } = require('../utils/crmPortal');
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -228,6 +228,9 @@ function psNoteView(row) {
     // Set when this session was already approved in the CRM — why it carries no
     // AI review of its own.
     crmApproved: f.crmApproved || null,
+    // Set when the note was left in InSync for the InSync team instead of being
+    // brought in to co-sign (see the PS Settings switch).
+    crmHandled: f.crmHandled || null,
     status: row.status, verdict: row.ai_verdict,
     patientName: row.patient_name, peerName: row.peer_name,
     visitDatetime: row.visit_datetime, visitDate: row.visit_date, mrn: row.mrn,
@@ -548,7 +551,8 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { no_school_start, no_school_end, provider_id, insync_username, insync_password,
             anthropic_api_key, prompt_core_review, prompt_offsite,
-            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled } = req.body;
+            qa_email, qa_cc, reopen_from, reopen_reply_to, reopen_email_enabled,
+            crm_approved_stay_in_insync } = req.body;
     const map = {
       ps_no_school_start: no_school_start,
       ps_no_school_end:   no_school_end,
@@ -566,6 +570,9 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       ps_reopen_from:      reopen_from,
       ps_reopen_reply_to:  reopen_reply_to,
       ps_reopen_email_enabled: reopen_email_enabled === undefined ? undefined : String(!!reopen_email_enabled),
+      // While the InSync team tests their own flow: CRM-approved sessions stay in
+      // InSync instead of coming here to be co-signed.
+      [STAY_IN_INSYNC_KEY]: crm_approved_stay_in_insync === undefined ? undefined : String(!!crm_approved_stay_in_insync),
     };
     for (const [key, value] of Object.entries(map))
       if (value !== undefined && value !== null)
@@ -619,7 +626,7 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
                 'insync_username','insync_password','anthropic_api_key',
                 'ps_prompt_core_review','ps_prompt_offsite',
                 'ps_qa_email','ps_qa_cc','ps_reopen_from','ps_reopen_reply_to',
-                'ps_reopen_email_enabled']);
+                'ps_reopen_email_enabled', STAY_IN_INSYNC_KEY]);
   const S = Object.fromEntries((data || []).map(r => [r.key, r.value]));
   res.json({
     no_school_start:   S.ps_no_school_start || '07/01',
@@ -635,6 +642,7 @@ router.get('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
     reopen_from:       S.ps_reopen_from     || '',
     reopen_reply_to:   S.ps_reopen_reply_to || '',
     reopen_email_enabled: S.ps_reopen_email_enabled !== 'false',
+    crm_approved_stay_in_insync: S[STAY_IN_INSYNC_KEY] !== 'false',
     default_prompt_core_review: DEFAULT_CORE_REVIEW_PROMPT,
     default_prompt_offsite:     DEFAULT_OFFSITE_PROMPT,
   });

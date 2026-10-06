@@ -18,9 +18,17 @@ const E = require('../utils/peerSupervisorEngine');
 const { contentHash, machineChecks, decideAction, whereSource, assembleJudged } = require('../utils/psIngest');
 
 let passed = 0;
+const pending = [];
 function test(name, fn) {
-  try { fn(); passed++; console.log(`  ok  ${name}`); }
-  catch (err) { console.error(`  FAIL ${name}\n${err.stack}`); process.exitCode = 1; }
+  try {
+    const out = fn();
+    if (out && typeof out.then === 'function') {
+      pending.push(out.then(() => { passed++; console.log(`  ok  ${name}`); },
+        err => { console.error(`  FAIL ${name}\n${err.stack}`); process.exitCode = 1; }));
+      return;
+    }
+    passed++; console.log(`  ok  ${name}`);
+  } catch (err) { console.error(`  FAIL ${name}\n${err.stack}`); process.exitCode = 1; }
 }
 
 const REV = {
@@ -176,4 +184,31 @@ test('a CRM-approved note is clean with no AI review, unless a free check object
   assert.strictEqual(assembleJudged([], { partnerEid: '1' }, null, false, approval).verdict, 'flagged');
 });
 
-console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);
+test('a queue row is matched to a CRM approval before its content is downloaded', () => {
+  // The co-sign listing row carries only visitDatetime — no visitDate/startTimeStr.
+  const key = sessionKeyOf('Test Client', '09/15/2026', '11:15 AM');
+  const index = new Map([[key, { crmEid: 'crm:x', approvedAt: '2026-09-17T19:00:00.000Z' }]]);
+  const row = { eid: '1036995', pid: '9', patientName: 'Client, Test', visitDatetime: '09/15/2026 11:15 AM' };
+  assert.ok(crmApprovalFor(row, index));
+  assert.strictEqual(crmApprovalFor({ ...row, visitDatetime: '09/15/2026 02:00 PM' }, index), null);
+  assert.strictEqual(crmApprovalFor({ ...row, visitDatetime: '' }, index), null);
+});
+
+test('skipRow keeps a note out of the pull without loading it', async () => {
+  const loaded = [];
+  const engine = Object.create(E.InsyncCoSignEngine.prototype);
+  engine.fetchAllPages = async () => ([
+    { eid: '1', patientName: 'A, B', visitDatetime: '09/15/2026 11:15 AM' },
+    { eid: '2', patientName: 'C, D', visitDatetime: '09/15/2026 01:00 PM' },
+  ]);
+  engine.loadNote = async row => { loaded.push(row.eid); return { ...row, fullNoteText: 'x' }; };
+  const out = await engine.fetchNotes(null, { skipRow: row => (row.eid === '1' ? { crmEid: 'crm:x' } : null) });
+  assert.deepStrictEqual(loaded, ['2']);                 // the skipped note is never downloaded
+  assert.deepStrictEqual(out.notes.map(n => n.eid), ['2']);
+  assert.strictEqual(out.skipped.length, 1);
+  assert.strictEqual(out.skipped[0].row.eid, '1');
+});
+
+Promise.all(pending).then(() => {
+  console.log(`\n${passed} passed${process.exitCode ? ', some FAILED' : ''}`);
+});

@@ -19,7 +19,7 @@
 const crypto = require('crypto');
 const supabase = require('../db/supabase');
 const { CRM_PREFIX, NO_CONTEXT_FLAG, sourceOf, crmRevisionToNote, findInsyncContext,
-        loadCrmApprovals, crmApprovalFor } = require('./crmPortal');
+        loadCrmApprovals, crmApprovalFor, crmApprovedStayInInsync } = require('./crmPortal');
 
 // Notes arrive from two sources — InSync and the CRM (utils/crmPortal.js) — and
 // get identical treatment, with ONE exception: duplicate comparison never crosses
@@ -219,9 +219,72 @@ async function ingestQueue(engine, { onProgress, dates = null, range = {} } = {}
 
   report('Fetching co-sign queue...', 5);
   const dateSet = dates && dates.length ? new Set(dates) : null;
-  const { notes, cantLoad } = await engine.fetchNotes(report, { dates: dateSet, range });
 
-  return ingestNotes(engine, { source: 'insync', notes, cantLoad, report });
+  // While the InSync team is testing their flow, a session the user approved in
+  // the CRM is left in InSync for them and must not come back here to be signed.
+  // Judged from the queue listing, so such a note is never downloaded and never
+  // reviewed.
+  const stayInInsync = await crmApprovedStayInInsync();
+  const approvals = stayInInsync ? await loadCrmApprovals() : new Map();
+  const skipRow = stayInInsync && approvals.size
+    ? row => crmApprovalFor(row, approvals)
+    : null;
+
+  const { notes, cantLoad, skipped } = await engine.fetchNotes(report, { dates: dateSet, range, skipRow });
+
+  const stats = await ingestNotes(engine, { source: 'insync', notes, cantLoad, report });
+  stats.leftInInsync = await recordLeftInInsync(skipped, report);
+  return stats;
+}
+
+// Keep a record of every note left in InSync: one archive row per encounter,
+// marked with the CRM approval that caused it. A copy already sitting in the live
+// queue (pending, or reopened and waiting on a peer) is parked the same way, so
+// the queue never shows a note the user is not supposed to act on.
+async function recordLeftInInsync(skipped, report) {
+  if (!skipped || !skipped.length) return 0;
+  report(`Leaving ${skipped.length} note(s) in InSync (approved in the CRM)...`, 99);
+  let n = 0;
+  for (const { row, reason } of skipped) {
+    const crmApproved = reason && typeof reason === 'object' ? reason : null;
+    const crmHandled = {
+      at: new Date().toISOString(),
+      reason: 'Approved in the CRM — left in InSync for the InSync team',
+      crmEid: crmApproved?.crmEid || null,
+      approvedAt: crmApproved?.approvedAt || null,
+    };
+    const { data: existing } = await supabase.from('ps_notes')
+      .select('id, version, status, ai_flags')
+      .eq('eid', row.eid).order('version', { ascending: false }).limit(1).maybeSingle();
+
+    if (existing && ['pending', 'reopened'].includes(existing.status)) {
+      await supabase.from('ps_notes').update({
+        status: 'superseded', actioned_at: new Date().toISOString(),
+        ai_flags: { ...(existing.ai_flags || {}), crmHandled },
+      }).eq('id', existing.id);
+      n++;
+      continue;
+    }
+    // Already recorded as left-in-InSync (a later pull sees the same row again)
+    // or already signed here — nothing to add.
+    if (existing?.ai_flags?.crmHandled || existing?.status === 'signed') continue;
+
+    await supabase.from('ps_notes').insert({
+      eid: row.eid, version: (existing?.version || 0) + 1, pid: row.pid,
+      peer_name: row.peerName, patient_name: row.patientName,
+      visit_date: (row.visitDatetime || '').split(' ')[0] || '',
+      visit_datetime: row.visitDatetime,
+      content_hash: `crmhandled:${row.eid}`,
+      ai_verdict: null,
+      ai_flags: { machine: [], clone: null, coherence: null, offsite: null, review: null, crmHandled },
+      status: 'superseded',
+      note_data: row,
+      judged_at: null,
+      actioned_at: new Date().toISOString(),
+    });
+    n++;
+  }
+  return n;
 }
 
 // CRM entry: login → queue → load each revision → borrow InSync chart context →
@@ -431,6 +494,7 @@ async function priorReviewFor(eid) {
   return data?.ai_flags?.review || null;
 }
 
-module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, closeVanishedCrmNotes, closeCrmNote, pendingCorpus, whereSource, machineChecks,
+module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, closeVanishedCrmNotes, closeCrmNote,
+                   recordLeftInInsync, pendingCorpus, whereSource, machineChecks,
                    decideAction, judgeNote, reviewFor, assembleJudged,
                    contentHash, serializeNote, priorReviewFor };

@@ -1530,10 +1530,25 @@ class InsyncCoSignEngine {
   // rows outside those dates are dropped BEFORE loadNote, which is the whole
   // point: loading a note costs three round-trips to InSync, so filtering the
   // cheap listing is what makes a one-day pull fast.
-  async fetchNotes(onProgress, { dates = null, range = {} } = {}) {
+  // `skipRow(row)` (optional) is asked about every queue row BEFORE its content is
+  // downloaded; a truthy return (a reason, or an object) keeps the note out of the
+  // pull entirely. Deciding here rather than after loading is the point: loading
+  // one note costs three round-trips to InSync and a note that is never ingested
+  // never reaches the AI review either. The rows it rejects come back as `skipped`
+  // so the caller can record them.
+  async fetchNotes(onProgress, { dates = null, range = {}, skipRow = null } = {}) {
     const report = (m, p) => { if (onProgress) onProgress(m, p); };
     let rows = await this.fetchAllPages(report, range);
     if (dates && dates.size) rows = rows.filter(r => dates.has(dateKeyOf(r)));
+    const skipped = [];
+    if (skipRow) {
+      const keep = [];
+      for (const row of rows) {
+        const reason = skipRow(row);
+        if (reason) skipped.push({ row, reason }); else keep.push(row);
+      }
+      rows = keep;
+    }
     const total = rows.length;
     const notes = [], cantLoad = [];
     for (let i = 0; i < rows.length; i++) {
@@ -1546,7 +1561,7 @@ class InsyncCoSignEngine {
         visitDate: rows[i].visitDatetime ? rows[i].visitDatetime.split(' ')[0] : '',
       });
     }
-    return { notes, cantLoad };
+    return { notes, cantLoad, skipped };
   }
 
   // ── Full scan ───────────────────────────────────────────────────────────────

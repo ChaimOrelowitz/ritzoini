@@ -447,13 +447,27 @@ async function loadCrmApprovals() {
   return index;
 }
 
-// The CRM approval for an InSync note, or null.
+// The CRM approval for an InSync note, or null. Works on a full note and on a
+// bare co-sign queue row (which carries only `visitDatetime`), so a row can be
+// judged before its content is downloaded.
 function crmApprovalFor(note, index) {
   if (!index || !index.size) return null;
-  const key = sessionKeyOf(note.patientName, note.visitDate, note.startTimeStr);
+  const visitDate = note.visitDate || (note.visitDatetime || '').split(' ')[0] || '';
+  const key = sessionKeyOf(note.patientName, visitDate, note.startTimeStr || note.visitDatetime);
   return key ? index.get(key) || null : null;
 }
 
-module.exports = { CrmPortalClient, loadCrmApprovals, crmApprovalFor, sessionKeyOf, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
+// While the InSync team is testing their own flow, the arrangement is: notes the
+// user approves in the CRM are left alone in InSync for that team to work on, so
+// they must not come back to Ritzoini to be co-signed. The switch lives in PS
+// Settings; absent means on, since that is the arrangement it was built for.
+const STAY_IN_INSYNC_KEY = 'ps_crm_approved_stay_in_insync';
+
+async function crmApprovedStayInInsync() {
+  return (await readSetting(STAY_IN_INSYNC_KEY)) !== 'false';
+}
+
+module.exports = { CrmPortalClient, loadCrmApprovals, crmApprovalFor, sessionKeyOf,
+                   crmApprovedStayInInsync, STAY_IN_INSYNC_KEY, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
                    receiveSession, sessionStatus, fingerprintOf, crmRevisionToNote, findInsyncContext, nameTokens,
                    sourceOf, CRM_PREFIX, NO_CONTEXT_FLAG };
