@@ -14,7 +14,7 @@
 // for an external scheduler (useful if the service sleeps, since timers don't
 // run while it's asleep).
 
-const { CrmPortalClient } = require('./crmPortal');
+const { CrmPortalClient, CRM_ENABLED } = require('./crmPortal');
 
 const MIN = 60 * 1000;
 let started = false;
@@ -45,6 +45,8 @@ async function pullOnce() {
 }
 
 function startCrmKeepAlive() {
+  // Dormant while the CRM integration is switched off (see utils/crmPortal.js).
+  if (!CRM_ENABLED) return;
   if (started || String(process.env.CRM_AUTO || '').toLowerCase() === 'off') return;
   started = true;
   const touchMins = Math.max(2, Number(process.env.CRM_TOUCH_MINUTES) || 10);

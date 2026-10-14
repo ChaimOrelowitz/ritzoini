@@ -32,6 +32,20 @@ const NO_CONTEXT_FLAG = 'No InSync chart match for this client — age, diagnosi
 
 const sourceOf = eid => (String(eid || '').startsWith(CRM_PREFIX) ? 'crm' : 'insync');
 
+// ── Master switch ─────────────────────────────────────────────────────────────
+//
+// SWITCHED OFF 2026-10-14: the company moved back to working only in InSync, so
+// the whole CRM integration is dormant — the CRM routes answer 410, the keep-alive
+// and auto-pull timers never start, and the InSync pull no longer skips a note or
+// drops its AI review because of a CRM approval. Everything below still works and
+// is kept deliberately (this arrangement has changed more than once): set
+// CRM_INTEGRATION=on to bring it back, then re-check the PS Settings switch
+// `ps_crm_approved_stay_in_insync`, which is left off.
+//
+// Still read when off: the CRM notes already in ps_notes (`crm:` eids) stay in the
+// Archive as the record of what was approved there.
+const CRM_ENABLED = String(process.env.CRM_INTEGRATION || '').toLowerCase() === 'on';
+
 // Signing in: the CRM emails a one-time link to any new device, and that link
 // lands on a page that waits for a human click — a server can't get through it.
 // So the server never signs in. A Chrome extension (crm-session-extension/) in a
@@ -467,7 +481,8 @@ async function crmApprovedStayInInsync() {
   return (await readSetting(STAY_IN_INSYNC_KEY)) !== 'false';
 }
 
-module.exports = { CrmPortalClient, loadCrmApprovals, crmApprovalFor, sessionKeyOf,
+module.exports = { CRM_ENABLED,
+                   CrmPortalClient, loadCrmApprovals, crmApprovalFor, sessionKeyOf,
                    crmApprovedStayInInsync, STAY_IN_INSYNC_KEY, CrmSessionMissing, checkExtensionToken, rotateExtensionToken,
                    receiveSession, sessionStatus, fingerprintOf, crmRevisionToNote, findInsyncContext, nameTokens,
                    sourceOf, CRM_PREFIX, NO_CONTEXT_FLAG };

@@ -1133,86 +1133,12 @@ function PromptProvenance() {
   );
 }
 
-const agoText = iso => {
-  if (!iso) return '—';
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins} min ago`;
-  const h = Math.floor(mins / 60);
-  return h < 48 ? `${h} hr ${mins % 60} min ago` : `${Math.floor(h / 24)} days ago`;
-};
-const spanText = (from, to) => {
-  if (!from || !to) return null;
-  const mins = Math.round((new Date(to) - new Date(from)) / 60000);
-  return mins < 60 ? `${mins} min` : `${Math.floor(mins / 60)} hr ${mins % 60} min`;
-};
-
-// The CRM can't be signed into from the server (it emails a one-time link and
-// waits for a click), so the Ritzoini CRM extension sends the session of a
-// browser that's already logged in. This shows whether Ritzoini holds a working
-// one and hands out the token the extension needs.
-function CrmConnection() {
-  const [st, setSt] = useState(null);
-  const [token, setToken] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const load = useCallback(() => { api.get('/ps/cosign/crm-status').then(setSt).catch(() => setSt(null)); }, []);
-  useEffect(() => { load(); }, [load]);
-
-  async function newToken() {
-    if (st?.hasToken && !window.confirm('Make a new token? Extensions using the old one stop sending sessions until you paste the new one in.')) return;
-    setBusy(true);
-    try { setToken((await api.post('/ps/cosign/crm-extension-token', {})).token); load(); }
-    catch (ex) { alert(ex.message); }
-    finally { setBusy(false); }
-  }
-
-  const small = { margin: '0 0 8px', fontSize: '0.8rem', color: 'var(--gray-600)' };
-  return (
-    <section style={sectionStyle}>
-      <p style={sectionLabel}>CRM Connection</p>
-      {!st ? <p style={small}>Loading…</p> : (
-        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 'var(--radius)', fontSize: '0.82rem',
-          background: st.connected ? '#f0fdf4' : '#fef2f2', border: `1px solid ${st.connected ? '#bbf7d0' : '#fecaca'}` }}>
-          <div style={{ fontWeight: 700, color: st.connected ? '#15803d' : '#b91c1c' }}>
-            {st.connected ? `Connected${st.account?.email ? ` as ${st.account.email}` : ''}`
-              : st.invalidAt ? 'Session expired — open the CRM in Chrome with the extension' : 'Not connected yet'}
-          </div>
-          {st.receivedAt && (
-            <div style={{ color: 'var(--gray-600)', marginTop: 4, lineHeight: 1.6 }}>
-              Last sent by extension: {agoText(st.receivedAt)}{st.sentFrom ? ` (${st.sentFrom})` : ''}<br />
-              Last confirmed working: {agoText(st.lastValidAt)}<br />
-              This session started: {agoText(st.startedAt)}
-              {st.invalidAt && <><br />Expired after about {spanText(st.startedAt, st.invalidAt)}</>}
-              {st.previous?.invalidAt && <><br />Previous session lasted about {spanText(st.previous.startedAt, st.previous.invalidAt)}</>}
-            </div>
-          )}
-        </div>
-      )}
-      <p style={small}>
-        Install the <strong>Ritzoini CRM Session</strong> extension (repo folder <code>crm-session-extension/</code>) in Chrome on every machine you use,
-        paste the token below into its popup, and stay logged into the CRM in that browser. The extension sends the session when you log in and about hourly.
-      </p>
-      <button className="btn btn-outline btn-sm" onClick={newToken} disabled={busy}>
-        {busy ? '…' : st?.hasToken ? 'Make a new extension token' : 'Make extension token'}
-      </button>
-      {token && (
-        <div style={{ marginTop: 10 }}>
-          <label style={lbl}>Extension token — copy it now, it won't be shown again</label>
-          <input className="form-input" readOnly value={token} onFocus={e => e.target.select()} style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.78rem' }} />
-        </div>
-      )}
-    </section>
-  );
-}
-
 function SettingsTab() {
   const [form, setForm] = useState({
     insync_username: '', insync_password: '', anthropic_api_key: '',
     no_school_start: '', no_school_end: '', provider_id: '',
     prompt_core_review: '', prompt_offsite: '',
     qa_email: '', qa_cc: '', reopen_from: '', reopen_reply_to: '', reopen_email_enabled: true,
-    crm_approved_stay_in_insync: true,
   });
   const [defaults, setDefaults] = useState({ prompt_core_review: '', prompt_offsite: '' });
   const [loading,  setLoading]  = useState(true);
@@ -1233,7 +1159,6 @@ function SettingsTab() {
         prompt_offsite:     s.prompt_offsite     || '',
         qa_email:          s.qa_email          || '',
         reopen_email_enabled: s.reopen_email_enabled !== false,
-        crm_approved_stay_in_insync: s.crm_approved_stay_in_insync !== false,
         qa_cc:             s.qa_cc             || '',
         reopen_from:       s.reopen_from       || '',
         reopen_reply_to:   s.reopen_reply_to   || '',
@@ -1289,25 +1214,6 @@ function SettingsTab() {
             <input className="form-input" value={form.provider_id} onChange={set('provider_id')} placeholder="e.g. 2317" style={{ width: 140 }} />
           </div>
         </div>
-      </section>
-
-      <CrmConnection />
-
-      <section style={sectionStyle}>
-        <p style={sectionLabel}>CRM-Approved Notes</p>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
-          <input type="checkbox" checked={!!form.crm_approved_stay_in_insync}
-            onChange={e => setForm(f => ({ ...f, crm_approved_stay_in_insync: e.target.checked }))}
-            style={{ width: 16, height: 16 }} />
-          <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--navy)' }}>
-            Leave CRM-approved notes in InSync
-          </span>
-        </label>
-        <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--gray-500)' }}>
-          {form.crm_approved_stay_in_insync
-            ? 'On — a session you approved in the CRM is left alone in InSync for the InSync team to work on. It is not pulled in, not AI-reviewed, and never appears in the stack to sign. Each one is recorded in the Archive as “Left in InSync”.'
-            : 'Off — a CRM-approved session comes back from InSync for your co-signature as normal (with no second AI review).'}
-        </p>
       </section>
 
       <section style={sectionStyle}>
@@ -2129,9 +2035,6 @@ function QueueTab() {
           <button className="btn btn-gold btn-sm" onClick={() => startPull()} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
             {pulling ? 'Pulling…' : '⟳ Pull new notes'}
           </button>
-          <button className="btn btn-outline btn-sm" onClick={() => startPull(null, 'crm')} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
-            ⟳ Pull CRM notes
-          </button>
         </div>
       </div>
 
@@ -2147,7 +2050,7 @@ function QueueTab() {
 
           {notes.length === 0 && (
             <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
-              Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync, or <strong>Pull CRM notes</strong> for the CRM.
+              Queue is empty. Hit <strong>Pull new notes</strong> to fetch from InSync.
             </div>
           )}
           {notes.length > 0 && filtered.length === 0 && (

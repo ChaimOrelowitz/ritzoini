@@ -19,7 +19,7 @@
 const crypto = require('crypto');
 const supabase = require('../db/supabase');
 const { CRM_PREFIX, NO_CONTEXT_FLAG, sourceOf, crmRevisionToNote, findInsyncContext,
-        loadCrmApprovals, crmApprovalFor, crmApprovedStayInInsync } = require('./crmPortal');
+        loadCrmApprovals, crmApprovalFor, crmApprovedStayInInsync, CRM_ENABLED } = require('./crmPortal');
 
 // Notes arrive from two sources — InSync and the CRM (utils/crmPortal.js) — and
 // get identical treatment, with ONE exception: duplicate comparison never crosses
@@ -224,7 +224,9 @@ async function ingestQueue(engine, { onProgress, dates = null, range = {} } = {}
   // the CRM is left in InSync for them and must not come back here to be signed.
   // Judged from the queue listing, so such a note is never downloaded and never
   // reviewed.
-  const stayInInsync = await crmApprovedStayInInsync();
+  // Both CRM-driven shortcuts below are dormant while the integration is off, so
+  // every InSync note is pulled in and reviewed exactly as it was before the CRM.
+  const stayInInsync = CRM_ENABLED && await crmApprovedStayInInsync();
   const approvals = stayInInsync ? await loadCrmApprovals() : new Map();
   const skipRow = stayInInsync && approvals.size
     ? row => crmApprovalFor(row, approvals)
@@ -290,6 +292,7 @@ async function recordLeftInInsync(skipped, report) {
 // CRM entry: login → queue → load each revision → borrow InSync chart context →
 // the same dedup/judge/persist path as InSync.
 async function ingestCrmQueue(engine, crm, { onProgress, findContext } = {}) {
+  if (!CRM_ENABLED) throw new Error('The CRM integration is switched off — Ritzoini works only from InSync');
   const report = (m, p) => { if (onProgress) onProgress(m, p); };
   findContext = findContext || findInsyncContext;
 
@@ -369,7 +372,7 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   // from InSync — same note, same tokens. The free checks (duration, minor,
   // duplicate) still run, so a note only lands in the clean stack if nothing
   // mechanical objects.
-  const crmApprovals = source === 'insync' ? await loadCrmApprovals() : new Map();
+  const crmApprovals = CRM_ENABLED && source === 'insync' ? await loadCrmApprovals() : new Map();
 
   const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
                   reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,

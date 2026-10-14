@@ -6,7 +6,15 @@ const { DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = requir
 const { sendReopenNotification } = require('../utils/reopenNotify');
 const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote } = require('../utils/psIngest');
 const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
-        receiveSession, sessionStatus, STAY_IN_INSYNC_KEY } = require('../utils/crmPortal');
+        receiveSession, sessionStatus, STAY_IN_INSYNC_KEY, CRM_ENABLED } = require('../utils/crmPortal');
+
+// The CRM integration is switched off (see utils/crmPortal.js): every CRM route
+// answers 410 rather than being deleted, so turning it back on is one env var.
+const CRM_OFF_MESSAGE = 'The CRM integration is switched off — Ritzoini works only from InSync';
+function requireCrmEnabled(req, res, next) {
+  if (!CRM_ENABLED) return res.status(410).json({ error: CRM_OFF_MESSAGE });
+  next();
+}
 const { syncCaseload, logFailure } = require('../utils/caseloadSync');
 const { fetchSupervisionSchedule, fetchSupervisionSessions } = require('../utils/airtable');
 
@@ -98,7 +106,10 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
           .in('eid', eids).eq('status', 'pending');
     }
 
-    if (crmNotes.length) {
+    if (crmNotes.length && !CRM_ENABLED) {
+      failed += crmNotes.length;
+      for (const n of crmNotes) errors.push({ eid: n.eid, message: CRM_OFF_MESSAGE });
+    } else if (crmNotes.length) {
       const crm = new CrmPortalClient();
       await crm.login();
       const rows = await liveRowsByEid(crmNotes.map(n => n.eid));
@@ -146,6 +157,10 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
     const hasCrm    = notes.some(n => sourceOf(n.eid) === 'crm');
     let engine = null, crm = null, crmRows = new Map();
     if (hasInsync) { engine = await buildEngine(); await engine.login(); }
+    if (hasCrm && !CRM_ENABLED) {
+      return res.json({ results: notes.filter(n => sourceOf(n.eid) === 'crm')
+        .map(n => ({ eid: n.eid, ok: false, message: CRM_OFF_MESSAGE })) });
+    }
     if (hasCrm) {
       crm = new CrmPortalClient(); await crm.login();
       crmRows = await liveRowsByEid(notes.filter(n => sourceOf(n.eid) === 'crm').map(n => n.eid));
@@ -405,6 +420,7 @@ router.get('/cosign/pull', async (req, res) => {
 // GET /api/ps/cosign/pull-crm — SSE: the same incremental ingest, from the CRM's
 // supervisor-review queue. Read-only against the CRM (no approve/reopen).
 router.get('/cosign/pull-crm', async (req, res) => {
+  if (!CRM_ENABLED) return res.status(410).json({ error: CRM_OFF_MESSAGE });
   if (!(await sseCoSignAuth(req, res))) return;
 
   res.setHeader('Content-Type',  'text/event-stream');
@@ -431,7 +447,7 @@ router.get('/cosign/pull-crm', async (req, res) => {
 // a browser that's logged into the CRM. Auth is the extension token from
 // Settings (x-extension-token), not a Ritzoini login: the extension runs in the
 // background with no user session. Body: { cookies: {name: value}, sentFrom }.
-router.post('/cosign/crm-session', async (req, res) => {
+router.post('/cosign/crm-session', requireCrmEnabled, async (req, res) => {
   try {
     if (!(await checkExtensionToken(req.headers['x-extension-token'])))
       return res.status(401).json({ error: 'Invalid extension token — copy it again from Co-Sign ⚙ Settings' });
@@ -441,14 +457,14 @@ router.post('/cosign/crm-session', async (req, res) => {
 });
 
 // GET /api/ps/cosign/crm-status — is Ritzoini holding a working CRM session?
-router.get('/cosign/crm-status', requireAuth, requireCoSign, async (req, res) => {
+router.get('/cosign/crm-status', requireCrmEnabled, requireAuth, requireCoSign, async (req, res) => {
   try { res.json(await sessionStatus()); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // POST /api/ps/cosign/crm-extension-token — make a new extension token (the old
 // one stops working). Returned once, for pasting into the extension.
-router.post('/cosign/crm-extension-token', requireAuth, requireAdmin, async (req, res) => {
+router.post('/cosign/crm-extension-token', requireCrmEnabled, requireAuth, requireAdmin, async (req, res) => {
   try { res.json({ token: await rotateExtensionToken() }); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -456,7 +472,7 @@ router.post('/cosign/crm-extension-token', requireAuth, requireAdmin, async (req
 // POST /api/ps/cosign/crm-keepalive — ping the CRM so the stored session doesn't
 // go idle (x-cron-secret). The web service already does this on its own timer;
 // this is for an external scheduler, which matters if the service ever sleeps.
-router.post('/cosign/crm-keepalive', async (req, res) => {
+router.post('/cosign/crm-keepalive', requireCrmEnabled, async (req, res) => {
   const secret   = process.env.CRON_SECRET;
   const provided = req.headers['x-cron-secret'] || req.query.secret;
   if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });
@@ -467,7 +483,7 @@ router.post('/cosign/crm-keepalive', async (req, res) => {
 // POST /api/ps/cosign/crm-cron — hourly CRM pull for an external scheduler
 // (x-cron-secret). Uses whatever session the extension last sent; if it has
 // expired the run fails with that message and the next extension check-in fixes it.
-router.post('/cosign/crm-cron', async (req, res) => {
+router.post('/cosign/crm-cron', requireCrmEnabled, async (req, res) => {
   const secret   = process.env.CRON_SECRET;
   const provided = req.headers['x-cron-secret'] || req.query.secret;
   if (!secret || provided !== secret) return res.status(401).json({ error: 'Unauthorized' });

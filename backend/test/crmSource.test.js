@@ -13,7 +13,7 @@ process.env.SUPABASE_URL = 'http://stub.invalid';
 process.env.SUPABASE_SERVICE_KEY = 'stub';
 
 const { crmRevisionToNote, nameTokens, sourceOf, NO_CONTEXT_FLAG, fingerprintOf,
-        sessionKeyOf, crmApprovalFor } = require('../utils/crmPortal');
+        sessionKeyOf, crmApprovalFor, CRM_ENABLED } = require('../utils/crmPortal');
 const E = require('../utils/peerSupervisorEngine');
 const { contentHash, machineChecks, decideAction, whereSource, assembleJudged } = require('../utils/psIngest');
 
@@ -156,6 +156,13 @@ test('a session fingerprint ignores cookie order and changes with any value', ()
   assert.strictEqual(fingerprintOf({ other: 'y', serenity_session: 'x' }), a);
   assert.notStrictEqual(fingerprintOf({ serenity_session: 'z', other: 'y' }), a);
   assert.ok(!a.includes('x'));
+});
+
+test('the CRM integration stays off unless CRM_INTEGRATION=on', () => {
+  // Switched off 2026-10-14 (InSync only). The code below is still exercised so it
+  // keeps working for whenever the arrangement changes back.
+  assert.strictEqual(CRM_ENABLED, String(process.env.CRM_INTEGRATION || '').toLowerCase() === 'on');
+  assert.strictEqual(CRM_ENABLED, false);
 });
 
 test('a CRM-approved session is recognised when it arrives from InSync', () => {
