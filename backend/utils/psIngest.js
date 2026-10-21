@@ -374,7 +374,7 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   // mechanical objects.
   const crmApprovals = CRM_ENABLED && source === 'insync' ? await loadCrmApprovals() : new Map();
 
-  const stats = { pulled: notes.length, new: 0, revised: 0, skipped: 0,
+  const stats = { pulled: notes.length, new: 0, revised: 0, rereviewed: 0, skipped: 0,
                   reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,
                   aiCalls: 0, aiReused: 0, crmApproved: 0 };
   const aiCallsAtStart = engine.aiCallCount || 0;
@@ -393,7 +393,25 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
       .select('id, version, status, content_hash')
       .eq('eid', note.eid).order('version', { ascending: false }).limit(1).maybeSingle();
 
-    const action = decideAction(existing, hash);
+    let action = decideAction(existing, hash);
+
+    // Unchanged and still pending: re-review it only when what the AI would be
+    // sent has changed since its stored review — a prompt edit, a new payload
+    // field, a new machine flag. Otherwise it costs nothing, exactly as before.
+    // The duplicate track is about content, which hasn't changed, so the stored
+    // finding (and any human decision on it) is kept rather than re-run against
+    // a pool that already contains this very note.
+    if (action === 'skip' && existing.status === 'pending') {
+      const { data: stored } = await supabase.from('ps_notes')
+        .select('ai_flags').eq('id', existing.id).maybeSingle();
+      const prior = stored?.ai_flags?.review;
+      const machine = machineChecks(engine, note);
+      if (prior && prior.decision && prior.fingerprint !== engine.fingerprintFor(note, machine)) {
+        work.push({ note, hash, existing, action: 'rereview', machine,
+                    dupe: stored.ai_flags.clone || null, crmApproved: null });
+        continue;
+      }
+    }
     if (action === 'skip') { stats.skipped++; continue; }
 
     // Direction-A reconciliation: it's back in the pending queue unchanged, so
@@ -453,6 +471,16 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
     if (judged.aiCalled) stats.aiCalls++; else if (judged.flags.review) stats.aiReused++;
     if (judged.flags.crmApproved) stats.crmApproved++;
 
+    // Same note, fresh review: update it in place, no new version.
+    if (action === 'rereview') {
+      await supabase.from('ps_notes')
+        .update({ ai_verdict: judged.verdict, ai_flags: judged.flags, judged_at: new Date().toISOString() })
+        .eq('id', existing.id);
+      stats.rereviewed++;
+      stats[judged.verdict]++;
+      continue;
+    }
+
     // Option (b): a possible duplicate pulls its pending partner into the
     // flagged queue too, so neither half can be bulk-signed by accident. This
     // never reopens anything on its own — a human still adjudicates.
@@ -482,7 +510,7 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   // Invariant: the engine's own AI counter must equal the number of reviews we
   // believe we requested. Duplicate detection contributes zero to both.
   stats.engineAiCalls = (engine.aiCallCount || 0) - aiCallsAtStart;
-  console.log(`[PS ingest] AI calls: ${stats.engineAiCalls} (accounted ${stats.aiCalls}, reused ${stats.aiReused}) over ${stats.new + stats.revised} new/revised notes`);
+  console.log(`[PS ingest] AI calls: ${stats.engineAiCalls} (accounted ${stats.aiCalls}, reused ${stats.aiReused}) over ${stats.new + stats.revised} new/revised and ${stats.rereviewed} re-reviewed notes`);
 
   report('Done!', 100);
   return stats;

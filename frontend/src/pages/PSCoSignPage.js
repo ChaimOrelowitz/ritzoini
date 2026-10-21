@@ -553,7 +553,14 @@ function AiReviewPanel({ note }) {
 
       <div style={{ marginTop: 12, fontSize: '0.68rem', color: 'var(--gray-400)' }}>
         {r.review_version} · {r.model} · reviewed {r.reviewed_at ? new Date(r.reviewed_at).toLocaleString() : '—'}
-        {r.usage && ` · ${r.usage.input_tokens} in / ${r.usage.output_tokens} out (cache read ${r.usage.cache_read_input_tokens ?? 0})`}
+        {r.usage && (() => {
+          // input_tokens is only the uncached part (the note); the system prompt
+          // is billed as a cache read, or a cache write on a pull's first review.
+          const note = r.usage.input_tokens ?? 0;
+          const read = r.usage.cache_read_input_tokens ?? 0;
+          const write = r.usage.cache_creation_input_tokens ?? 0;
+          return ` · ${(note + read + write).toLocaleString()} in (note ${note.toLocaleString()} + prompt ${read.toLocaleString()} cached + ${write.toLocaleString()} cache write) / ${r.usage.output_tokens} out`;
+        })()}
         {r.raw_response && (
           <button className="btn btn-outline btn-xs" style={{ marginLeft: 8 }} onClick={() => setShowRaw(v => !v)}>
             {showRaw ? 'Hide' : 'Show'} raw

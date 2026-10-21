@@ -545,7 +545,32 @@ test('O5. Flags: offsite without justification, regular with one, neither for th
   assert.deepStrictEqual(flagsOf({ structuredText: REAL_SHAPE }), []);
   assert.strictEqual(flagsOf({ structuredText: OFFSITE_SHAPE }).length, 1, 'justification on a non-offsite type');
   // Before the off-site rationale rule took effect, a missing one is not flagged.
-  assert.deepStrictEqual(flagsOf({ structuredText: noJustification, encounterType: OFFSITE_TYPE, visitDate: '07/27/2026' }), []);
+  assert.deepStrictEqual(flagsOf({ structuredText: noJustification, encounterType: OFFSITE_TYPE, visitDate: '09/30/2026' }), []);
+});
+
+test('P1. Payload carries client_address, persons_present and location_of_meeting', () => {
+  const header = 'Patient Details\nName: Test Client\nAddress: 9 Example St, Spring Valley, NY 10977\nPhone: 555-0100\n';
+  const offsite = buildReviewPayload(noteWith({ structuredText: header + OFFSITE_SHAPE, encounterType: OFFSITE_TYPE }));
+  assert.strictEqual(offsite.client_address, '9 Example St, Spring Valley, NY 10977');
+  assert.strictEqual(offsite.persons_present, 'Test Client Test Peer');
+  assert.strictEqual(offsite.location_of_meeting, '');
+  assert.strictEqual(offsite.offsite_justification, JUSTIFICATION);
+
+  const regular = buildReviewPayload(noteWith({ structuredText: REAL_SHAPE }));
+  assert.strictEqual(regular.persons_present, 'Peer and client');
+  assert.strictEqual(regular.location_of_meeting, '1 Example St, Monroe NY 10950');
+  assert.strictEqual(regular.client_address, '');
+});
+
+test('P2. The fixed contract carries the review rules and drops the old contradictions', () => {
+  const prompt = engine.systemPrompt();
+  for (const s of ['Problem:', 'No issues identified.', 'Never use TREATMENT_PLAN_MISMATCH',
+                   'never flag, question, or mention it', 'Search EVERY field', 'PRESENT_TOO_GENERAL, not MISSING'])
+    assert.ok(prompt.includes(s), `missing: ${s}`);
+  const contract = prompt.slice(prompt.indexOf('REVIEW RULES'));
+  for (const s of ['briefly explains why the note aligns', 'say that and nothing else',
+                   'may still address separate peer-correctable issues', 'treatment-plan diagnosis mismatch'])
+    assert.ok(!contract.includes(s), `still present: ${s}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

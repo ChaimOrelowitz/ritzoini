@@ -252,8 +252,9 @@ const REVIEW_MODEL   = 'claude-sonnet-4-6';
 const REVIEW_MAX_TOKENS = 2500;
 
 // Off-site rationale rule starts with dates of SERVICE on/after this date.
-// 07/27/2026 was the implementation day, so the 27th itself is not subject to it.
-const OFFSITE_RATIONALE_FROM = '2026-07-28';
+const OFFSITE_RATIONALE_FROM = '2026-10-01';
+// Telehealth location/setting rule starts with dates of SERVICE on/after this date.
+const TELEHEALTH_LOCATION_FROM = '2026-10-15';
 const SESSION_TIMEOUT_MARKERS = [
   'InSync :: Session Timeout', '/SessionTimeOut',
   'Your session is expired.', 'RE-LOGIN',
@@ -378,18 +379,69 @@ SUPERVISOR_REVIEW when ongoing off-site service appears unsupported by the treat
 
 Reopen wording for a missing rationale, adapted to the note: "Because this service occurred off-site on or after July 28, 2026, please add an explicit sentence explaining why this specific client needed the service outside the clinic rather than at the clinic on that date. Document the actual clinical or functional reason that applied. The location and activity alone do not establish the required off-site rationale."`;
 
-// Fixed, non-editable: decision precedence + the exact output contract. Appended
-// after both editable modules so operator edits can never break JSON parsing.
-const REVIEW_OUTPUT_CONTRACT = `DECISION HIERARCHY
+// Fixed, non-editable: the review rules, decision precedence and the exact
+// output contract. Appended after both editable modules so operator edits can
+// never break JSON parsing — and where an editable module disagrees with a rule
+// here, this section says it wins.
+const REVIEW_OUTPUT_CONTRACT = `REVIEW RULES (these take precedence over anything above that conflicts with them)
+
+WORKFLOW
+A PASS note goes straight to the clean stack and is signed with no human review, so PASS means you found nothing that needs a human. Any other decision sends the note to a human reviewer, who decides whether to return it to the peer. Nothing is returned automatically.
+Comparison with the peer's other notes is done mechanically on import. You never see another note; do not compare, and do not comment on duplication or copying.
+
+WHERE TO LOOK
+Fields in the payload: note_sections (focus, activities_and_duration, peer_interventions, patient_response, plan), persons_present, location_of_meeting, offsite_justification, other_session_narrative, client_address, encounter_type, delivery_method, place_of_service, billing_or_rate_type (visit code, Duration, Unit(s), and modifiers after "M:"), stated_duration, start_time, end_time, diagnoses, treatment_plan, mechanical_findings.
+Information is often in an unexpected field: the location or the off-site justification may sit inside persons_present, and either may appear in the narrative. Search EVERY field before calling anything missing.
+
+QA CHECKS (a failed check is a REOPEN issue unless stated otherwise)
+1. CLEAR — you can tell what the peer and client actually did.
+2. SPECIFIC — the note names an actual situation or example from the client's life, not just a topic.
+3. CLIENT-DRIVEN — the note shows what the client wanted, chose, or tried; it does not read like a preplanned lesson.
+4. RESPONSE — the note shows what the client actually said or did. "Engaged", "participated", "improved", "understood" or "was encouraged" on their own fail.
+5. MATCH — each selected intervention is demonstrated somewhere in the note.
+6. TIME — the content reasonably supports the session length, especially for 2-3 hour sessions.
+7. NEXT — the note gives something specific for the client to try. WARNING only: it never changes the decision on its own.
+8. PEER SCOPE — the work is recognizable peer support. No therapy, no diagnosing, and no peer judgment about symptoms, risk, motivation, or level of care.
+9. NEED — the work has a reasonable link to the client's documented needs. Do not require sentences bridging the work to a diagnosis.
+
+DIAGNOSES AND THE TREATMENT PLAN
+Unsupported diagnostic language: flag only when the peer's own text names a diagnosis that is not on the diagnoses list. Functional descriptions (focus, distraction, low mood, stress) are never diagnoses.
+The treatment plan is context only. It never creates an issue. Never use TREATMENT_PLAN_MISMATCH, never use the TREATMENT_PLAN issue source, and never escalate because of the treatment plan. Report narrative_goal_alignment for information only; on its own it never creates an issue.
+
+OFF-SITE RATIONALE
+Applies to in-person visits that did not take place at the Montebello Office (POS 11), with a visit date on or after ${OFFSITE_RATIONALE_FROM}. Earlier dates, telehealth, and POS 11 visits: offsite_review.applicable false and every off-site status NOT_APPLICABLE.
+When it applies, the note must give a reason specific to THIS client and TODAY's activity for meeting outside the office. A general or standing reason (community-based service, client preference, convenience, "the client is always seen at home") is PRESENT_TOO_GENERAL, not MISSING. MISSING means no reason appears in any field. Either is a REOPEN issue for the peer.
+
+TELEHEALTH (visit date on or after ${TELEHEALTH_LOCATION_FROM})
+- location_of_meeting must contain the client's address (compare with client_address).
+- The note must state that both the peer and the client were in an appropriate telehealth setting.
+Each missing element is a REOPEN issue for the peer.
+
+POS AND TELEHEALTH MODIFIERS
+POS must match what happened. Telehealth: POS 10 when the client is at home, 02 when the client is somewhere else. In person: POS 12 at the client's home, 99 at a community location, 11 at the Montebello Office.
+The ONLY modifiers you check are GT (telehealth audio-video) and 93 (telehealth audio-only). Every other modifier, U4 included, is unrelated: never flag, question, or mention it. Flag only:
+- a telehealth note with neither GT nor 93;
+- GT on an audio-only session;
+- 93 on an audio-video session;
+- GT or 93 on an in-person session.
+A POS or modifier that does not match what the note describes is a REOPEN issue for the peer (source SERVICE_TYPE). It is not DO_NOT_BILL.
+
+UNITS AND TIME
+15 minutes = 1 unit. The start and end time, the duration, the units, and any minutes the peer gives for activities must agree. A difference of less than one unit due to rounding is not an issue. A disagreement the peer can correct is a REOPEN issue.
+
+SERVICE-DELIVERY DISCREPANCIES
+If the note suggests the service may not have happened as billed — the client was unavailable or absent, the times are impossible, or the record appears altered — the decision is SUPERVISOR_REVIEW. State the facts plainly from the note. Never use the word "fraud" or accuse anyone.
+DO_NOT_BILL only when the note itself shows the service did not occur (for example a no-show, a cancellation, or no contact with the client). A service that did happen but was miscoded is a POS/modifier issue for the peer, not DO_NOT_BILL.
+
+DECISION HIERARCHY
 Identify EVERY issue, not only the first. Then set the single overall decision by this precedence:
 1. DO_NOT_BILL
 2. SUPERVISOR_REVIEW
 3. REOPEN_TO_PEER
 4. PASS
 
-Example: a note with both a vague intervention the peer can fix AND a treatment-plan diagnosis mismatch has an overall decision of SUPERVISOR_REVIEW, and the issues array must contain both concerns.
-
-Duplicate similarity plays no part in this decision. It is tracked mechanically and adjudicated by a human.
+Example: a note with a vague client response the peer can fix AND start and end times that overlap another documented commitment has an overall decision of SUPERVISOR_REVIEW, and the issues array must contain both concerns.
+WARNING issues never change the decision: a note whose only issues are WARNINGs is PASS.
 
 OUTPUT
 Respond with ONE JSON object and nothing else. No markdown, no code fence, no prose before or after.
@@ -435,10 +487,15 @@ Respond with ONE JSON object and nothing else. No markdown, no code fence, no pr
   "review_summary": ""
 }
 
-When decision is PASS: reopen_message_to_peer and supervisor_message must both be empty strings, and review_summary briefly explains why the note aligns.
-When decision is REOPEN_TO_PEER: produce ONE concise reopen message addressed directly to the peer, covering ONLY actual deficiencies. Never pad it. Do not ask the peer to use more clinical language, to repeat information already clearly documented, to add a separate progress statement, to rewrite an intervention field that is already sufficient in context, to spell out a connection that is already reasonably apparent, to change a diagnosis or treatment plan, to invent facts, or to add an off-site reason that did not apply. If the only deficiency is a missing explicit off-site rationale, say that and nothing else.
-When decision is SUPERVISOR_REVIEW: supervisor_message explains the record-level or treatment-plan-level concern and must not instruct the peer to repair the treatment plan. reopen_message_to_peer may still address separate peer-correctable issues.
-When decision is DO_NOT_BILL: state the documented contradiction or nonbillable condition plainly, and never suggest wording that would conceal what occurred.
+Severity: WARNING (check 7 only, never changes the decision), REOPEN (peer can fix), SUPERVISOR (service-delivery discrepancy), NONBILLABLE (service did not occur). Owner: PEER for REOPEN and WARNING, HUMAN_REVIEW for SUPERVISOR, BILLING for NONBILLABLE.
+
+When decision is PASS: reopen_message_to_peer and supervisor_message are empty strings. review_summary is exactly "No issues identified." — or, when there are WARNING issues only, one sentence stating the warning.
+When decision is REOPEN_TO_PEER: reopen_message_to_peer contains ONLY "Problem:" / "Solution:" pairs, one pair per issue, each on its own line, for example:
+Problem: The client's response says only that he "engaged well."
+Solution: Describe what the client actually said or did during the session.
+No greeting, no praise, no summary, nothing else. Cover every REOPEN issue, and only actual deficiencies. Never ask the peer to invent facts, to add a reason that did not apply, to use clinical language, or to repeat what is already documented. supervisor_message is an empty string.
+When decision is SUPERVISOR_REVIEW: reopen_message_to_peer is an empty string. supervisor_message states the concern factually from the note. Peer-fixable issues still go in the issues array for the reviewer.
+When decision is DO_NOT_BILL: reopen_message_to_peer is an empty string. supervisor_message states plainly what in the note shows the service did not occur, and never suggests wording that would conceal it.
 
 Every explanation must cite what the note actually says. Leave evidence_from_note empty rather than paraphrasing something the note does not contain.
 
@@ -447,7 +504,7 @@ LENGTH LIMITS (the response is truncated if you exceed them, which discards the 
 - "evidence_from_note": a short quoted fragment, at most 200 characters.
 - "issues": at most 6 entries, most severe first. Merge related concerns rather than listing near-duplicates.
 - "review_summary": at most 3 sentences.
-- "reopen_message_to_peer" and "supervisor_message": at most 150 words each.
+- "reopen_message_to_peer": at most 200 words. "supervisor_message": at most 150 words.
 Be specific and brief. Do not restate the note back to the reviewer.`;
 
 // Normalize a note's per-session narrative for bigram comparison: lowercase,
@@ -647,6 +704,21 @@ function offsiteJustificationOf(note) {
   return sectionByLabel(sectionSource(note), 'Justification for Offsite Delivery');
 }
 
+// The Note-of-Session fields that sit before "Focus of the meeting", plus the
+// client's address from Patient Details — what the location, off-site and
+// telehealth checks read. Derived from the stored text like the above. The
+// regular form says "Location of the Meeting", the Offsite form "Location of
+// Meeting".
+function preambleFieldsOf(note) {
+  const source = sectionSource(note);
+  return {
+    persons_present:     sectionByLabel(source, 'Persons Present'),
+    location_of_meeting: sectionByLabel(source, 'Location of the Meeting')
+                      || sectionByLabel(source, 'Location of Meeting'),
+    client_address:      sectionByLabel(source, 'Address'),
+  };
+}
+
 // "MM/DD/YYYY" → "YYYY-MM-DD" so date comparisons are plain string compares.
 function isoVisitDate(note) {
   const raw = note.visitDate || (note.visitDatetime || '').split(' ')[0] || '';
@@ -712,6 +784,7 @@ function buildReviewPayload(note, machineFlags = []) {
   assertSectionsDerived(note, source, secs);
   const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
   const justification = offsiteJustificationOf(note);
+  const preamble = preambleFieldsOf(note);
   return {
     review_version:      REVIEW_VERSION,
     visit_date:          isoVisitDate(note),
@@ -723,6 +796,9 @@ function buildReviewPayload(note, machineFlags = []) {
     start_time:          note.startTimeStr || '',
     end_time:            note.endTimeStr || '',
     client_age:          note.age ?? null,
+    client_address:      clip(preamble.client_address, 300) || '',
+    persons_present:     clip(preamble.persons_present, 2000) || '',
+    location_of_meeting: clip(preamble.location_of_meeting, 2000) || '',
     note_sections: {
       focus:                   clip(secs.focus, 8000) || '',
       activities_and_duration: clip(secs.activities, 8000) || '',
@@ -730,16 +806,16 @@ function buildReviewPayload(note, machineFlags = []) {
       patient_response:        clip(secs.response, 8000) || '',
       plan:                    clip(secs.plan, 4000) || '',
     },
-    // Genuinely "other": the Note-of-Session preamble (persons present, meeting
-    // location) that sits BEFORE the five sections. Sending the whole narrative
+    // Genuinely "other": the Note-of-Session text before the first recognised
+    // heading — on an InSync note that is the session title ("Peer Support
+    // Individual ; Offsite"), since persons present and location now have their
+    // own fields above; a CRM note keeps its whole preamble. Sending the whole narrative
     // here would duplicate every section verbatim — doubling input tokens and
     // letting stale text contradict the section fields.
     other_session_narrative: clip(sessionPreamble(note), 2000) || '',
     // The Offsite form's dedicated rationale field. It sits before "Focus of the
     // meeting" but after "Persons Present", so neither the sections nor the
-    // preamble carry it — without this the off-site review never sees it. Only
-    // present when the note has one, so every other note's payload, and with it
-    // its fingerprint, is unchanged and nothing is re-reviewed for nothing.
+    // preamble carry it. Only present when the note has one.
     ...(justification ? { offsite_justification: clip(justification, 4000) } : {}),
     // No labelled progress statement exists in these notes.
     progress_statement: null,
