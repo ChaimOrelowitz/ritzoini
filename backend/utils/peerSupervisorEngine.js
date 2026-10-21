@@ -78,7 +78,12 @@ const NOTE_HEADINGS = [
   // let narrative like "what was the plan?" register as a Plan heading. This
   // phrase is long and distinctive enough never to be prose.
   { label: 'What activities took place, and for how long', question: true },
+  // Offsite form only. Optional like every heading — a note without it simply
+  // never matches — so the regular form parses exactly as before.
+  { label: 'Justification for Offsite Delivery' },
   { label: 'Location of the Meeting' },
+  // The Offsite form's wording of the same field (no "the").
+  { label: 'Location of Meeting' },
   { label: 'Electronically Signed', colonless: true, anywhere: true },
   { label: "Patient's Response/Content" },
   { label: 'Plan / Visit Codes',     colonless: true },
@@ -627,6 +632,21 @@ function deliveryMethodOf(encounterType) {
   return '';
 }
 
+// Whether the encounter type is an Offsite one — "…In-person outside the clinic
+// Offsite". These are the notes written on the Offsite form, which carries the
+// "Justification for Offsite Delivery" field.
+function isOffsiteType(encounterType) {
+  const t = String(encounterType || '').toLowerCase();
+  return /\boff-?site\b/.test(t) || t.includes('outside the clinic');
+}
+
+// The Offsite form's justification field, '' when the note has none. Derived
+// from the stored text rather than a parsed field, so notes ingested before the
+// heading was recognised read it too.
+function offsiteJustificationOf(note) {
+  return sectionByLabel(sectionSource(note), 'Justification for Offsite Delivery');
+}
+
 // "MM/DD/YYYY" → "YYYY-MM-DD" so date comparisons are plain string compares.
 function isoVisitDate(note) {
   const raw = note.visitDate || (note.visitDatetime || '').split(' ')[0] || '';
@@ -691,6 +711,7 @@ function buildReviewPayload(note, machineFlags = []) {
   const secs = splitSections(source);
   assertSectionsDerived(note, source, secs);
   const clip = (v, n) => (v == null ? null : String(v).slice(0, n));
+  const justification = offsiteJustificationOf(note);
   return {
     review_version:      REVIEW_VERSION,
     visit_date:          isoVisitDate(note),
@@ -714,6 +735,12 @@ function buildReviewPayload(note, machineFlags = []) {
     // here would duplicate every section verbatim — doubling input tokens and
     // letting stale text contradict the section fields.
     other_session_narrative: clip(sessionPreamble(note), 2000) || '',
+    // The Offsite form's dedicated rationale field. It sits before "Focus of the
+    // meeting" but after "Persons Present", so neither the sections nor the
+    // preamble carry it — without this the off-site review never sees it. Only
+    // present when the note has one, so every other note's payload, and with it
+    // its fingerprint, is unchanged and nothing is re-reviewed for nothing.
+    ...(justification ? { offsite_justification: clip(justification, 4000) } : {}),
     // No labelled progress statement exists in these notes.
     progress_statement: null,
     diagnoses: (note.diagnosis || '')
@@ -1292,6 +1319,17 @@ class InsyncCoSignEngine {
     } else {
       // Blank or unclassifiable encounter type.
       flags.push('Encounter type not recognized — verify duration limit manually');
+    }
+
+    // ── Offsite justification field vs encounter type ──
+    // An unrecognised type is already flagged above, so it never quietly passes
+    // as a regular note here.
+    const justification = offsiteJustificationOf(note);
+    if (isOffsiteType(note.encounterType)) {
+      if (!justification && isoVisitDate(note) >= OFFSITE_RATIONALE_FROM)
+        flags.push('Off-site session with no Justification for Offsite Delivery — verify the off-site rationale');
+    } else if (justification) {
+      flags.push('Justification for Offsite Delivery filled in, but the encounter type is not off-site — verify the encounter type');
     }
 
     // ── Minor + extended session (high priority) ──

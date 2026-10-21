@@ -479,5 +479,74 @@ test('N. The full payload sent to the model has every section populated', () => 
   assert.ok(JSON.stringify(payload).includes('60 Minutes'), 'the serialised payload lost part of the narrative');
 });
 
+// ── Offsite form ─────────────────────────────────────────────────────────────
+// The Offsite note template words the location field without "the" and adds a
+// "Justification for Offsite Delivery" field between it and Focus. De-identified
+// from a real Offsite note.
+const JUSTIFICATION = 'Meeting in the community gave him some distance from the school pressures he was describing.';
+const OFFSITE_SHAPE = [
+  'Note of Session',
+  'Peer Support Individual ; Offsite',
+  'Persons Present:',
+  'Test Client',
+  'Test Peer',
+  'Location of Meeting:',
+  'Justification for Offsite Delivery:',
+  JUSTIFICATION,
+  'Focus of the meeting:',
+  'Managing low mood and stress before they lead to withdrawal.',
+  'What activities took place, and for',
+  'how long?',
+  'Hour 1: We went back through a stressful school day.',
+  'Peer Support Interventions: Active Listening, Coping Skills',
+  "Patient's Response/Content:",
+  'He found identifying the earlier signs useful.',
+  'Plan:',
+  'He will try to catch his early stress signs on two school days.',
+  'Diagnosis',
+  'F41.1 - Generalized anxiety disorder',
+].join('\n');
+const OFFSITE_TYPE = 'Peer Support - Individual - Language other than English -In-person outside the clinic Offsite';
+
+test('O1. Offsite form: Persons Present stops at the location, justification is its own section', () => {
+  for (const [shape, text] of [['structured', OFFSITE_SHAPE], ['flat', OFFSITE_SHAPE.replace(/\s+/g, ' ')]]) {
+    assert.strictEqual(sectionByLabel(text, 'Persons Present'), 'Test Client Test Peer', shape);
+    assert.strictEqual(sectionByLabel(text, 'Location of Meeting'), '', shape);
+    assert.strictEqual(sectionByLabel(text, 'Justification for Offsite Delivery'), JUSTIFICATION, shape);
+    assert.strictEqual(splitSections(text).focus, 'Managing low mood and stress before they lead to withdrawal.', shape);
+  }
+});
+
+test('O2. Offsite justification reaches the review payload; a regular note has no such key', () => {
+  const offsite = buildReviewPayload(noteWith({ structuredText: OFFSITE_SHAPE, encounterType: OFFSITE_TYPE }));
+  assert.strictEqual(offsite.offsite_justification, JUSTIFICATION);
+  const regular = buildReviewPayload(noteWith({ structuredText: REAL_SHAPE }));
+  assert.ok(!('offsite_justification' in regular), 'a regular note payload must be unchanged');
+});
+
+test('O3. Regular form still parses the same with the Offsite headings known', () => {
+  assert.strictEqual(sectionByLabel(REAL_SHAPE, 'Location of the Meeting'), '1 Example St, Monroe NY 10950');
+  assert.strictEqual(sectionByLabel(REAL_SHAPE, 'Justification for Offsite Delivery'), '');
+});
+
+test('O4. Narrative mention of a justification is not a heading', () => {
+  const text = 'Focus of the meeting: The justification for offsite delivery was discussed with him. '
+    + 'Plan: Continue.';
+  assert.strictEqual(splitSections(text).focus, 'The justification for offsite delivery was discussed with him.');
+});
+
+test('O5. Flags: offsite without justification, regular with one, neither for the normal cases', () => {
+  const flagsOf = extra => engine.checkNote(noteWith({ visitDate: '10/20/2026', ...extra }))
+    .filter(f => /Justification for Offsite Delivery/.test(f));
+  const noJustification = OFFSITE_SHAPE.replace(JUSTIFICATION, '');
+
+  assert.deepStrictEqual(flagsOf({ structuredText: OFFSITE_SHAPE, encounterType: OFFSITE_TYPE }), []);
+  assert.strictEqual(flagsOf({ structuredText: noJustification, encounterType: OFFSITE_TYPE }).length, 1);
+  assert.deepStrictEqual(flagsOf({ structuredText: REAL_SHAPE }), []);
+  assert.strictEqual(flagsOf({ structuredText: OFFSITE_SHAPE }).length, 1, 'justification on a non-offsite type');
+  // Before the off-site rationale rule took effect, a missing one is not flagged.
+  assert.deepStrictEqual(flagsOf({ structuredText: noJustification, encounterType: OFFSITE_TYPE, visitDate: '07/27/2026' }), []);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
