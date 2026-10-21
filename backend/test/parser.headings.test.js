@@ -573,5 +573,38 @@ test('P2. The fixed contract carries the review rules and drops the old contradi
     assert.ok(!contract.includes(s), `still present: ${s}`);
 });
 
+// ── In-home: the meeting location must be the client's address ──────────────
+const IN_HOME_FLAG = /took place in the client's home, but the service location listed does not match/;
+const HOME_TYPE = 'Peer Support - Individual - Language other than English - In-person Home';
+const homeNote = (address, location, extra = {}) => noteWith({
+  encounterType: HOME_TYPE, pos: '12 - Home',
+  structuredText: `Patient Details\nAddress: ${address}\nPhone: 555-0100\nNote of Session\nPersons Present: Client and peer\n`
+    + `Location of the Meeting: ${location}\nFocus of the meeting: Something.`,
+  ...extra,
+});
+const homeFlagged = n => engine.checkNote(n).some(f => IN_HOME_FLAG.test(f));
+
+test('Q1. In-home: same address in other words is not flagged', () => {
+  for (const loc of ['814 Bedford Ave Brooklyn NY 11205', "Client's home - 814 Bedford Avenue, Brooklyn",
+                     '814 BEDFORD AVE.', '814 Bedford Ave Apt 3 Brooklyn NY 11205'])
+    assert.ok(!homeFlagged(homeNote('814 Bedford Ave, Brooklyn, NY 11205', loc)), loc);
+  assert.ok(!homeFlagged(homeNote('9 Elm Street Apt 2, Spring Valley, NY 10977', '9 Elm St, Spring Valley NY')));
+});
+
+test('Q2. In-home: a different address, zip, or no address is flagged', () => {
+  const addr = '814 Bedford Ave, Brooklyn, NY 11205';
+  for (const loc of ['816 Bedford Ave Brooklyn NY 11205', '814 Lee Ave Brooklyn NY 11205',
+                     '814 Bedford Ave Brooklyn NY 11211', 'Client home', ''])
+    assert.ok(homeFlagged(homeNote(addr, loc)), JSON.stringify(loc));
+});
+
+test('Q3. Only in-home notes are checked; an unreadable client address is skipped', () => {
+  const addr = '814 Bedford Ave, Brooklyn, NY 11205', wrong = '1 Other St';
+  assert.ok(homeFlagged(homeNote(addr, wrong, { encounterType: 'Peer Support - Individual', pos: '12 - Home' })), 'POS 12 alone counts');
+  assert.ok(!homeFlagged(homeNote(addr, wrong, { encounterType: 'Peer Support - Individual - In-person outside the clinic Offsite', pos: '99 - Other' })));
+  assert.ok(!homeFlagged(homeNote(addr, wrong, { encounterType: 'Peer Support - Telehealth with video', pos: '10 - Home' })));
+  assert.ok(!homeFlagged(homeNote('PO Box 12, Monsey NY', wrong)), 'no house number to compare');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

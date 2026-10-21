@@ -1074,6 +1074,54 @@ function preambleFieldsOf(note) {
   };
 }
 
+// An in-person session at the client's home: POS 12, or an encounter type like
+// "…In-person Home". Telehealth from home is a different rule and never counts.
+function isInHomeVisit(note) {
+  const type = String(note.encounterType || '').toLowerCase();
+  if (/telehealth|video|audio|phone/.test(type)) return false;
+  return /^\s*12\b/.test(String(note.pos || '')) || /\bin[- ]person\b.*\bhome\b/.test(type);
+}
+
+const STREET_SUFFIXES = {
+  street: 'st', st: 'st', avenue: 'ave', ave: 'ave', av: 'ave', road: 'rd', rd: 'rd',
+  drive: 'dr', dr: 'dr', lane: 'ln', ln: 'ln', court: 'ct', ct: 'ct', place: 'pl', pl: 'pl',
+  boulevard: 'blvd', blvd: 'blvd', terrace: 'ter', ter: 'ter', parkway: 'pkwy', pkwy: 'pkwy',
+  highway: 'hwy', hwy: 'hwy', circle: 'cir', cir: 'cir', way: 'way',
+};
+const DIRECTIONS = { north: 'n', south: 's', east: 'e', west: 'w' };
+const addressTokens = s => String(s || '').toLowerCase().replace(/[.,#]/g, ' ')
+  .split(/\s+/).filter(Boolean).map(t => DIRECTIONS[t] || t);
+const zipOf = (tokens, skip) => [...tokens].reverse().find((t, i) => /^\d{5}$/.test(t) && tokens.length - 1 - i !== skip) || null;
+
+// Does the meeting location name the same place as the client's address? Only
+// the parts that identify the place are compared — house number, street name
+// (Street = St, Avenue = Ave, any case or punctuation), and zip when both carry
+// one — so extra words around the address in the location field don't matter.
+// Returns null when the client address itself can't be read, so the check is
+// skipped rather than guessed.
+function addressesMatch(clientAddress, location) {
+  const street = String(clientAddress || '').split(',')[0];
+  const c = addressTokens(street);
+  if (!c.length || !/^\d+[a-z]?$/.test(c[0])) return null;
+  const house = c[0];
+  // The street name ends at any apartment/unit part ("Apt 3", "Unit B").
+  const unit = c.findIndex(t => /^(apt|apartment|unit|fl|floor|suite|ste|rm|room)$/.test(t));
+  const core = c.slice(1, unit === -1 ? undefined : unit).filter(t => !STREET_SUFFIXES[t]);
+  if (!core.length) return null;
+
+  const loc = addressTokens(location);
+  const clientZip = zipOf(addressTokens(clientAddress), 0);
+  for (let i = 0; i < loc.length; i++) {
+    if (loc[i] !== house) continue;
+    const after = loc.slice(i + 1).filter(t => !STREET_SUFFIXES[t]).slice(0, core.length);
+    if (after.join(' ') !== core.join(' ')) continue;
+    const locZip = zipOf(loc, i);
+    if (clientZip && locZip && clientZip !== locZip) continue;
+    return true;
+  }
+  return false;
+}
+
 // "MM/DD/YYYY" → "YYYY-MM-DD" so date comparisons are plain string compares.
 function isoVisitDate(note) {
   const raw = note.visitDate || (note.visitDatetime || '').split(' ')[0] || '';
@@ -1761,6 +1809,14 @@ class InsyncCoSignEngine {
         flags.push('Off-site session with no Justification for Offsite Delivery — verify the off-site rationale');
     } else if (justification) {
       flags.push('Justification for Offsite Delivery filled in, but the encounter type is not off-site — verify the encounter type');
+    }
+
+    // ── In-home session: the meeting location must be the client's address ──
+    // A blank location doesn't match either, so it is flagged the same way.
+    if (isInHomeVisit(note)) {
+      const { client_address, location_of_meeting } = preambleFieldsOf(note);
+      if (addressesMatch(client_address, location_of_meeting) === false)
+        flags.push("The notes indicate that the peer sessions took place in the client's home, but the service location listed does not match the client's address. Please correct the discrepancy as you deem fit.");
     }
 
     // ── Minor + extended session (high priority) ──
