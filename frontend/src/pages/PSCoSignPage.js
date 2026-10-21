@@ -114,7 +114,9 @@ const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // "?" that ends the activities question is handled by the separator class. Order
 // matters: a longer label must precede any shorter one it could prefix-match.
 const FIELD_LABELS = [
-  'Persons Present', 'Location of the Meeting', 'Focus of the meeting',
+  // "Location of Meeting" and the justification are the Offsite form's wording.
+  'Persons Present', 'Location of the Meeting', 'Location of Meeting',
+  'Justification for Offsite Delivery', 'Focus of the meeting',
   'What activities took place, and for how long',
   'Peer Support Interventions', "Patient's Response/Content", 'Plan',
   'Visit Codes', 'Provider NPI',
