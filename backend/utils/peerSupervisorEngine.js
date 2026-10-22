@@ -647,23 +647,22 @@ Applies to OFFSITE (in person, not at the Montebello Office) sessions with a vis
 Not required for visits before 10/01/2026, for ONSITE, or for TELEHEALTH.
 
 THE STANDARD:
-The note must give a reason, specific to this client, why meeting outside the clinic makes sense: a symptom, struggle, need, or goal of this client that the off-site setting helps with. The reason may be ongoing and may be the same from session to session.
+Read the off-site justification together with the rest of the note, the diagnoses, and the treatment plan. The justification is sufficient when it points to a struggle, need, or goal that the record documents for this client (for example low motivation, depression, anxiety, isolation, or difficulty leaving the house) and the session worked on it outside the clinic. The reason may be ongoing and may be the same from session to session.
 
 It does NOT need to show:
 - a barrier to coming to the clinic
 - a task that could only be done at that location
 - a connection to a specific activity done today
+- the client's diagnosis or a detailed explanation inside the justification itself, when the rest of the note documents the need
 - clinical wording
 
-Look for the reason in the off-site justification, the rest of the note, the diagnoses, and the treatment plan before calling it missing.
-
-SUFFICIENT (about this client):
+SUFFICIENT (examples):
 - "Client is working on social anxiety and needs practice being in public places."
-- "Client has difficulty being around friends; meeting in the community lets him practice joining others."
 - "Client's depression has kept him from leaving his house, so the session was held at his home."
+- "The community-based setting allowed Joel to practice improving motivation and daily functioning while completing a hands-on task," in a note that documents Joel's depression-related low motivation.
 
-TOO GENERAL (flag it):
-- Boilerplate that would fit any client: "Community-based peer support promotes independence, socialization, recovery, and community integration." / "The community setting helps the client work on daily challenges in a practical environment."
+TOO GENERAL (flag it) only when the justification connects to nothing documented for this client:
+- Boilerplate about peer support in general that no part of the record ties to this client: "Community-based peer support promotes independence, socialization, recovery, and community integration."
 - Preference, convenience, or distance alone: "Client prefers to meet in the community." / "Client lives far from the clinic." / "The location was more convenient."
 
 Do not create a separate scope-of-practice issue just because the rationale uses clinical-sounding words.
@@ -675,7 +674,7 @@ Problem: The note does not explain why this session took place outside the clini
 Solution: Please explain what about the client's needs or goals made meeting outside the clinic appropriate.
 
 Too general:
-Problem: The off-site reason ("[quote]") is general and does not say anything specific about this client.
+Problem: The off-site reason ("[quote]") is general and does not connect to anything documented about this client.
 Solution: Please explain what about the client's needs or goals made meeting outside the clinic appropriate.
 
 ==================================================
@@ -770,8 +769,8 @@ The treatment plan is context only. It never creates an issue. Never use TREATME
 
 OFF-SITE RATIONALE
 Applies to in-person visits that did not take place at the Montebello Office (POS 11), with a visit date on or after ${OFFSITE_RATIONALE_FROM}. No rationale is required for earlier dates, telehealth, or POS 11 visits.
-When it applies, the record must give a reason about THIS client (a symptom, struggle, need, or goal) that makes meeting outside the clinic make sense, for example practising being in public for social anxiety, or meeting at home because depression kept the client from leaving the house. The reason may be ongoing and may repeat from session to session. It does not need to show a barrier to attending the clinic, a task that could only be done at that location, a link to a specific activity done today, or clinical wording. Look for it in offsite_justification, the narrative, the diagnoses and the treatment plan.
-Boilerplate that would fit any client, or preference, convenience, or distance alone, is PRESENT_TOO_GENERAL, not MISSING. MISSING means no reason appears anywhere. Either is a REOPEN issue for the peer.
+When it applies, read offsite_justification together with the narrative, the diagnoses and the treatment plan. It is sufficient when it points to a struggle, need, or goal the record documents for THIS client (for example low motivation, depression, anxiety, isolation, or difficulty leaving the house) and the session worked on it outside the clinic. The justification itself need not name the diagnosis or explain the struggle when the rest of the note does. The reason may be ongoing and may repeat from session to session. It does not need to show a barrier to attending the clinic, a task that could only be done at that location, a link to a specific activity done today, or clinical wording.
+Only a justification that connects to nothing documented for this client (boilerplate about peer support in general), or that rests on preference, convenience, or distance alone, is PRESENT_TOO_GENERAL, not MISSING. MISSING means no reason appears anywhere. Either is a REOPEN issue for the peer.
 
 TELEHEALTH (visit date on or after ${TELEHEALTH_LOCATION_FROM})
 - location_of_meeting must contain the address where the client was during the session. client_address (the header) on its own does not satisfy this.
