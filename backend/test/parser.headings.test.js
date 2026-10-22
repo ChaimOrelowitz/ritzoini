@@ -565,7 +565,7 @@ test('P1. Payload carries client_address, persons_present and location_of_meetin
 test('P2. The fixed contract carries the review rules and drops the old contradictions', () => {
   const prompt = engine.systemPrompt();
   for (const s of ['Problem:', 'No issues identified.', 'Never use TREATMENT_PLAN_MISMATCH',
-                   'never flag, question, or mention it', 'Search EVERY field', 'PRESENT_TOO_GENERAL, not MISSING'])
+                   'never flag, question, or mention it', 'Search EVERY field', 'PRESENT_TOO_GENERAL, not MISSING', 'may repeat from session to session'])
     assert.ok(prompt.includes(s), `missing: ${s}`);
   const contract = prompt.slice(prompt.indexOf('REVIEW RULES'));
   for (const s of ['briefly explains why the note aligns', 'say that and nothing else',
