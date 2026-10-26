@@ -555,6 +555,8 @@ This addendum is sent in the same request as the Core Peer Note QA prompt. It co
 
 Only check what the payload actually contains. If a field (modifier, POS, units, times) is not in the payload, skip that check. Do not guess.
 
+PAYLOAD FIELDS: note_sections (focus, activities_and_duration, peer_interventions, patient_response, plan), persons_present, location_of_meeting, offsite_justification, other_session_narrative, client_address, encounter_type, delivery_method, place_of_service, billing_or_rate_type (visit code, Duration, Unit(s), and modifiers after "M:"), stated_duration, start_time, end_time, diagnoses, treatment_plan, mechanical_findings. Information is sometimes in an unexpected field; search EVERY field before calling anything missing.
+
 ==================================================
 1. CLASSIFY THE SERVICE TYPE
 ==================================================
@@ -587,7 +589,15 @@ Flag for return when there is a DIRECT mismatch, for example:
 - in-person POS 12, but the note says the session took place at a community center, or the reverse
 - POS 11, but the note says the session took place outside the clinic
 
+MODIFIERS: the ONLY modifiers you check are GT (telehealth audio-video) and 93 (telehealth audio-only). Every other modifier, U4 included, is unrelated: never flag, question, or mention it. When there is no visit-code line in the payload, skip the modifier check. Otherwise flag only:
+- a telehealth note with neither GT nor 93
+- GT on an audio-only session
+- 93 on an audio-video session
+- GT or 93 on an in-person session
+
 Use issue codes POS_MISMATCH or MODIFIER_MISMATCH with source SERVICE_TYPE.
+
+A POS, modifier, or delivery-method mismatch on a service that did happen is a REOPEN issue for the peer, never DO_NOT_BILL. DO_NOT_BILL is only for a note that itself shows the service did not occur (for example a no-show or cancellation).
 
 Example:
 Problem: The visit is coded POS 10 (client at home), but the note says the client joined from his workplace.
@@ -717,99 +727,14 @@ TELEHEALTH with a visit date on or after 10/15/2026:
   status: PASS when the address, the appropriate-setting statement, POS, and modifier are all in order, otherwise FAIL
   explanation: state which requirement failed, if any
 
-status: SUPERVISOR_REVIEW only when the service-type evidence indicates the service may not have occurred as documented.
+status: SUPERVISOR_REVIEW only when the service-type evidence indicates the service may not have occurred as documented.`;
 
-==================================================
-7. OVERRIDES FOR THE DECISION HIERARCHY AND OUTPUT SECTION
-==================================================
-
-A DECISION HIERARCHY and OUTPUT section follows this addendum. Use its JSON format and its length limits exactly. Where any line in it conflicts with the rules below, the rules below win.
-
-A. TREATMENT PLAN
-Ignore its example that sends a treatment-plan diagnosis mismatch to SUPERVISOR_REVIEW. Treatment-plan content never creates an issue and never affects the decision. Never use TREATMENT_PLAN_MISMATCH or source TREATMENT_PLAN.
-
-B. WHEN DECISION IS PASS
-review_summary is exactly "No issues identified." Do NOT explain why the note aligns. If there are WARNING issues only, review_summary states the warning in one sentence instead. WARNING issues never change the decision.
-
-C. WHEN DECISION IS REOPEN_TO_PEER
-reopen_message_to_peer contains ONLY Problem/Solution pairs, as defined in the core prompt. Not a paragraph-style message. supervisor_message is an empty string.
-
-D. WHEN DECISION IS SUPERVISOR_REVIEW
-Use it ONLY for possible service-delivery discrepancies as defined in the core prompt, never for record-level or treatment-plan concerns. supervisor_message states the discrepancy factually and never uses "fraud," "falsified," "fabricated," or similar labels. reopen_message_to_peer is an empty string.
-
-E. STATUS FIELDS
-- narrative_goal_alignment is NOT_ALIGNED or PARTIALLY_ALIGNED when the CLEAR, SPECIFIC, CLIENT-DRIVEN, TIME, or NEED check fails.
-- intervention_status reflects the MATCH and PEER SCOPE checks.
-- response_status reflects the RESPONSE check.`;
-
-// Fixed, non-editable: the review rules, decision precedence and the exact
-// output contract. Appended after both editable modules so operator edits can
-// never break JSON parsing — and where an editable module disagrees with a rule
-// here, this section says it wins.
-const REVIEW_OUTPUT_CONTRACT = `REVIEW RULES (these take precedence over anything above that conflicts with them)
-
-WORKFLOW
-A PASS note goes straight to the clean stack with no further human review, so PASS means you found nothing that needs a human. Any other decision sends the note to a human reviewer, who decides whether to return it to the peer. Nothing is returned automatically.
-Comparison with the peer's other notes is done mechanically on import. You never see another note; do not compare, and do not comment on duplication or copying.
-
-WHERE TO LOOK
-Fields in the payload: note_sections (focus, activities_and_duration, peer_interventions, patient_response, plan), persons_present, location_of_meeting, offsite_justification, other_session_narrative, client_address, encounter_type, delivery_method, place_of_service, billing_or_rate_type (visit code, Duration, Unit(s), and modifiers after "M:"), stated_duration, start_time, end_time, diagnoses, treatment_plan, mechanical_findings.
-Information is often in an unexpected field: the location or the off-site justification may sit inside persons_present, and either may appear in the narrative. Search EVERY field before calling anything missing.
-
-QA CHECKS (a failed check is a REOPEN issue unless stated otherwise)
-1. CLEAR — you can tell what the peer and client actually did.
-2. SPECIFIC — the note names an actual situation or example from the client's life, not just a topic.
-3. CLIENT-DRIVEN — the note shows what the client wanted, chose, or tried; it does not read like a preplanned lesson.
-4. RESPONSE — the note shows what the client actually said or did. "Engaged", "participated", "improved", "understood" or "was encouraged" on their own fail.
-5. MATCH — each selected intervention is demonstrated somewhere in the note.
-6. TIME — the content reasonably supports the session length, especially for 2-3 hour sessions.
-7. NEXT — the note gives something specific for the client to try. WARNING only: it never changes the decision on its own.
-8. PEER SCOPE — the work is recognizable peer support. No therapy, no diagnosing, and no peer judgment about symptoms, risk, motivation, or level of care.
-9. NEED — the work has a reasonable link to the client's documented needs. Do not require sentences bridging the work to a diagnosis.
-
-DIAGNOSES AND THE TREATMENT PLAN
-Unsupported diagnostic language: flag only when the peer's own text names a diagnosis that is not on the diagnoses list. Functional descriptions (focus, distraction, low mood, stress) are never diagnoses.
-The treatment plan is context only. It never creates an issue. Never use TREATMENT_PLAN_MISMATCH, never use the TREATMENT_PLAN issue source, and never escalate because of the treatment plan. Treatment-plan wording never lowers narrative_goal_alignment; that status reflects the QA checks.
-
-OFF-SITE RATIONALE
-Applies to in-person visits that did not take place at the Montebello Office (POS 11), with a visit date on or after ${OFFSITE_RATIONALE_FROM}. No rationale is required for earlier dates, telehealth, or POS 11 visits.
-When it applies, judge whether the justification makes sense for THIS client, reading offsite_justification together with the narrative, the diagnoses and the treatment plan. It is PRESENT_SUFFICIENT when its reason is plausible for this client, fitting the client's documented needs, struggles, or goals and the kind of work done, even if worded generally or imperfectly. A diagnosis on its own does not justify an off-site session. The reason may be ongoing and may repeat from session to session. No barrier to the clinic, location-only task, link to today's activity, or clinical wording is required.
-The justification's wording is never an issue of its own: clinical-sounding words in it ("clinically superior," "therapeutic") are not PEER_SCOPE, not unsupported diagnostic language, and not a reason to fail it.
-PRESENT_TOO_GENERAL when the justification rests on preference, convenience, or distance alone, is boilerplate that would read the same for any client, or gives a reason that does not fit this client. MISSING only when no reason appears anywhere. Either is a REOPEN issue for the peer.
-
-TELEHEALTH (visit date on or after ${TELEHEALTH_LOCATION_FROM})
-- location_of_meeting must contain the address where the client was during the session. client_address (the header) on its own does not satisfy this.
-- The note must state that both the peer and the client were in an appropriate telehealth setting.
-Each missing element is a REOPEN issue for the peer.
-
-POS AND TELEHEALTH MODIFIERS
-POS must match what happened. Telehealth: POS 10 when the client is at home, 02 when the client is somewhere else. In person: POS 12 at the client's home, 99 at a community location, 11 at the Montebello Office.
-The ONLY modifiers you check are GT (telehealth audio-video) and 93 (telehealth audio-only). Every other modifier, U4 included, is unrelated: never flag, question, or mention it. Modifiers are listed after "M:" in billing_or_rate_type; when there is no visit-code line in the payload, skip the modifier check. Otherwise flag only:
-- a telehealth note with neither GT nor 93;
-- GT on an audio-only session;
-- 93 on an audio-video session;
-- GT or 93 on an in-person session.
-A POS or modifier that does not match what the note describes is a REOPEN issue for the peer (source SERVICE_TYPE). It is not DO_NOT_BILL.
-
-UNITS AND TIME
-15 minutes = 1 unit. The start and end time, the duration, the units, and any minutes the peer gives for activities must agree. A difference of less than one unit due to rounding is not an issue. A disagreement the peer can correct is a REOPEN issue.
-
-SERVICE-DELIVERY DISCREPANCIES
-If the note suggests the service may not have happened as billed — the client was unavailable or absent, the times are impossible, or the record appears altered — the decision is SUPERVISOR_REVIEW. State the facts plainly from the note. Never use the word "fraud" or accuse anyone.
-DO_NOT_BILL only when the note itself shows the service did not occur (for example a no-show, a cancellation, or no contact with the client). A service that did happen but was miscoded is a POS/modifier issue for the peer, not DO_NOT_BILL.
-
-DECISION HIERARCHY
-Identify EVERY issue, not only the first. Then set the single overall decision by this precedence:
-1. DO_NOT_BILL
-2. SUPERVISOR_REVIEW
-3. REOPEN_TO_PEER
-4. PASS
-
-Example: a note with a vague client response the peer can fix AND start and end times that overlap another documented commitment has an overall decision of SUPERVISOR_REVIEW, and the issues array must contain both concerns.
-WARNING issues never change the decision: a note whose only issues are WARNINGs is PASS.
-
-OUTPUT
-Respond with ONE JSON object and nothing else. No markdown, no code fence, no prose before or after.
+// Fixed, non-editable: the answer format only — the JSON contract, how to fill
+// its fields, and length limits. Appended after both editable modules so
+// operator edits can never break JSON parsing. Review rules belong in the two
+// editable modules, not here, so each rule lives in one place.
+const REVIEW_OUTPUT_CONTRACT = `OUTPUT FORMAT
+Apply the review instructions above, then respond with ONE JSON object and nothing else. No markdown, no code fence, no prose before or after.
 
 {
   "review_version": "${REVIEW_VERSION}",
@@ -852,15 +777,16 @@ Respond with ONE JSON object and nothing else. No markdown, no code fence, no pr
   "review_summary": ""
 }
 
-Severity: WARNING (check 7 only, never changes the decision), REOPEN (peer can fix), SUPERVISOR (service-delivery discrepancy), NONBILLABLE (service did not occur). Owner: PEER for REOPEN and WARNING, HUMAN_REVIEW for SUPERVISOR, BILLING for NONBILLABLE.
+decision: list every issue, then set the single decision to the most severe that applies: DO_NOT_BILL, then SUPERVISOR_REVIEW, then REOPEN_TO_PEER, then PASS. WARNING issues never change the decision; a note with only WARNING issues is PASS.
+severity: WARNING, REOPEN (peer can fix), SUPERVISOR, or NONBILLABLE. owner: PEER for REOPEN and WARNING, HUMAN_REVIEW for SUPERVISOR, BILLING for NONBILLABLE.
+Status fields: narrative_goal_alignment reflects the CLEAR, SPECIFIC, CLIENT-DRIVEN, TIME, and NEED checks; intervention_status reflects MATCH and PEER SCOPE; response_status reflects RESPONSE.
+Never include an issue whose own explanation concludes there is no problem.
 
-When decision is PASS: reopen_message_to_peer and supervisor_message are empty strings. review_summary is exactly "No issues identified." — or, when there are WARNING issues only, one sentence stating the warning.
-When decision is REOPEN_TO_PEER: reopen_message_to_peer contains ONLY "Problem:" / "Solution:" pairs, one pair per issue, Problem and Solution each on its own line and pairs separated by a blank line, for example:
-Problem: The client's response says only that he "engaged well."
-Solution: Describe what the client actually said or did during the session.
-No greeting, no praise, no summary, nothing else. Cover every REOPEN issue, and only actual deficiencies. Never ask the peer to invent facts, to add a reason that did not apply, to use clinical language, or to repeat what is already documented. supervisor_message is an empty string.
-When decision is SUPERVISOR_REVIEW: reopen_message_to_peer is an empty string. supervisor_message states the concern factually from the note. Peer-fixable issues still go in the issues array for the reviewer.
-When decision is DO_NOT_BILL: reopen_message_to_peer is an empty string. supervisor_message states plainly what in the note shows the service did not occur, and never suggests wording that would conceal it.
+Message fields by decision:
+- PASS: reopen_message_to_peer and supervisor_message are "". review_summary is exactly "No issues identified." (or, with WARNING issues only, one sentence stating the warning).
+- REOPEN_TO_PEER: reopen_message_to_peer uses the Problem/Solution format described above, one pair per issue. supervisor_message is "".
+- SUPERVISOR_REVIEW: reopen_message_to_peer is "". supervisor_message states the concern factually.
+- DO_NOT_BILL: reopen_message_to_peer is "". supervisor_message states what in the note shows the service did not occur.
 
 Every explanation must cite what the note actually says. Leave evidence_from_note empty rather than paraphrasing something the note does not contain.
 

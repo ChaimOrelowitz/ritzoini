@@ -562,15 +562,19 @@ test('P1. Payload carries client_address, persons_present and location_of_meetin
   assert.strictEqual(regular.client_address, '');
 });
 
-test('P2. The fixed contract carries the review rules and drops the old contradictions', () => {
+test('P2. Each rule is stated once: rules in the prompts, only the answer format in the fixed section', () => {
   const prompt = engine.systemPrompt();
   for (const s of ['Problem:', 'No issues identified.', 'Never use TREATMENT_PLAN_MISMATCH',
-                   'never flag, question, or mention it', 'Search EVERY field', 'may repeat from session to session', 'not PEER_SCOPE'])
+                   'never flag, question, or mention it', 'search EVERY field',
+                   'may be the same from session to session', 'not a peer-scope problem', 'never DO_NOT_BILL'])
     assert.ok(prompt.includes(s), `missing: ${s}`);
-  const contract = prompt.slice(prompt.indexOf('REVIEW RULES'));
+  const fixed = prompt.slice(prompt.indexOf('OUTPUT FORMAT'));
+  for (const s of ['REVIEW RULES', 'QA CHECKS', 'OFF-SITE RATIONALE', 'TELEHEALTH (visit date', 'UNITS AND TIME'])
+    assert.ok(!fixed.includes(s), `rule restated in the fixed section: ${s}`);
+  assert.ok(!/7\. OVERRIDES/.test(prompt), 'the redundant addendum section 7 is gone');
   for (const s of ['briefly explains why the note aligns', 'say that and nothing else',
                    'may still address separate peer-correctable issues', 'treatment-plan diagnosis mismatch'])
-    assert.ok(!contract.includes(s), `still present: ${s}`);
+    assert.ok(!prompt.includes(s), `still present: ${s}`);
 });
 
 // ── In-home: the meeting location must be the client's address ──────────────
