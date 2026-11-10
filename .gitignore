@@ -2,3 +2,7 @@
 # charts -- they are the SOURCE for portal_capture_templates, never committed.
 # Rebuild the pack with backend/scripts/extract-insync-captures.js instead.
 *.har
+
+# Frontend libraries are installed with `npm install` in frontend/, not stored
+# in git. The live site is the committed frontend/build/ and never reads them.
+frontend/node_modules/
