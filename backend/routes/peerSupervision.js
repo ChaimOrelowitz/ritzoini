@@ -4,7 +4,9 @@ const supabase = require('../db/supabase');
 const { requireAuth, requireAdmin, requireCoSign } = require('../middleware/auth');
 const { DEFAULT_CORE_REVIEW_PROMPT, DEFAULT_OFFSITE_PROMPT, dateKeyOf } = require('../utils/peerSupervisorEngine');
 const { sendReopenNotification } = require('../utils/reopenNotify');
-const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote } = require('../utils/psIngest');
+const { ingestQueue, ingestCrmQueue, pendingCorpus, judgeNote, closeCrmNote,
+        reviewBatch, awaitingCount } = require('../utils/psIngest');
+const { recordHumanReviews, maybeLearn, snapshotPrompts, loadState, getSetting, HISTORY_KEY } = require('../utils/psLearning');
 const { CrmPortalClient, sourceOf, checkExtensionToken, rotateExtensionToken,
         receiveSession, sessionStatus, STAY_IN_INSYNC_KEY, CRM_ENABLED } = require('../utils/crmPortal');
 
@@ -75,6 +77,14 @@ router.get('/cosign/scan', async (req, res) => {
 });
 
 // POST /api/ps/cosign/sign — sign a list of notes; body: { notes, runId, delta }
+// The Reviewer's per-issue calls sent with a sign/reopen, keyed by eid:
+// { calls: [{ n, verdict: 'real'|'fine', why }], added: [{ section, text }] }.
+function humanReviewsOf(notes) {
+  const out = {};
+  for (const n of notes || []) if (n?.eid && n.humanReview) out[n.eid] = n.humanReview;
+  return out;
+}
+
 router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
   try {
     const { notes, runId, delta = 0 } = req.body;
@@ -100,6 +110,10 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
 
       // Flip the persistent queue: the notes we just signed leave 'pending'.
       const eids = insyncNotes.map(n => n.eid).filter(Boolean);
+      // First record the Reviewer's call on every AI issue (utils/psLearning.js):
+      // any issue they didn't mark counts as fine, because they signed.
+      await recordHumanReviews(eids, 'signed', humanReviewsOf(insyncNotes), req.user)
+        .catch(err => console.error('[PS sign] recording calls failed:', err.message));
       if (eids.length)
         await supabase.from('ps_notes')
           .update({ status: 'signed', actioned_at: new Date().toISOString() })
@@ -132,6 +146,7 @@ router.post('/cosign/sign', requireAuth, requireCoSign, async (req, res) => {
         }
         // Unlike the InSync batch, a CRM decision reports per note, so only
         // confirmed approvals leave 'pending'.
+        await recordHumanReviews([n.eid], 'signed', humanReviewsOf([n]), req.user).catch(() => {});
         await supabase.from('ps_notes')
           .update({ status: 'signed', actioned_at: new Date().toISOString() }).eq('id', row.id);
         signed++;
@@ -214,6 +229,10 @@ router.post('/cosign/reopen', requireAuth, requireCoSign, async (req, res) => {
           r.emailSent = false;
           r.emailSkipped = true;
         }
+        // Every AI issue the Reviewer didn't mark counts as real, because they
+        // reopened. Recorded before the status flip, on the live row.
+        await recordHumanReviews([n.eid], 'reopened', humanReviewsOf([n]), req.user)
+          .catch(err => console.error('[PS reopen] recording calls failed:', err.message));
         // Persistent queue: this note is now waiting on the peer.
         await supabase.from('ps_notes')
           .update({ status: 'reopened', reopen_reason: n.reason || '', actioned_at: new Date().toISOString() })
@@ -268,6 +287,10 @@ function psNoteView(row) {
     suggestedReopenMessage: composeSuggestedReopenMessage(
       f.machine || [], f.review || null, f.clone?.decision === 'confirmed' ? f.clone : null),
     reopenReason: row.reopen_reason || null,
+    // Pulled in, AI review not run yet — waiting for "Review next 10".
+    awaitingReview: row.status === 'pending' && row.ai_verdict == null,
+    // The Reviewer's recorded calls on this note's AI issues (utils/psLearning.js).
+    humanReview: f.human_review || null,
     ingestedAt: row.ingested_at, actionedAt: row.actioned_at,
   };
 }
@@ -409,12 +432,66 @@ router.get('/cosign/pull', async (req, res) => {
       dates,
       range: rangeFrom(req.query),
     });
+    stats.awaitingTotal = await awaitingCount();
     send('done', { stats });
   } catch (err) {
     send('error', { message: err.message });
   } finally {
     res.end();
   }
+});
+
+// GET /api/ps/cosign/review-batch — SSE: AI-review the next ?size= (default 10)
+// waiting notes, oldest visit first. First, if the Reviewer has recorded calls
+// the instructions haven't been updated from, the learning step edits the two
+// Settings prompts (utils/psLearning.js) — so this batch is judged by what the
+// last one taught. Only one batch runs at a time.
+let batchRunning = false;
+router.get('/cosign/review-batch', async (req, res) => {
+  if (!(await sseCoSignAuth(req, res))) return;
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.flushHeaders();
+  const send = (type, data) => res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+
+  if (batchRunning) { send('error', { message: 'A review batch is already running.' }); return res.end(); }
+  batchRunning = true;
+  try {
+    const size = Math.min(50, Math.max(1, Number(req.query.size) || 10));
+    send('progress', { msg: 'Checking for new feedback...', pct: 3 });
+    const learn = await maybeLearn(await buildEngine(),
+      { report: msg => send('progress', { msg, pct: 10 }) });
+    // Rebuilt after learning so the reviews use the instructions just edited.
+    const engine = await buildEngine();
+    send('progress', { msg: 'Starting reviews...', pct: 28 });
+    const stats = await reviewBatch(engine, { size, onProgress: (msg, pct) => send('progress', { msg, pct }) });
+    stats.learned = learn.learned;
+    stats.tidied  = learn.tidied;
+    if (learn.error) stats.learnError = learn.error;
+    if (learn.tidyError) stats.tidyError = learn.tidyError;
+    console.log(`[PS batch] reviewed=${stats.reviewed} aiCalls=${engine.aiCallCount} learned=${learn.learned} remaining=${stats.remaining}`);
+    send('done', { stats });
+  } catch (err) {
+    send('error', { message: err.message });
+  } finally {
+    batchRunning = false;
+    res.end();
+  }
+});
+
+// GET /api/ps/cosign/prompt-history — what the learning step last did, and the
+// saved earlier versions of the instructions (newest first). Not shown in the UI;
+// for checking and rollback. ?full=1 includes each version's full text.
+router.get('/cosign/prompt-history', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const history = await getSetting(HISTORY_KEY, []);
+    res.json({
+      state: await loadState(),
+      history: req.query.full ? history : history.map(({ core, offsite, ...h }) =>
+        ({ ...h, core_chars: (core || '').length, offsite_chars: (offsite || '').length })),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // GET /api/ps/cosign/pull-crm — SSE: the same incremental ingest, from the CRM's
@@ -590,6 +667,15 @@ router.post('/cosign/settings', requireAuth, requireAdmin, async (req, res) => {
       // InSync instead of coming here to be co-signed.
       [STAY_IN_INSYNC_KEY]: crm_approved_stay_in_insync === undefined ? undefined : String(!!crm_approved_stay_in_insync),
     };
+    // A hand edit to the instructions is saved in the same history the learning
+    // step uses, so it can be undone the same way.
+    if (prompt_core_review !== undefined || prompt_offsite !== undefined) {
+      const engine = await buildEngine();
+      const before = { core: engine.coreReviewPrompt, offsite: engine.offsitePrompt };
+      const changed = (prompt_core_review !== undefined && (prompt_core_review || '').trim() !== before.core)
+                   || (prompt_offsite     !== undefined && (prompt_offsite     || '').trim() !== before.offsite);
+      if (changed) await snapshotPrompts(before, 'before manual edit');
+    }
     for (const [key, value] of Object.entries(map))
       if (value !== undefined && value !== null)
         await supabase.from('app_settings').upsert({ key, value }, { onConflict: 'key' });

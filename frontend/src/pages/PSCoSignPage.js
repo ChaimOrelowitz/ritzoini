@@ -687,14 +687,330 @@ function ProgressBar({ pct }) {
 
 const lbl = { display: 'block', fontSize: '0.7rem', fontWeight: 700, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 4 };
 
-// ── NoteModal ─────────────────────────────────────────────────────────────────
+// ── NoteModal: the three-column review ────────────────────────────────────────
+//
+// Every section of the note is one row, in note order: ISSUE | NOTE | CALL.
+// An issue sits on the row of the section it is about, so the problem, the
+// evidence and the Reviewer's call read left to right. A row with no issue shows
+// a green "Good". Several issues on one row are stacked and numbered, with the
+// same numbers on their Fine / Real buttons.
+//
+// The calls are sent with Sign / Reopen and recorded on the backend
+// (utils/psLearning.js). An issue left unmarked follows the button: Reopen
+// counts it as real, Sign counts it as fine.
 
-function NoteModal({ note, onClose, actions }) {
+// Note sections → row keys. The keys match the AI's `issue.section` values
+// (ISSUE_SECTIONS in the backend engine) wherever the two overlap.
+const ROW_TITLES = {
+  visit_details: 'Client & visit details', note_of_session: 'Note of session',
+  persons_present: 'Persons present', location_of_meeting: 'Location of meeting',
+  offsite_justification: 'Off-site justification', focus: 'Focus of the meeting',
+  activities_and_duration: 'Activities & duration', peer_interventions: 'Peer support interventions',
+  patient_response: "Patient's response", plan: 'Plan', diagnoses: 'Diagnosis',
+  visit_codes: 'Visit codes', treatment_plan: 'Treatment plan', signature: 'Signature',
+};
+function rowKeyOfLabel(label) {
+  const l = (label || '').toLowerCase();
+  if (l === 'note of session') return 'note_of_session';
+  if (l === 'persons present') return 'persons_present';
+  if (l.startsWith('location of')) return 'location_of_meeting';
+  if (l.startsWith('justification for offsite')) return 'offsite_justification';
+  if (l === 'focus of the meeting') return 'focus';
+  if (l.startsWith('what activities')) return 'activities_and_duration';
+  if (l === 'peer support interventions') return 'peer_interventions';
+  if (l.startsWith("patient's response")) return 'patient_response';
+  if (l === 'plan') return 'plan';
+  if (l === 'diagnosis') return 'diagnoses';
+  if (l === 'plan / visit codes' || l === 'visit codes' || l === 'provider npi') return 'visit_codes';
+  if (l === 'treatment plan' || l === 'problem' || /^(long term goal|short term goal|intervention)/.test(l)) return 'treatment_plan';
+  if (l === 'electronically signed') return 'signature';
+  return null;
+}
+// Fallback for reviews stored before issues carried a `section`.
+const SOURCE_ROW = {
+  OFFSITE: 'offsite_justification', NARRATIVE: 'focus', GOAL: 'focus', INTERVENTION: 'peer_interventions',
+  RESPONSE: 'patient_response', DIAGNOSIS: 'diagnoses', TREATMENT_PLAN: 'treatment_plan', SERVICE_TYPE: 'note_of_session',
+};
+
+// The note split into rows, in note order. Fields before "Note of Session" are
+// the client/visit header; an unrecognised label stays with the row it follows.
+function noteRows(text) {
+  const rows = [], byKey = new Map();
+  let cur = 'visit_details';
+  for (const seg of segmentNote(text || '')) {
+    const k = seg.label ? rowKeyOfLabel(seg.label) : null;
+    if (k) cur = k;
+    if (!byKey.has(cur)) { const r = { key: cur, title: ROW_TITLES[cur] || cur, segs: [] }; byKey.set(cur, r); rows.push(r); }
+    byKey.get(cur).segs.push(seg);
+  }
+  return rows;
+}
+
+// Where the AI's quoted evidence sits in the note, as an absolute char range.
+function evidenceRange(text, evidence) {
+  const ev = String(evidence || '').replace(/^["“'\s]+|["”'\s.…]+$/g, '').trim();
+  if (ev.length < 6 || !text) return null;
+  const hay = text.toLowerCase();
+  for (const probe of [ev, ev.slice(0, 80), ev.slice(0, 40)]) {
+    const i = hay.indexOf(probe.toLowerCase());
+    if (probe.length >= 6 && i !== -1) return [i, i + probe.length];
+  }
+  return null;
+}
+
+function rowOfIssue(iss, rows, text) {
+  const rng = evidenceRange(text, iss.evidence_from_note);
+  if (rng) {
+    const hit = rows.find(r => r.segs.some(s => rng[0] >= s.start && rng[0] < s.start + s.value.length));
+    if (hit) return hit.key;
+  }
+  const keys = new Set(rows.map(r => r.key));
+  if (iss.section && keys.has(iss.section)) return iss.section;
+  if (iss.section === 'activities' && keys.has('activities_and_duration')) return 'activities_and_duration';
+  const viaSource = SOURCE_ROW[iss.source];
+  if (viaSource && keys.has(viaSource)) return viaSource;
+  if (iss.source === 'OFFSITE' && keys.has('location_of_meeting')) return 'location_of_meeting';
+  return keys.has('note_of_session') ? 'note_of_session' : rows[0]?.key;
+}
+
+function mergeRanges(list) {
+  const r = list.filter(Boolean).sort((a, b) => a[0] - b[0]), out = [];
+  for (const x of r) {
+    const last = out[out.length - 1];
+    if (last && x[0] <= last[1]) last[1] = Math.max(last[1], x[1]); else out.push([...x]);
+  }
+  return out;
+}
+
+// The reopen message from the issues that are real: an issue marked Fine drops
+// out, an issue the Reviewer added goes in. The mechanical and duplicate
+// paragraphs the backend composed around the AI's own message are kept.
+function composeReopenReason(note, calls, added) {
+  const issues = note.review?.issues || [];
+  const anyFine = issues.some((_, n) => calls[n]?.verdict === 'fine');
+  const suggested = note.suggestedReopenMessage || defaultReopenReason(note, null);
+  if (!anyFine && !added.length) return suggested;
+  const pairs = [];
+  issues.forEach((iss, n) => {
+    if (calls[n]?.verdict === 'fine') return;
+    pairs.push(`Problem: ${iss.explanation}${iss.fix_for_peer ? `\nSolution: ${iss.fix_for_peer}` : ''}`);
+  });
+  added.forEach(a => pairs.push(`Problem: ${a.text}`));
+  const body = pairs.join('\n\n');
+  const ai = (note.review?.reopen_message_to_peer || '').trim();
+  if (ai && suggested.includes(ai)) return suggested.replace(ai, body).trim();
+  return [suggested && !ai ? suggested : '', body].filter(Boolean).join('\n\n');
+}
+
+const cellPad = { padding: '10px 12px', borderBottom: '1px solid var(--gray-100)', verticalAlign: 'top' };
+const numBadge = bg => ({ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 18, height: 18,
+  borderRadius: 999, background: bg, color: 'white', fontSize: '0.66rem', fontWeight: 800, flexShrink: 0 });
+
+function CallButtons({ n, call, onCall, readOnly }) {
+  const v = call?.verdict;
+  if (readOnly) {
+    if (!v) return <span style={{ fontSize: '0.75rem', color: 'var(--gray-400)' }}>—</span>;
+    return <Chip color={v === 'real' ? 'red' : 'blue'}>{v === 'real' ? '✗ Real' : '✓ Fine'}{call.explicit === false ? ' (auto)' : ''}</Chip>;
+  }
+  const btn = (val, label, on) => (
+    <button className="btn btn-xs" onClick={() => onCall(v === val ? null : val)} style={{
+      border: `1px solid ${on ? (val === 'real' ? '#dc2626' : '#16a34a') : 'var(--gray-200)'}`,
+      background: on ? (val === 'real' ? '#fef2f2' : '#f0fdf4') : 'white',
+      color: on ? (val === 'real' ? '#b91c1c' : '#15803d') : 'var(--gray-600)', fontWeight: 700,
+    }}>{label}</button>
+  );
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+      {btn('fine', '✓ Fine', v === 'fine')}
+      {btn('real', '✗ Real', v === 'real')}
+    </div>
+  );
+}
+
+function ReviewGrid({ note, calls, setCall, added, setAdded, readOnly }) {
+  const text = note.fullNoteText || '';
+  const rows = useMemo(() => noteRows(text), [text]);
+  const review = note.review;
+  const issues = review && review.decision !== 'AI_REVIEW_ERROR' ? (review.issues || []) : [];
+  const hasReview = !!review && review.decision !== 'AI_REVIEW_ERROR';
+  const [adding, setAdding] = useState(null);   // { section, text } while the form is open
+
+  // Issues per row, numbered across the whole note in the AI's order.
+  const perRow = useMemo(() => {
+    const m = new Map();
+    issues.forEach((iss, n) => {
+      const k = rowOfIssue(iss, rows, text);
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push({ iss, n });
+    });
+    return m;
+  }, [issues, rows, text]);
+  const ranges = useMemo(() => mergeRanges(issues.map(i => evidenceRange(text, i.evidence_from_note))), [issues, text]);
+
+  const compactRow = k => k === 'visit_details' || k === 'visit_codes' || k === 'signature';
+
+  return (
+    <div>
+      <table style={{ width: '100%', borderCollapse: 'collapse', tableLayout: 'fixed' }}>
+        <colgroup><col style={{ width: '30%' }} /><col style={{ width: '50%' }} /><col style={{ width: '20%' }} /></colgroup>
+        <thead>
+          <tr style={{ position: 'sticky', top: 0, background: 'white', zIndex: 1 }}>
+            {['Issue', 'Note', 'Your call'].map(h => (
+              <th key={h} style={{ ...revLbl, textAlign: 'left', padding: '8px 12px', borderBottom: '2px solid var(--gray-200)', margin: 0 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(row => {
+            const its = perRow.get(row.key) || [];
+            const mine = added.map((a, i) => ({ a, i })).filter(x => x.a.section === row.key);
+            const flagged = its.length > 0 || mine.length > 0;
+            if (!flagged && row.segs.every(sg => !sg.value.trim())) return null;
+            return (
+              <tr key={row.key} style={{ background: flagged ? '#fffbeb' : 'white' }}>
+                {/* ISSUE */}
+                <td style={cellPad}>
+                  <div style={{ ...revLbl, marginBottom: 6 }}>{row.title}</div>
+                  {!flagged && (hasReview
+                    ? <span style={{ fontSize: '0.8rem', fontWeight: 700, color: '#15803d' }}>✓ Good</span>
+                    : <span style={{ fontSize: '0.8rem', color: 'var(--gray-300)' }}>—</span>)}
+                  {its.map(({ iss, n }) => {
+                    const v = calls[n]?.verdict;
+                    return (
+                      <div key={n} style={{ display: 'flex', gap: 6, marginBottom: 8, opacity: v === 'fine' ? 0.5 : 1 }}>
+                        <span style={numBadge(v === 'fine' ? '#16a34a' : v === 'real' ? '#dc2626' : '#ea580c')}>{n + 1}</span>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', lineHeight: 1.5, minWidth: 0 }}>
+                          {iss.explanation}
+                          {iss.severity && iss.severity !== 'REOPEN' && (
+                            <span style={{ marginLeft: 6 }}><Chip color={/NONBILLABLE|SUPERVISOR/.test(iss.severity) ? 'red' : 'gray'}>{iss.severity.toLowerCase()}</Chip></span>
+                          )}
+                          {iss.fix_for_peer && <div style={{ fontSize: '0.74rem', color: 'var(--gray-500)', marginTop: 2 }}>Fix: {iss.fix_for_peer}</div>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {mine.map(({ a, i }) => (
+                    <div key={`a${i}`} style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
+                      <span style={numBadge('#7c3aed')}>{issues.length + i + 1}</span>
+                      <div style={{ fontSize: '0.8rem', color: 'var(--gray-700)', lineHeight: 1.5, minWidth: 0 }}>
+                        {a.text}
+                        <div style={{ fontSize: '0.68rem', color: '#7c3aed', fontWeight: 700 }}>Added by you</div>
+                      </div>
+                    </div>
+                  ))}
+                </td>
+                {/* NOTE */}
+                <td style={cellPad}>
+                  {row.segs.map((seg, si) => {
+                    const val = seg.value.trim();
+                    if (!val && seg.divider) return null;
+                    if (compactRow(row.key)) return (
+                      <span key={si} style={{ fontSize: '0.76rem', color: 'var(--gray-600)', marginRight: 12, display: 'inline-block' }}>
+                        {seg.label && <strong style={{ color: 'var(--gray-500)' }}>{seg.label}: </strong>}{val}
+                      </span>
+                    );
+                    return (
+                      <div key={si} style={{ marginBottom: 6 }}>
+                        {seg.label && rowKeyOfLabel(seg.label) !== row.key && (
+                          <div style={{ fontSize: '0.66rem', fontWeight: 700, color: 'var(--navy)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{seg.label}</div>
+                        )}
+                        <div style={{ whiteSpace: 'pre-wrap', fontSize: '0.82rem', lineHeight: 1.6, color: 'var(--gray-700)' }}>
+                          {ranges.length ? highlightSlice(seg.value, seg.start, ranges.map(([s, e]) => [s, e])) : val}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </td>
+                {/* CALL */}
+                <td style={cellPad}>
+                  <div style={{ height: 18, marginBottom: 6 }} />
+                  {its.map(({ n }) => (
+                    <div key={n} style={{ marginBottom: 10 }}>
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={numBadge('var(--gray-400)')}>{n + 1}</span>
+                        <CallButtons n={n} call={calls[n]} readOnly={readOnly}
+                          onCall={v => setCall(n, v === null ? null : { verdict: v, why: calls[n]?.why || '' })} />
+                      </div>
+                      {!readOnly && calls[n]?.verdict && (
+                        <input className="form-input" value={calls[n]?.why || ''} placeholder="why? (optional)"
+                          onChange={e => setCall(n, { ...calls[n], why: e.target.value })}
+                          style={{ marginTop: 4, width: '100%', padding: '3px 6px', fontSize: '0.74rem' }} />
+                      )}
+                      {readOnly && calls[n]?.why && <div style={{ fontSize: '0.72rem', color: 'var(--gray-500)', marginTop: 3 }}>“{calls[n].why}”</div>}
+                    </div>
+                  ))}
+                  {mine.map(({ i }) => (
+                    <div key={`a${i}`} style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 10 }}>
+                      <span style={numBadge('#7c3aed')}>{issues.length + i + 1}</span>
+                      <Chip color="red">✗ Real</Chip>
+                      {!readOnly && (
+                        <button className="btn btn-outline btn-xs" title="Remove"
+                          onClick={() => setAdded(list => list.filter((_, j) => j !== i))}>✕</button>
+                      )}
+                    </div>
+                  ))}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      {!readOnly && (
+        <div style={{ padding: '12px', borderBottom: '1px solid var(--gray-100)' }}>
+          {adding ? (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+              <select className="form-input" value={adding.section} onChange={e => setAdding({ ...adding, section: e.target.value })}
+                style={{ padding: '5px 8px', fontSize: '0.8rem', width: 220 }}>
+                {rows.map(r => <option key={r.key} value={r.key}>{r.title}</option>)}
+              </select>
+              <textarea className="form-input" rows={2} autoFocus value={adding.text} placeholder="What did the AI miss?"
+                onChange={e => setAdding({ ...adding, text: e.target.value })}
+                style={{ flex: 1, minWidth: 240, fontFamily: 'inherit', fontSize: '0.8rem' }} />
+              <button className="btn btn-gold btn-sm" disabled={!adding.text.trim()}
+                onClick={() => { setAdded(list => [...list, { section: adding.section, text: adding.text.trim() }]); setAdding(null); }}>Add</button>
+              <button className="btn btn-outline btn-sm" onClick={() => setAdding(null)}>Cancel</button>
+            </div>
+          ) : (
+            <button className="btn btn-outline btn-sm" onClick={() => setAdding({ section: rows.find(r => r.key === 'focus')?.key || rows[0]?.key, text: '' })}>
+              + Add issue AI missed
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// canAct: show Sign / Reopen (the live queue only). onSign(humanReview) and
+// onReopen(humanReview, reason) receive the Reviewer's calls.
+function NoteModal({ note, onClose, canAct, onSign, onReopen, extraActions, busy }) {
+  const [calls, setCalls] = useState({});     // { [n]: { verdict, why } }
+  const [added, setAdded] = useState([]);     // [{ section, text }]
+  const [showFull, setShowFull] = useState(false);
+  useEffect(() => { setCalls({}); setAdded([]); setShowFull(false); }, [note?.id]);
   if (!note) return null;
+
+  // A note already signed or reopened shows the calls recorded for it.
+  const recorded = note.humanReview;
+  const readOnly = !canAct;
+  const shownCalls = readOnly && recorded
+    ? Object.fromEntries((recorded.calls || []).map(c => [c.n, c])) : calls;
+  const shownAdded = readOnly && recorded ? (recorded.added || []).map(a => ({ section: a.section, text: a.text })) : added;
+  const setCall = (n, v) => setCalls(c => { const next = { ...c }; if (v) next[n] = v; else delete next[n]; return next; });
+  const humanReview = () => ({
+    calls: Object.entries(calls).map(([n, c]) => ({ n: Number(n), verdict: c.verdict, why: c.why || '' })),
+    added,
+  });
+
+  const r = note.review;
+  const issueCount = r?.issues?.length || 0;
+  const marked = Object.keys(calls).length;
+
   const header = (
-    <>
-      <div style={{ padding: '18px 24px 14px', borderBottom: '1px solid var(--gray-100)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
+    <div style={{ padding: '14px 20px 12px', borderBottom: '1px solid var(--gray-100)' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+        <div style={{ minWidth: 0, flex: 1 }}>
           <h3 style={{ margin: 0, fontWeight: 700, color: 'var(--navy)', fontSize: '1rem' }}>{note.patientName}</h3>
           <p style={{ margin: '2px 0 0', fontSize: '0.8rem', color: 'var(--gray-500)' }}>
             {note.peerName} · {fmtDt(note.visitDatetime)}
@@ -703,32 +1019,59 @@ function NoteModal({ note, onClose, actions }) {
         </div>
         <ModalClose onClose={onClose} />
       </div>
-      <div style={{ padding: '12px 24px', borderBottom: '1px solid var(--gray-100)', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10, alignItems: 'center' }}>
+        <AiDecisionChip decision={note.aiDecision} />
         {(note.flags || []).filter(f => !/possible duplicate/i.test(f))
           .map((f, i) => <Chip key={i} color={flagChipColor(f)}>{f}</Chip>)}
         <DupeChip note={note} />
-        <AiDecisionChip decision={note.aiDecision} />
         <OffsiteChip offsite={note.offsite} />
+        {r?.review_summary && r.decision !== 'PASS' && (
+          <span style={{ fontSize: '0.8rem', color: 'var(--gray-600)', marginLeft: 4 }}>{r.review_summary}</span>
+        )}
       </div>
-    </>
+      {note.awaitingReview && (
+        <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#1d4ed8' }}>Not reviewed by the AI yet. Run <strong>Review next 10</strong> from the queue.</div>
+      )}
+      {r?.decision === 'AI_REVIEW_ERROR' && (
+        <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#991b1b' }}>AI review error: {r.error || 'the response could not be read'}. Re-judge to try again.</div>
+      )}
+      {r?.supervisor_message && (
+        <div style={{ marginTop: 8, fontSize: '0.8rem', color: '#991b1b' }}><strong>For the supervisor:</strong> {r.supervisor_message}</div>
+      )}
+    </div>
   );
+
   return (
     <DraggableModal
-      storageKey="ps.modal.read" defaultWidth={860} defaultHeight={Math.round(window.innerHeight * 0.86)}
+      storageKey="ps.modal.review" defaultWidth={Math.min(1280, window.innerWidth - 32)} defaultHeight={Math.round(window.innerHeight * 0.9)}
       onClose={onClose} header={header}
-      footer={actions && (
-        <div style={{ flexShrink: 0, padding: '14px 24px', borderTop: '1px solid var(--gray-100)', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-          {actions}
+      footer={(
+        <div style={{ flexShrink: 0, padding: '12px 20px', borderTop: '1px solid var(--gray-100)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.76rem', color: 'var(--gray-500)', flex: 1 }}>
+            {canAct && issueCount > 0 && `${marked} of ${issueCount} marked. Unmarked issues count as real if you reopen, fine if you sign.`}
+          </span>
+          {extraActions}
+          {canAct && (
+            <>
+              <button className="btn btn-outline btn-sm" onClick={() => onReopen(humanReview(), composeReopenReason(note, calls, added))}>Reopen</button>
+              <button className="btn btn-gold btn-sm" disabled={busy} onClick={() => onSign(humanReview())}>
+                {busy ? '…' : note.source === 'crm' ? 'Approve' : 'Sign'}
+              </button>
+            </>
+          )}
         </div>
       )}>
-      <div style={{ padding: '20px 24px' }}>
-        {/* AI review first — it's what the Reviewer acts on; the note text is
-            the evidence they check it against. */}
-        <div style={{ marginBottom: 20, padding: 16, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)' }}>
-          <div style={{ ...sectionLabel, margin: '0 0 10px' }}>AI documentation review</div>
-          <AiReviewPanel note={note} />
-        </div>
-        <NoteBody text={note.fullNoteText} />
+      <ReviewGrid note={note} calls={shownCalls} setCall={setCall}
+        added={shownAdded} setAdded={setAdded} readOnly={readOnly} />
+      <div style={{ padding: '12px' }}>
+        <button className="btn btn-outline btn-xs" onClick={() => setShowFull(v => !v)}>
+          {showFull ? 'Hide' : 'Show'} full AI review
+        </button>
+        {showFull && (
+          <div style={{ marginTop: 10, padding: 14, background: '#f8fafc', border: '1px solid var(--gray-100)', borderRadius: 'var(--radius)' }}>
+            <AiReviewPanel note={note} />
+          </div>
+        )}
       </div>
     </DraggableModal>
   );
@@ -907,7 +1250,9 @@ function CompareModal({ pair, onClose, onReopen, onSign, onDupeDecision }) {
 
 // ── ReopenModal ───────────────────────────────────────────────────────────────
 
-// ctx = { title, notes: [{ note, partner }] }. Reopens (sends back to the peer
+// ctx = { title, notes: [{ note, partner, reason?, humanReview? }] }. `reason`
+// pre-fills the message (the review window composes it from the real issues);
+// `humanReview` carries the Reviewer's per-issue calls to the backend. Reopens (sends back to the peer
 // for revision) one or more notes, each with an editable reason. onDone receives
 // the eids that were successfully reopened.
 function ReopenModal({ ctx, onClose, onDone }) {
@@ -921,7 +1266,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
   const [compact, setCompact] = useState(false);
 
   useEffect(() => {
-    if (ctx) { setReasons(ctx.notes.map(n => defaultReopenReason(n.note, n.partner))); setResults(null); setBusy(false); setBulkText(''); setProgress(null); setCompact(ctx.notes.length > 5); }
+    if (ctx) { setReasons(ctx.notes.map(n => n.reason ?? defaultReopenReason(n.note, n.partner))); setResults(null); setBusy(false); setBulkText(''); setProgress(null); setCompact(ctx.notes.length > 5); }
   }, [ctx]);
 
   if (!ctx) return null;
@@ -941,6 +1286,7 @@ function ReopenModal({ ctx, onClose, onDone }) {
         const slice = ctx.notes.slice(i, i + CHUNK);
         const payload = slice.map((n) => ({
           eid: n.note.eid, pid: n.note.pid, reason: reasons[ctx.notes.indexOf(n)],
+          humanReview: n.humanReview,
           client:    n.note.patientName,
           visitDate: n.note.visitDate,
           startTime: n.note.startTimeStr,
@@ -1762,6 +2108,8 @@ function QueueTab() {
   const [notes,    setNotes]    = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [pulling,  setPulling]  = useState(false);
+  const [batching, setBatching] = useState(false);     // "Review next 10" running
+  const [showAwaiting, setShowAwaiting] = useState(false);
   const [progress, setProgress] = useState(null);      // { msg, pct }
   const [search,   setSearch]   = useState('');
   const [query,    setQuery]    = useState('');         // committed search term
@@ -1840,7 +2188,7 @@ function QueueTab() {
           const s = msg.stats || {};
           setPulling(false); setProgress(null); es.close();
           load();
-          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}${s.crmApproved ? `, ${s.crmApproved} skipped AI review (approved in the CRM)` : ''}${s.leftInInsync ? `, ${s.leftInInsync} left in InSync (approved in the CRM)` : ''}.`);
+          alert(`${SOURCE_LABEL[source]} pull complete — ${s.new || 0} new, ${s.revised || 0} revised, ${s.skipped || 0} already had${s.awaitingTotal ? `. ${s.awaitingTotal} waiting for AI review — click Review next 10` : ''}${s.reconciled ? `, ${s.reconciled} un-signed (reconciled)` : ''}${s.closed ? `, ${s.closed} closed (no longer in the CRM queue)` : ''}${s.crmApproved ? `, ${s.crmApproved} skipped AI review (approved in the CRM)` : ''}${s.leftInInsync ? `, ${s.leftInInsync} left in InSync (approved in the CRM)` : ''}.`);
         } else if (msg.type === 'error') {
           alert('Pull error: ' + msg.message);
           setPulling(false); setProgress(null); es.close();
@@ -1850,12 +2198,42 @@ function QueueTab() {
     es.onerror = () => { alert('Connection lost during pull.'); setPulling(false); setProgress(null); es.close(); };
   }
 
-  async function signNotes(list, label) {
+  // AI-review the next batch of waiting notes, oldest visit first. The backend
+  // first updates its learned rules from any calls recorded since the last batch.
+  async function startBatch(size = 10) {
+    if (batching || pulling) return;
+    setBatching(true);
+    setProgress({ msg: 'Starting…', pct: 0 });
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) { alert('Not logged in'); setBatching(false); setProgress(null); return; }
+    const es = new EventSource(`${API}/api/ps/cosign/review-batch?token=${encodeURIComponent(token)}&size=${size}`);
+    esRef.current = es;
+    const finish = () => { setBatching(false); setProgress(null); es.close(); };
+    es.onmessage = e => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'progress') setProgress({ msg: msg.msg, pct: msg.pct });
+        else if (msg.type === 'done') {
+          const s = msg.stats || {};
+          finish(); load();
+          alert(s.reviewed
+            ? `Reviewed ${s.reviewed}: ${s.flagged || 0} need review, ${s.clean || 0} clean. ${s.remaining || 0} still waiting.`
+            : 'No notes are waiting for AI review.');
+        } else if (msg.type === 'error') { alert('Review error: ' + msg.message); finish(); }
+      } catch {}
+    };
+    es.onerror = () => { alert('Connection lost during the review batch.'); finish(); load(); };
+  }
+
+  // hrByEid: the Reviewer's per-issue calls from the review window, by eid.
+  async function signNotes(list, label, hrByEid = {}) {
     if (!list.length) return;
     const ids = new Set(list.map(n => n.eid));
     setBusyIds(s => new Set([...s, ...ids]));
     try {
-      const slim = list.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId }));
+      const slim = list.map(n => ({ eid: n.eid, cosignId: n.cosignId, cosignReqId: n.cosignReqId,
+                                    ...(hrByEid[n.eid] ? { humanReview: hrByEid[n.eid] } : {}) }));
       const { signed, failed, errors = [] } = await api.post('/ps/cosign/sign', { notes: slim });
       const detail = errors.length
         ? '\n\n' + errors.map(e => `${list.find(n => n.eid === e.eid)?.patientName || e.eid}: ${e.message}`).join('\n')
@@ -1915,6 +2293,7 @@ function QueueTab() {
     return true;
   });
 
+  const awaiting = filtered.filter(n => n.awaitingReview);
   const clean   = filtered.filter(n => n.verdict === 'clean');
   const flagged = filtered.filter(n => n.verdict === 'flagged');
   // Clone partner is resolved against the FULL set, so a filtered-out partner
@@ -1973,6 +2352,7 @@ function QueueTab() {
             <SourceChip source={note.source} />
             {note.version > 1 && <Chip color="gray">v{note.version}</Chip>}
             {view === 'archive' && <Chip color={note.status === 'signed' ? 'gray' : 'blue'}>{note.status}</Chip>}
+            {note.awaitingReview && <Chip color="blue">not AI-reviewed yet</Chip>}
           </div>
           <div style={{ fontSize: '0.78rem', color: 'var(--gray-500)', margin: '2px 0 6px' }}>
             {note.peerName} · {fmtDt(note.visitDatetime)}
@@ -2032,16 +2412,16 @@ function QueueTab() {
           ))}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1, justifyContent: 'flex-end', minWidth: 200 }}>
-          {pulling && progress && (
+          {(pulling || batching) && progress && (
             <div style={{ flex: 1, maxWidth: 280 }}>
               <div style={{ fontSize: '0.74rem', color: 'var(--gray-600)', marginBottom: 4 }}>{progress.msg}</div>
               <ProgressBar pct={progress.pct} />
             </div>
           )}
-          <button className="btn btn-outline btn-sm" onClick={() => setDatePicker(true)} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+          <button className="btn btn-outline btn-sm" onClick={() => setDatePicker(true)} disabled={pulling || batching} style={{ whiteSpace: 'nowrap' }}>
             📅 Pick dates
           </button>
-          <button className="btn btn-gold btn-sm" onClick={() => startPull()} disabled={pulling} style={{ whiteSpace: 'nowrap' }}>
+          <button className="btn btn-gold btn-sm" onClick={() => startPull()} disabled={pulling || batching} style={{ whiteSpace: 'nowrap' }}>
             {pulling ? 'Pulling…' : '⟳ Pull new notes'}
           </button>
         </div>
@@ -2053,6 +2433,7 @@ function QueueTab() {
         <div>
           {filterBar}
           <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+            <StatTile label="Waiting · AI review" val={awaiting.length} color="#1d4ed8" />
             <StatTile label="Clean · ready to sign" val={clean.length} color="#16a34a" />
             <StatTile label="Flagged · needs review" val={flagged.length} color="#dc2626" />
           </div>
@@ -2065,6 +2446,27 @@ function QueueTab() {
           {notes.length > 0 && filtered.length === 0 && (
             <div style={{ background: '#f8fafc', border: '1px solid var(--gray-200)', borderRadius: 'var(--radius)', padding: '24px', textAlign: 'center', color: 'var(--gray-500)', fontSize: '0.88rem' }}>
               No notes match the filters. <button className="btn btn-outline btn-xs" onClick={clearFilters} style={{ marginLeft: 6 }}>Clear filters</button>
+            </div>
+          )}
+
+          {/* Waiting for the AI — reviewed in batches, oldest first, so each
+              batch is judged by what the Reviewer's calls on the last one taught. */}
+          {awaiting.length > 0 && (
+            <div style={{ marginBottom: 24, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 'var(--radius)', padding: '14px 18px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+                <button onClick={() => setShowAwaiting(s => !s)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontWeight: 700, color: '#1d4ed8', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {showAwaiting ? '▾' : '▸'} Waiting for AI review ({awaiting.length}) · oldest first
+                </button>
+                <button className="btn btn-gold btn-sm" onClick={() => startBatch(10)} disabled={batching || pulling}>
+                  {batching ? 'Reviewing…' : `Review next ${Math.min(10, awaiting.length)}`}
+                </button>
+              </div>
+              {showAwaiting && (
+                <div style={{ marginTop: 12 }}>
+                  <GroupedNotes notes={awaiting} mode={groupMode} collapsed={collapsed} onToggle={toggleGroup}
+                    renderNote={note => <NoteRow key={note.id} note={note} />} />
+                </div>
+              )}
             </div>
           )}
 
@@ -2169,10 +2571,17 @@ function QueueTab() {
       <NoteModal
         note={noteModal}
         onClose={() => setNoteModal(null)}
-        actions={noteModal && (() => {
+        canAct={view === 'queue'}
+        busy={noteModal ? busyIds.has(noteModal.eid) : false}
+        onSign={hr => { const n = noteModal; setNoteModal(null); signNotes([n], n.source === 'crm' ? 'Approve' : 'Sign', { [n.eid]: hr }); }}
+        onReopen={(hr, reason) => {
+          const n = noteModal;
+          setNoteModal(null);
+          setReopenCtx({ title: `Reopen ${n.patientName}'s Note`, notes: [{ note: n, partner: partnerOf(n), reason, humanReview: hr }] });
+        }}
+        extraActions={noteModal && (() => {
           const n = noteModal;
           const partner = partnerOf(n);
-          const busy = busyIds.has(n.eid);
           return (
             <>
               {partner && (
@@ -2181,14 +2590,6 @@ function QueueTab() {
               {view === 'queue' && n.verdict === 'flagged' && (
                 <button className="btn btn-outline btn-sm" onClick={() => { rejudge(n); setNoteModal(null); }} disabled={rejudgingId === n.id}>
                   {rejudgingId === n.id ? '…' : 'Re-judge'}
-                </button>
-              )}
-              {view === 'queue' && (
-                <button className="btn btn-outline btn-sm" onClick={() => { setNoteModal(null); setReopenCtx({ title: `Reopen ${n.patientName}'s Note`, notes: [{ note: n, partner }] }); }}>Reopen</button>
-              )}
-              {view === 'queue' && (
-                <button className="btn btn-gold btn-sm" onClick={() => { setNoteModal(null); signNotes([n], 'Sign'); }} disabled={busy}>
-                  {busy ? '…' : 'Sign'}
                 </button>
               )}
             </>

@@ -131,6 +131,18 @@ function assembleJudged(machine, dupe, review, reused, crmApproved = null) {
   };
 }
 
+// A note pulled in but not yet AI-reviewed: the mechanical findings are stored,
+// the verdict stays null until "Review next 10" reaches it (reviewBatch below).
+function awaitingJudged(machine, dupe) {
+  return {
+    verdict: null,
+    flags: { machine, clone: dupe || null, crmApproved: null,
+             coherence: null, offsite: null, review: null, awaiting_review: true },
+    clonePartnerEid: dupe?.partnerEid || null,
+    aiCalled: false,
+  };
+}
+
 async function judgeNote(engine, note, corpus, { priorReview = null, force = false } = {}) {
   const machine = machineChecks(engine, note);       // 1
   const dupe    = engine.findDupe(note, corpus);     // 2 — synchronous, no network
@@ -171,7 +183,7 @@ function serializeNote(note) {
 // Option (b): drag a duplicate's still-pending partner out of the clean stack.
 async function flagPartner(partnerEid, sourceEid, cloneMeta) {
   const { data: row } = await supabase.from('ps_notes')
-    .select('id, ai_flags')
+    .select('id, ai_flags, ai_verdict')
     .eq('eid', partnerEid).eq('status', 'pending')
     .order('version', { ascending: false }).limit(1).maybeSingle();
   if (!row) return;
@@ -182,8 +194,10 @@ async function flagPartner(partnerEid, sourceEid, cloneMeta) {
     pct:        cloneMeta?.pct ?? null,
     reason:     cloneMeta?.reason || 'Appears copied — not individualized to this session',
   };
+  // A partner still waiting for its AI review stays in that bucket; the review
+  // batch will flag it, since the clone finding is now part of its flags.
   await supabase.from('ps_notes')
-    .update({ ai_verdict: 'flagged', ai_flags: flags })
+    .update({ ai_verdict: row.ai_verdict === null ? null : 'flagged', ai_flags: flags })
     .eq('id', row.id);
 }
 
@@ -211,7 +225,9 @@ async function ingestCantLoad(row, stats) {
 // `dates` (optional) is an array of MM/DD/YYYY keys from the date picker; only
 // those visit dates are downloaded and judged. Everything else is untouched —
 // notes on other dates are neither pulled nor altered.
-async function ingestQueue(engine, { onProgress, dates = null, range = {} } = {}) {
+// `defer` (default true): store the notes with their mechanical findings and no
+// AI review — the Reviewer runs the AI in batches with reviewBatch().
+async function ingestQueue(engine, { onProgress, dates = null, range = {}, defer = true } = {}) {
   const report = (m, p) => { if (onProgress) onProgress(m, p); };
 
   report('Logging into InSync...', 2);
@@ -234,7 +250,7 @@ async function ingestQueue(engine, { onProgress, dates = null, range = {} } = {}
 
   const { notes, cantLoad, skipped } = await engine.fetchNotes(report, { dates: dateSet, range, skipRow });
 
-  const stats = await ingestNotes(engine, { source: 'insync', notes, cantLoad, report });
+  const stats = await ingestNotes(engine, { source: 'insync', notes, cantLoad, report, defer });
   stats.leftInInsync = await recordLeftInInsync(skipped, report);
   return stats;
 }
@@ -362,7 +378,7 @@ async function closeVanishedCrmNotes(items, report) {
 }
 
 // Shared by both sources: dedup → judge new/revised → persist.
-async function ingestNotes(engine, { source, notes, cantLoad, report }) {
+async function ingestNotes(engine, { source, notes, cantLoad, report, defer = false }) {
   // Pending pool for duplicate comparison (status='pending' ONLY, per spec, and
   // this source ONLY). Section bigrams are precomputed ONCE here via
   // prepareDupeEntry and reused for every comparison in this pull.
@@ -376,7 +392,7 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
 
   const stats = { pulled: notes.length, new: 0, revised: 0, rereviewed: 0, skipped: 0,
                   reconciled: 0, flagged: 0, clean: 0, cantLoad: 0,
-                  aiCalls: 0, aiReused: 0, crmApproved: 0 };
+                  aiCalls: 0, aiReused: 0, crmApproved: 0, awaiting: 0 };
   const aiCallsAtStart = engine.aiCallCount || 0;
 
   // ── Pass 1 — dedup + the two mechanical tracks. Strictly serial and in order:
@@ -401,7 +417,9 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
     // The duplicate track is about content, which hasn't changed, so the stored
     // finding (and any human decision on it) is kept rather than re-run against
     // a pool that already contains this very note.
-    if (action === 'skip' && existing.status === 'pending') {
+    // Deferred pulls never re-review: the review batch is the only place the AI
+    // runs, and a note already reviewed keeps that review.
+    if (action === 'skip' && existing.status === 'pending' && !defer) {
       const { data: stored } = await supabase.from('ps_notes')
         .select('ai_flags').eq('id', existing.id).maybeSingle();
       const prior = stored?.ai_flags?.review;
@@ -461,9 +479,16 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
     report(`Reviewing ${reviewed} of ${work.length}...`,
       82 + Math.floor((reviewed / Math.max(work.length, 1)) * 16));
   }
-  if (work.length) await runReview(work[0]);
-  for (let i = 1; i < work.length; i += concurrency)
-    await Promise.all(work.slice(i, i + concurrency).map(runReview));
+  if (defer) {
+    for (const w of work)
+      w.judged = w.crmApproved
+        ? assembleJudged(w.machine, w.dupe, null, false, w.crmApproved)
+        : awaitingJudged(w.machine, w.dupe);
+  } else {
+    if (work.length) await runReview(work[0]);
+    for (let i = 1; i < work.length; i += concurrency)
+      await Promise.all(work.slice(i, i + concurrency).map(runReview));
+  }
 
   // ── Pass 3 — persist, serially and in the original order, so stats and the
   // partner-flag writes stay deterministic.
@@ -502,7 +527,8 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
     });
 
     stats[action]++;            // new | revised
-    stats[judged.verdict]++;    // flagged | clean
+    if (judged.verdict) stats[judged.verdict]++;    // flagged | clean
+    else stats.awaiting++;
   }
 
   for (const row of cantLoad) await ingestCantLoad(row, stats);
@@ -513,6 +539,76 @@ async function ingestNotes(engine, { source, notes, cantLoad, report }) {
   console.log(`[PS ingest] AI calls: ${stats.engineAiCalls} (accounted ${stats.aiCalls}, reused ${stats.aiReused}) over ${stats.new + stats.revised} new/revised and ${stats.rereviewed} re-reviewed notes`);
 
   report('Done!', 100);
+  return stats;
+}
+
+// ── Review batch ─────────────────────────────────────────────────────────────
+
+// Visit date + start time as a sortable number, for "oldest first".
+function visitSortKey(row) {
+  const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(row.visit_date || row.visit_datetime || '');
+  if (!m) return Number.MAX_SAFE_INTEGER;
+  const t = Date.parse(row.visit_datetime || '') || 0;
+  return Number(`${m[3]}${m[1].padStart(2, '0')}${m[2].padStart(2, '0')}`) * 1e4 + (t % 86400000) / 1e4;
+}
+
+// How many pending notes are still waiting for their AI review.
+async function awaitingCount() {
+  const { count } = await supabase.from('ps_notes').select('id', { count: 'exact', head: true })
+    .eq('status', 'pending').is('ai_verdict', null);
+  return count || 0;
+}
+
+// AI-review the next `size` waiting notes, oldest visit first. The mechanical
+// findings and duplicate finding stored at pull time are kept as they are
+// (including any human duplicate decision); only the AI track runs here.
+async function reviewBatch(engine, { size = 10, ids = null, onProgress } = {}) {
+  const report = (m, p) => { if (onProgress) onProgress(m, p); };
+  let q = supabase.from('ps_notes').select('id, visit_date, visit_datetime')
+    .eq('status', 'pending').is('ai_verdict', null);
+  if (ids && ids.length) q = q.in('id', ids);
+  const { data: waiting, error } = await q;
+  if (error) throw error;
+  const pick = (waiting || []).sort((a, b) => visitSortKey(a) - visitSortKey(b)).slice(0, size).map(r => r.id);
+  if (!pick.length) return { reviewed: 0, flagged: 0, clean: 0, aiCalls: 0, remaining: 0 };
+
+  const { data: rows } = await supabase.from('ps_notes').select('*').in('id', pick);
+  const work = (rows || []).map(row => {
+    const note = { ...(row.note_data || {}), eid: row.eid };
+    note.visitDateObj = engine._parseDate(note.visitDatetime || row.visit_datetime);
+    return { row, note, machine: row.ai_flags?.machine || [], dupe: row.ai_flags?.clone || null };
+  });
+
+  const concurrency = Math.max(1, Number(process.env.PS_AI_CONCURRENCY) || 5);
+  let done = 0;
+  async function run(w) {
+    try {
+      const { review, reused } = await reviewFor(engine, w.note, w.machine);
+      w.judged = assembleJudged(w.machine, w.dupe, review, reused);
+    } catch (err) {
+      w.judged = assembleJudged(w.machine, w.dupe,
+        { decision: 'AI_REVIEW_ERROR', error: `Review failed: ${err.message}` }, false);
+    }
+    done++;
+    report(`Reviewing ${done} of ${work.length}...`, 30 + Math.floor((done / work.length) * 65));
+  }
+  // The first review runs alone so it writes the prompt cache the rest read.
+  await run(work[0]);
+  for (let i = 1; i < work.length; i += concurrency)
+    await Promise.all(work.slice(i, i + concurrency).map(run));
+
+  const stats = { reviewed: 0, flagged: 0, clean: 0, aiCalls: 0 };
+  for (const { row, judged } of work) {
+    const flags = { ...judged.flags };
+    delete flags.awaiting_review;
+    await supabase.from('ps_notes')
+      .update({ ai_verdict: judged.verdict, ai_flags: flags, judged_at: new Date().toISOString() })
+      .eq('id', row.id);
+    stats.reviewed++;
+    stats[judged.verdict]++;
+    if (judged.aiCalled) stats.aiCalls++;
+  }
+  stats.remaining = await awaitingCount();
   return stats;
 }
 
@@ -528,4 +624,4 @@ async function priorReviewFor(eid) {
 module.exports = { ingestQueue, ingestCrmQueue, ingestNotes, closeVanishedCrmNotes, closeCrmNote,
                    recordLeftInInsync, pendingCorpus, whereSource, machineChecks,
                    decideAction, judgeNote, reviewFor, assembleJudged,
-                   contentHash, serializeNote, priorReviewFor };
+                   contentHash, serializeNote, priorReviewFor, reviewBatch, awaitingCount };
