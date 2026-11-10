@@ -1003,6 +1003,25 @@ function stableStringify(v) {
 
 // ── Review validation ────────────────────────────────────────────────────────
 
+// The review answer as an object. The contract asks for bare JSON, but the
+// model sometimes writes its reasoning first and puts the JSON in a ```json
+// fence after it. Tried in order: the whole answer (minus one outer fence), the
+// LAST fenced block, then the span from the first "{" to the last "}". Whatever
+// comes out still goes through validateReview, so a wrong shape is still an error.
+function extractReviewJson(rawText) {
+  const tryParse = t => { try { const v = JSON.parse(t); return v && typeof v === 'object' ? v : null; } catch { return null; } };
+  const text = String(rawText || '').trim();
+  const whole = tryParse(text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim());
+  if (whole) return whole;
+  const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  for (let i = fences.length - 1; i >= 0; i--) {
+    const v = tryParse(fences[i][1].trim());
+    if (v) return v;
+  }
+  const a = text.indexOf('{'), b = text.lastIndexOf('}');
+  return a !== -1 && b > a ? tryParse(text.slice(a, b + 1)) : null;
+}
+
 const DECISIONS   = ['PASS', 'REOPEN_TO_PEER', 'SUPERVISOR_REVIEW', 'DO_NOT_BILL'];
 const CONFIDENCES = ['HIGH', 'MODERATE', 'LOW'];
 
@@ -1693,13 +1712,8 @@ class InsyncCoSignEngine {
 
     const rawText = (msg.content || [])
       .filter(b => b.type === 'text').map(b => b.text).join('').trim();
-    // Defensively strip a single outer markdown fence, nothing more.
-    const cleaned = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
+    const parsed = extractReviewJson(rawText);
+    if (!parsed) {
       return { ...base, decision: 'AI_REVIEW_ERROR',
                error: 'AI response could not be parsed or validated.', raw_response: rawText };
     }
@@ -1941,5 +1955,5 @@ module.exports = {
   // exported for unit testing of heading-boundary parsing
   findHeadings, sectionByLabel, NOTE_HEADINGS,
   // exported for unit testing of the review payload itself
-  buildReviewPayload, assertSectionsDerived, SECTION_LABELS, ISSUE_SECTIONS,
+  buildReviewPayload, assertSectionsDerived, SECTION_LABELS, ISSUE_SECTIONS, extractReviewJson,
 };
