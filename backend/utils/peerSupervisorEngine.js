@@ -879,7 +879,15 @@ function isoVisitDate(note) {
 // Everything in "Note of Session" BEFORE the first of the five sections —
 // persons present, meeting location. Returns '' when there is no preamble.
 function sessionPreamble(note) {
-  const narrative = note.sessionNarrative || '';
+  let narrative = note.sessionNarrative || '';
+  // _parseNote falls back to the WHOLE note when the Note of Session section is
+  // empty (a note with no session title). Everything before "Focus of the
+  // meeting" is then the letterhead and client header, the clinic's own address
+  // among it, which the reviewer read as where the session took place. So for
+  // that fallback, re-read the real section; an empty one sends nothing.
+  const whole = note.fullNoteText || note.noteText || '';
+  if (narrative && narrative === whole)
+    narrative = sectionByLabel(sectionSource(note), 'Note of Session');
   const m = /Focus of the meeting\s*[:?\-]/i.exec(narrative);
   return (m ? narrative.slice(0, m.index) : narrative).replace(/\s+/g, ' ').trim();
 }

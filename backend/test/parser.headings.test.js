@@ -610,5 +610,25 @@ test('Q3. Only in-home notes are checked; an unreadable client address is skippe
   assert.ok(!homeFlagged(homeNote('PO Box 12, Monsey NY', wrong)), 'no house number to compare');
 });
 
+// ── R. Session narrative never falls back to the letterhead ─────────────────
+test('R1. A note with no session title does not send the letterhead as the session narrative', () => {
+  const structured = 'LINKS Mental Health Center\n75 Montebello Road Suffern, NY 10901-3746\nPatient Details\nAddress: 29 Suzanne Dr\n'
+    + 'Note of Session\nPersons Present: Client and peer\nLocation of Meeting: 15 Widman Ct Spring Valley NY 10977\n'
+    + 'Focus of the meeting: Morning routine.';
+  const flat = structured.replace(/\s+/g, ' ');
+  const p = buildReviewPayload(noteWith({ structuredText: structured, fullNoteText: flat, sessionNarrative: flat }));
+  assert.ok(!/Montebello/.test(p.other_session_narrative), p.other_session_narrative);
+  assert.strictEqual(p.location_of_meeting, '15 Widman Ct Spring Valley NY 10977');
+});
+
+test('R2. A real session title still comes through', () => {
+  const structured = 'LINKS Mental Health Center\n75 Montebello Road Suffern, NY 10901-3746\n'
+    + 'Note of Session\nPeer Support Individual ; Offsite\nPersons Present: Client\nFocus of the meeting: Morning routine.';
+  const flat = structured.replace(/\s+/g, ' ');
+  const p = buildReviewPayload(noteWith({ structuredText: structured, fullNoteText: flat, sessionNarrative: flat }));
+  assert.ok(/Peer Support Individual ; Offsite/.test(p.other_session_narrative), p.other_session_narrative);
+  assert.ok(!/Montebello/.test(p.other_session_narrative), p.other_session_narrative);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
