@@ -630,5 +630,28 @@ test('R2. A real session title still comes through', () => {
   assert.ok(!/Montebello/.test(p.other_session_narrative), p.other_session_narrative);
 });
 
+const LH = 'Links Mental Health Center\n75 Montebello Road Suffern, NY 10901-3746\nPhone: 844-335-4657 | Fax: 845-525-9300';
+const lhNote = structured => {
+  const flat = structured.replace(/\s+/g, ' ');
+  return buildReviewPayload(noteWith({ structuredText: structured, fullNoteText: flat, sessionNarrative: flat }));
+};
+test('R3. The letterhead repeated inside Note of Session is not sent as the narrative', () => {
+  const p = lhNote(`Header ##addendumheader##\n${LH}\nPatient Details\nAddress: 59 Forest Rd, Monroe, NY 10950\n`
+    + `Note of Session\nPeer Support Individual ; Offsite\n${LH}\nPersons Present: Client and peer\n`
+    + 'Location of Meeting: 52 Francis Place Monsey NY 10952\nFocus of the meeting: Morning routine.');
+  assert.strictEqual(p.other_session_narrative, 'Peer Support Individual ; Offsite');
+  assert.strictEqual(p.location_of_meeting, '52 Francis Place Monsey NY 10952');
+  assert.ok(!/Montebello/.test(JSON.stringify(p)), 'letterhead reached the payload');
+});
+
+test('R4. A letterhead at a page break inside a section is removed from that section', () => {
+  const p = lhNote('Note of Session\nPeer Support Individual\nPersons Present: Client\nFocus of the meeting: Morning routine.\n'
+    + `What activities took place, and for how long?\n30 Minutes: We mapped his wake-up steps.\n${LH}\n30 Minutes: We practised the routine.\n`
+    + "Peer Support Interventions: Coping Skills\nPatient's Response/Content: He said it felt doable.\nPlan: Practise nightly.");
+  assert.ok(/mapped his wake-up steps/.test(p.note_sections.activities_and_duration));
+  assert.ok(/practised the routine/.test(p.note_sections.activities_and_duration));
+  assert.ok(!/Montebello/.test(JSON.stringify(p)), 'letterhead reached the payload');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

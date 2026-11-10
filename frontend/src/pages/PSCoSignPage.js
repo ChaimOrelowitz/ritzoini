@@ -732,6 +732,12 @@ const SOURCE_ROW = {
   RESPONSE: 'patient_response', DIAGNOSIS: 'diagnoses', TREATMENT_PLAN: 'treatment_plan', SERVICE_TYPE: 'note_of_session',
 };
 
+// The clinic letterhead InSync prints at the top and at every page break.
+// Mirrors stripLetterhead in the backend engine, which already keeps it out of
+// what the AI is sent; here it just keeps it out of the rows you read.
+const LETTERHEAD_RE = /(?:\bHeader\s+)?(?:##addendumheader##\s*)?Links\s+Mental\s+Health\s+Center\s*75\s+Montebello\s+R(?:oa)?d\.?,?\s*Suffern,?\s*NY\s*\d{5}(?:-\d{4})?(?:\s*Phone\s*[:-]?\s*[\d() .-]{7,}?\d(?:\s*\|)?\s*Fax\s*[:-]?\s*[\d() .-]{7,}?\d(?!\d))?/gi;
+const stripLetterhead = t => String(t || '').replace(LETTERHEAD_RE, ' ').replace(/##addendumheader##/gi, ' ');
+
 // The note split into rows, in note order. Fields before "Note of Session" are
 // the client/visit header; an unrecognised label stays with the row it follows.
 function noteRows(text) {
@@ -828,7 +834,7 @@ function CallButtons({ n, call, onCall, readOnly }) {
 }
 
 function ReviewGrid({ note, calls, setCall, added, setAdded, readOnly }) {
-  const text = note.fullNoteText || '';
+  const text = useMemo(() => stripLetterhead(note.fullNoteText), [note.fullNoteText]);
   const rows = useMemo(() => noteRows(text), [text]);
   const review = note.review;
   const issues = review && review.decision !== 'AI_REVIEW_ERROR' ? (review.issues || []) : [];

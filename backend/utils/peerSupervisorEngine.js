@@ -651,6 +651,22 @@ function bigramSimFromMaps(ma, la, mb, lb) {
 // Which text to cut sections from: the line-structured form when the note was
 // parsed by a version that kept it, else the flat text (every note stored
 // before that). findHeadings handles both shapes and yields identical values.
+// The clinic letterhead InSync prints at the top of the note AND again at each
+// page break, which can land inside any section ("…Individual ; Offsite Links
+// Mental Health Center 75 Montebello Road…"). The reviewer read that address as
+// where the session took place. Every section reader strips it first, so it
+// never reaches the review at all. Replaced with a line break, which keeps
+// heading detection on either side of it intact.
+const LETTERHEAD_RE = new RegExp(
+  '(?:\\bHeader\\s+)?(?:##addendumheader##\\s*)?'
+  + 'Links\\s+Mental\\s+Health\\s+Center\\s*75\\s+Montebello\\s+R(?:oa)?d\\.?,?\\s*Suffern,?\\s*NY\\s*\\d{5}(?:-\\d{4})?'
+  + '(?:\\s*Phone\\s*[:\\-]?\\s*[\\d() .\\-]{7,}?\\d(?:\\s*\\|)?\\s*Fax\\s*[:\\-]?\\s*[\\d() .\\-]{7,}?\\d(?!\\d))?',
+  'gi');
+function stripLetterhead(text) {
+  if (!text) return text || '';
+  return String(text).replace(LETTERHEAD_RE, '\n').replace(/##addendumheader##/gi, '\n');
+}
+
 function sectionSource(note) {
   return note.structuredText || note.fullNoteText || note.noteText || '';
 }
@@ -659,6 +675,7 @@ function splitSections(text) {
   const out = {};
   for (const s of SECTION_LABELS) out[s.key] = '';
   if (!text) return out;
+  text = stripLetterhead(text);
 
   const headings = findHeadings(text);
   if (!headings.length) return out;
@@ -692,6 +709,7 @@ function splitSections(text) {
 // detected as a heading, so a narrative "…his diagnosis helped him…" is never
 // mistaken for the Diagnosis section.
 function sectionByLabel(text, label) {
+  text = stripLetterhead(text);
   const headings = findHeadings(text);
   const i = headings.findIndex(h => h.label.toLowerCase() === label.toLowerCase());
   if (i === -1) return '';
@@ -888,6 +906,7 @@ function sessionPreamble(note) {
   const whole = note.fullNoteText || note.noteText || '';
   if (narrative && narrative === whole)
     narrative = sectionByLabel(sectionSource(note), 'Note of Session');
+  narrative = stripLetterhead(narrative);
   const m = /Focus of the meeting\s*[:?\-]/i.exec(narrative);
   return (m ? narrative.slice(0, m.index) : narrative).replace(/\s+/g, ' ').trim();
 }
@@ -1487,6 +1506,7 @@ class InsyncCoSignEngine {
   // everything outside it (demographics, times, ICD codes, the templated
   // treatment-plan goals) is boilerplate that shouldn't drive clone matching.
   _sessionContent(text) {
+    text = stripLetterhead(text);
     const headings = findHeadings(text);
     const start = headings.findIndex(h => h.label === 'Focus of the meeting');
     if (start === -1) return '';
@@ -1964,4 +1984,5 @@ module.exports = {
   findHeadings, sectionByLabel, NOTE_HEADINGS,
   // exported for unit testing of the review payload itself
   buildReviewPayload, assertSectionsDerived, SECTION_LABELS, ISSUE_SECTIONS, extractReviewJson,
+  stripLetterhead,
 };
