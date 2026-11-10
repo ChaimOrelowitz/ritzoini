@@ -494,6 +494,41 @@ router.get('/cosign/prompt-history', requireAuth, requireAdmin, async (req, res)
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// GET /api/ps/cosign/learning-stats — per review batch, newest first: how many
+// of the AI's issues the Reviewer overruled, confirmed, and what the AI missed.
+// Counts only notes already signed or reopened (decided). If learning works, the
+// overrule and miss rates should fall from batch to batch.
+router.get('/cosign/learning-stats', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase.from('ps_notes')
+        .select('batch:ai_flags->>batch, hr:ai_flags->human_review, issues:ai_flags->review->issues')
+        .not('ai_flags->>batch', 'is', null)
+        .range(from, from + 999);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+    const byBatch = new Map();
+    for (const r of rows) {
+      if (!byBatch.has(r.batch)) byBatch.set(r.batch, { batch: r.batch, notes: 0, decided: 0,
+        aiIssues: 0, overruled: 0, overruledMarked: 0, confirmed: 0, missed: 0 });
+      const b = byBatch.get(r.batch);
+      b.notes++;
+      if (!r.hr) continue;
+      b.decided++;
+      for (const c of (r.hr.calls || [])) {
+        b.aiIssues++;
+        if (c.verdict === 'fine') { b.overruled++; if (c.explicit) b.overruledMarked++; }
+        else b.confirmed++;
+      }
+      b.missed += (r.hr.added || []).length;
+    }
+    res.json([...byBatch.values()].sort((a, b) => (a.batch < b.batch ? 1 : -1)).slice(0, 30));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // GET /api/ps/cosign/pull-crm — SSE: the same incremental ingest, from the CRM's
 // supervisor-review queue. Read-only against the CRM (no approve/reopen).
 router.get('/cosign/pull-crm', async (req, res) => {
@@ -597,6 +632,8 @@ router.post('/cosign/rejudge', requireAuth, requireCoSign, async (req, res) => {
     // Preserve any human duplicate adjudication across a rejudge.
     const priorDecision = row.ai_flags?.clone?.decision || null;
     if (priorDecision && judged.flags.clone) judged.flags.clone.decision = priorDecision;
+    // Keep the note counted in the review batch it came from.
+    if (row.ai_flags?.batch) judged.flags.batch = row.ai_flags.batch;
     console.log(`[PS rejudge] eid=${row.eid} aiCalls=${engine.aiCallCount} decision=${judged.flags.review?.decision}`);
 
     await supabase.from('ps_notes')

@@ -597,9 +597,12 @@ async function reviewBatch(engine, { size = 10, ids = null, onProgress } = {}) {
   for (let i = 1; i < work.length; i += concurrency)
     await Promise.all(work.slice(i, i + concurrency).map(run));
 
-  const stats = { reviewed: 0, flagged: 0, clean: 0, aiCalls: 0 };
+  // Every note in this batch carries the batch's id, so the Settings page can
+  // show per batch how often the Reviewer overruled the AI and what it missed.
+  const batchId = new Date().toISOString();
+  const stats = { reviewed: 0, flagged: 0, clean: 0, aiCalls: 0, batch: batchId };
   for (const { row, judged } of work) {
-    const flags = { ...judged.flags };
+    const flags = { ...judged.flags, batch: batchId };
     delete flags.awaiting_review;
     await supabase.from('ps_notes')
       .update({ ai_verdict: judged.verdict, ai_flags: flags, judged_at: new Date().toISOString() })

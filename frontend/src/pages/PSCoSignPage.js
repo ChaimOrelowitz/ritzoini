@@ -1441,6 +1441,57 @@ function ReopenModal({ ctx, onClose, onDone }) {
 // Proves that what is saved in Settings is what the next AI review actually
 // sends. Fetches the composed system prompt straight from the engine the ingest
 // and rejudge paths use — not a client-side reconstruction.
+// Per review batch: how often the Reviewer overruled the AI, and what it
+// missed. Only decided (signed / reopened) notes count. If the learning works,
+// both rates should fall from batch to batch.
+function LearningStats() {
+  const [rows, setRows] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    api.get('/ps/cosign/learning-stats').then(setRows).catch(ex => setError(ex.message));
+  }, []);
+  const pct = (a, b) => (b ? `${Math.round((a / b) * 100)}%` : '—');
+  const th = { ...revLbl, textAlign: 'left', padding: '6px 8px', borderBottom: '1px solid var(--gray-200)' };
+  const td = { padding: '6px 8px', fontSize: '0.8rem', color: 'var(--gray-700)', borderBottom: '1px solid var(--gray-100)' };
+  return (
+    <section style={sectionStyle}>
+      <p style={sectionLabel}>How the AI is doing</p>
+      <p style={{ margin: '0 0 12px', fontSize: '0.8rem', color: 'var(--gray-600)', lineHeight: 1.6 }}>
+        One row per <strong>Review next 10</strong> batch, newest first, counting the notes you've signed or reopened.
+        <strong> Overruled</strong> is the share of the AI's issues that you (or a Sign) counted as fine;
+        <strong> missed</strong> is issues you added. If the AI is learning, both should go down over time.
+      </p>
+      {error ? <div style={{ fontSize: '0.8rem', color: '#dc2626' }}>{error}</div>
+        : !rows ? <div style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>Loading…</div>
+        : !rows.length ? <div style={{ fontSize: '0.8rem', color: 'var(--gray-400)' }}>No batches yet. Numbers appear after your next Review next 10.</div>
+        : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead><tr>
+                {['Batch', 'Decided', 'AI issues', 'Overruled', 'Confirmed', 'Missed by AI'].map(h => <th key={h} style={th}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {rows.map(b => (
+                  <tr key={b.batch}>
+                    <td style={td}>{new Date(b.batch).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
+                    <td style={td}>{b.decided} of {b.notes}</td>
+                    <td style={td}>{b.aiIssues}</td>
+                    <td style={td}>
+                      <strong>{pct(b.overruled, b.aiIssues)}</strong> ({b.overruled})
+                      {b.overruled > 0 && <span style={{ color: 'var(--gray-400)' }}> · {b.overruledMarked} marked by you</span>}
+                    </td>
+                    <td style={td}>{b.confirmed}</td>
+                    <td style={td}>{b.missed}{b.decided ? <span style={{ color: 'var(--gray-400)' }}> ({(b.missed / b.decided).toFixed(1)} per note)</span> : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+    </section>
+  );
+}
+
 function PromptProvenance() {
   const [data, setData]   = useState(null);
   const [open, setOpen]   = useState(false);
@@ -1673,6 +1724,8 @@ function SettingsTab() {
       />
 
       <PromptProvenance />
+
+      <LearningStats />
 
       <button className="btn btn-gold" onClick={save} disabled={saving} style={{ marginTop: 8 }}>
         {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Settings'}
