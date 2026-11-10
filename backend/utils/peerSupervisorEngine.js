@@ -249,7 +249,10 @@ const REVIEW_MODEL   = 'claude-sonnet-4-6';
 // now caps explanation lengths to hold output down, and this ceiling gives the
 // remaining headroom. Output tokens are billed as used, so a terse review still
 // costs a terse review.
-const REVIEW_MAX_TOKENS = 2500;
+// Raised from 2500 when each issue gained `section` and `fix_for_peer`: notes
+// with many issues ran past 2500 and truncated the same way. Generous on
+// purpose, since only the tokens actually written are billed.
+const REVIEW_MAX_TOKENS = 6000;
 
 // Off-site rationale rule starts with dates of SERVICE on/after this date.
 const OFFSITE_RATIONALE_FROM = '2026-10-01';
@@ -1680,6 +1683,13 @@ class InsyncCoSignEngine {
     }
 
     this.lastUsage = msg.usage || null;         // surfaced for cache verification
+
+    if (msg.stop_reason === 'max_tokens') {
+      const raw = (msg.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
+      return { ...base, decision: 'AI_REVIEW_ERROR',
+               error: `The AI's answer was cut off at the ${REVIEW_MAX_TOKENS}-token output limit.`,
+               raw_response: raw };
+    }
 
     const rawText = (msg.content || [])
       .filter(b => b.type === 'text').map(b => b.text).join('').trim();
