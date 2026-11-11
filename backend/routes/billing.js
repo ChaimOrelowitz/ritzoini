@@ -46,6 +46,29 @@ function parseExcelEntries(buffer) {
   return entries;
 }
 
+// Parse a pasted "Group Name <tab> Session Date" list (copied from Excel/Sheets).
+// The date is the last M/D/YYYY on each line; everything before it is the
+// billing name. Header and blank lines are skipped. Returns { entries, skipped }.
+function parseTextEntries(text) {
+  const entries = [];
+  const skipped = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = line.match(/^(.*?)[\s,;|]*(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s*$/);
+    if (!m) {
+      if (!/group name/i.test(line)) skipped.push(line);
+      continue;
+    }
+    const billingName = m[1].replace(/[\t,;|]+$/, '').trim();
+    let [mo, d, y] = [Number(m[2]), Number(m[3]), Number(m[4])];
+    if (y < 100) y += 2000;
+    if (!billingName || mo < 1 || mo > 12 || d < 1 || d > 31) { skipped.push(line); continue; }
+    entries.push({ billingName, date: `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}` });
+  }
+  return { entries, skipped };
+}
+
 async function extractEntriesFromPDF(buffer) {
   const base64 = buffer.toString('base64');
 
@@ -88,14 +111,16 @@ async function matchEntries(entries) {
     .not('billing_name', 'is', null)
     .neq('billing_name', '');
 
+  // Case/whitespace-insensitive so a pasted list doesn't miss on "Group" vs "group"
+  const norm = s => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
   const byBillingName = {};
-  (groups || []).forEach(g => { byBillingName[g.billing_name] = g; });
+  (groups || []).forEach(g => { byBillingName[norm(g.billing_name)] = g; });
 
   const matched = [];
   const unmatchedMap = {};
 
   for (const entry of entries) {
-    const group = byBillingName[entry.billingName];
+    const group = byBillingName[norm(entry.billingName)];
     if (!group) {
       if (!unmatchedMap[entry.billingName]) unmatchedMap[entry.billingName] = [];
       unmatchedMap[entry.billingName].push(entry.date);
@@ -132,6 +157,19 @@ router.post('/parse-stub', requireAuth, requireAdmin, upload.single('file'), asy
     res.json({ matched, unmatched });
   } catch (err) {
     console.error('[billing parse-stub]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/billing/parse-text  — accepts a pasted "Group Name / Session Date" list
+router.post('/parse-text', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { entries, skipped } = parseTextEntries(req.body?.text);
+    if (!entries.length) return res.status(400).json({ error: 'No "Group Name  M/D/YYYY" lines found in pasted text.' });
+    const { matched, unmatched } = await matchEntries(entries);
+    res.json({ matched, unmatched, skipped });
+  } catch (err) {
+    console.error('[billing parse-text]', err);
     res.status(500).json({ error: err.message });
   }
 });

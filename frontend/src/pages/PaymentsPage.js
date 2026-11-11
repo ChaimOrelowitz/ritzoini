@@ -305,6 +305,8 @@ function PayPeriodRow({ period, supervisorId }) {
   const [confirming, setConfirming]   = useState(false);
   const [error, setError]             = useState('');
   const [editingBilling, setEditingBilling] = useState(null); // { groupId, value }
+  const [pasteOpen, setPasteOpen]     = useState(false);
+  const [pasteText, setPasteText]     = useState('');
   const fileRef = useRef();
 
   async function saveBillingName(groupId, value) {
@@ -338,14 +340,26 @@ function PayPeriodRow({ period, supervisorId }) {
     if (!file) return;
     setUploading(true); setError(''); setStubResult(null); setPendingMappings({});
     try {
-      const result = await parsePayStub(file);
-      setStubResult(result);
-      const preChecked = new Set(
-        result.matched.filter(m => m.session && !m.session.paid).map(m => m.session.id)
-      );
-      setCheckedIds(preChecked);
+      applyStubResult(await parsePayStub(file));
     } catch (e) { setError(e.message); }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+  }
+
+  function applyStubResult(result) {
+    setStubResult(result);
+    setCheckedIds(new Set(
+      result.matched.filter(m => m.session && !m.session.paid).map(m => m.session.id)
+    ));
+  }
+
+  async function handlePasteReconcile() {
+    if (!pasteText.trim()) return;
+    setUploading(true); setError(''); setStubResult(null); setPendingMappings({});
+    try {
+      applyStubResult(await api.parseBillingText(pasteText));
+      setPasteOpen(false);
+    } catch (e) { setError(e.message); }
+    finally { setUploading(false); }
   }
 
   async function handleSaveMappings() {
@@ -519,6 +533,9 @@ function PayPeriodRow({ period, supervisorId }) {
                   {uploading ? 'Parsing…' : '📄 Upload Pay Stub (PDF or Excel)'}
                 </button>
                 <input ref={fileRef} type="file" accept=".pdf,.xlsx,.xls" style={{ display: 'none' }} onChange={handleStubUpload} />
+                <button className="btn btn-outline btn-sm" onClick={() => setPasteOpen(v => !v)} disabled={uploading}>
+                  📋 Paste List
+                </button>
                 {stubResult && (
                   <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)' }}>
                     {stubResult.matched.length} matched · {stubResult.unmatched.length} unrecognized
@@ -528,6 +545,31 @@ function PayPeriodRow({ period, supervisorId }) {
                   <button className="btn btn-outline btn-sm" onClick={() => { setStubResult(null); setCheckedIds(new Set()); setPendingMappings({}); }}>Clear</button>
                 )}
               </div>
+
+              {pasteOpen && (
+                <div style={{ margin: '12px 0 16px' }}>
+                  <textarea
+                    className="form-input"
+                    rows={10}
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8rem' }}
+                    placeholder={'Group Name\tSession Date\nSelf-Expression Skills Group\t10/8/2026\n…'}
+                    value={pasteText}
+                    onChange={e => setPasteText(e.target.value)}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button className="btn btn-gold btn-sm" onClick={handlePasteReconcile} disabled={uploading || !pasteText.trim()}>
+                      {uploading ? 'Matching…' : 'Reconcile'}
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setPasteOpen(false)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {stubResult?.skipped?.length > 0 && (
+                <div className="alert alert-error" style={{ marginBottom: 12, fontSize: '0.8rem' }}>
+                  Couldn't read {stubResult.skipped.length} line(s): {stubResult.skipped.map(l => `"${l}"`).join(', ')}
+                </div>
+              )}
 
               {/* Unrecognized billing names — need mapping */}
               {stubResult?.unmatched?.length > 0 && (

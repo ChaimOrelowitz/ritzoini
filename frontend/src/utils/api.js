@@ -101,6 +101,7 @@ export const api = {
   confirmBulkImport: (groups) => authFetch('/api/bulk-import/confirm', { method: 'POST', body: JSON.stringify({ groups }) }),
 
   // Billing / Pay Stub
+  parseBillingText: (text) => authFetch('/api/billing/parse-text', { method: 'POST', body: JSON.stringify({ text }) }),
   saveBillingMappings: (mappings, entries) => authFetch('/api/billing/save-mappings', { method: 'POST', body: JSON.stringify({ mappings, entries }) }),
 
   // Generic helpers (used by OO / PS sections)
