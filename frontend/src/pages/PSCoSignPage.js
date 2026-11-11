@@ -735,8 +735,9 @@ const SOURCE_ROW = {
 // The clinic letterhead InSync prints at the top and at every page break.
 // Mirrors stripLetterhead in the backend engine, which already keeps it out of
 // what the AI is sent; here it just keeps it out of the rows you read.
-const LETTERHEAD_RE = /(?:\bHeader\s+)?(?:##addendumheader##\s*)?Links\s+Mental\s+Health\s+Center\s*75\s+Montebello\s+R(?:oa)?d\.?,?\s*Suffern,?\s*NY\s*\d{5}(?:-\d{4})?(?:\s*Phone\s*[:-]?\s*[\d() .-]{7,}?\d(?:\s*\|)?\s*Fax\s*[:-]?\s*[\d() .-]{7,}?\d(?!\d))?/gi;
-const stripLetterhead = t => String(t || '').replace(LETTERHEAD_RE, ' ').replace(/##addendumheader##/gi, ' ');
+const LH_NAME = String.raw`(?:Links\s+Mental\s+Health\s+Center|[A-Z][A-Za-z'.-]+,\s*[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]*)?|[A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})`;
+const LETTERHEAD_RE = new RegExp(String.raw`(?:\bHeader\s+)?(?:##addendumheader##\s*)?(?:(?:^|\n)[ \t]*${LH_NAME}[ \t]*\n|Links\s+Mental\s+Health\s+Center\s*)?[ \t]*75\s+Montebello\s+R(?:oa)?d\.?,?\s*Suffern,?\s*NY\s*\d{5}(?:-\d{4})?(?:\s*Phone\s*[:-]?\s*[\d() .-]{7,}?\d(?:\s*\|)?\s*Fax\s*[:-]?\s*[\d() .-]{7,}?\d(?!\d))?`, 'g');
+const stripLetterhead = t => String(t || '').replace(LETTERHEAD_RE, '\n').replace(/##addendumheader##/gi, ' ');
 
 // The note split into rows, in note order. Fields before "Note of Session" are
 // the client/visit header; an unrecognised label stays with the row it follows.

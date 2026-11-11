@@ -653,5 +653,15 @@ test('R4. A letterhead at a page break inside a section is removed from that sec
   assert.ok(!/Montebello/.test(JSON.stringify(p)), 'letterhead reached the payload');
 });
 
+test('R5. The letterhead variant headed by a person\'s name is removed too, and the title kept', () => {
+  for (const name of ['Stern, Abraham', 'Moshe Rubel']) {
+    const p = lhNote(`Note of Session\nPeer Support Individual ; Offsite\n${name}\n`
+      + '75 Montebello Road Suffern, NY 10901-3746 Phone: 844-335-4657 | Fax: 845-525-9300\n'
+      + 'Persons Present: Client\nLocation of Meeting: 52 Francis Place Monsey NY 10952\nFocus of the meeting: Morning routine.');
+    assert.strictEqual(p.other_session_narrative, 'Peer Support Individual ; Offsite', name);
+    assert.ok(!/Montebello/.test(JSON.stringify(p)), name);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

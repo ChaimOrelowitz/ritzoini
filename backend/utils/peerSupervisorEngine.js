@@ -657,11 +657,18 @@ function bigramSimFromMaps(ma, la, mb, lb) {
 // where the session took place. Every section reader strips it first, so it
 // never reaches the review at all. Replaced with a line break, which keeps
 // heading detection on either side of it intact.
+// Two variants seen in real notes: the top line is "Links Mental Health
+// Center", or a person's name ("Stern, Abraham", "Moshe Rubel"). In the
+// line-structured text the top line sits on its own line, so a name is only
+// taken as part of the letterhead when it is the whole line right above the
+// address; a session title like "Peer Support Individual ; Offsite" never is.
+const LH_NAME = String.raw`(?:Links\s+Mental\s+Health\s+Center|[A-Z][A-Za-z'.-]+,\s*[A-Z][A-Za-z'.-]+(?:\s+[A-Z][A-Za-z'.-]*)?|[A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+){1,2})`;
 const LETTERHEAD_RE = new RegExp(
-  '(?:\\bHeader\\s+)?(?:##addendumheader##\\s*)?'
-  + 'Links\\s+Mental\\s+Health\\s+Center\\s*75\\s+Montebello\\s+R(?:oa)?d\\.?,?\\s*Suffern,?\\s*NY\\s*\\d{5}(?:-\\d{4})?'
-  + '(?:\\s*Phone\\s*[:\\-]?\\s*[\\d() .\\-]{7,}?\\d(?:\\s*\\|)?\\s*Fax\\s*[:\\-]?\\s*[\\d() .\\-]{7,}?\\d(?!\\d))?',
-  'gi');
+  String.raw`(?:\bHeader\s+)?(?:##addendumheader##\s*)?`
+  + String.raw`(?:(?:^|\n)[ \t]*${LH_NAME}[ \t]*\n|Links\s+Mental\s+Health\s+Center\s*)?`
+  + String.raw`[ \t]*75\s+Montebello\s+R(?:oa)?d\.?,?\s*Suffern,?\s*NY\s*\d{5}(?:-\d{4})?`
+  + String.raw`(?:\s*Phone\s*[:\-]?\s*[\d() .\-]{7,}?\d(?:\s*\|)?\s*Fax\s*[:\-]?\s*[\d() .\-]{7,}?\d(?!\d))?`,
+  'g');
 function stripLetterhead(text) {
   if (!text) return text || '';
   return String(text).replace(LETTERHEAD_RE, '\n').replace(/##addendumheader##/gi, '\n');
