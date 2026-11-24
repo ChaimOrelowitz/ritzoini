@@ -468,6 +468,7 @@ router.get('/cosign/review-batch', async (req, res) => {
     const stats = await reviewBatch(engine, { size, onProgress: (msg, pct) => send('progress', { msg, pct }) });
     stats.learned = learn.learned;
     stats.tidied  = learn.tidied;
+    if (learn.waiting) stats.learnWaiting = learn.waiting;
     if (learn.error) stats.learnError = learn.error;
     if (learn.tidyError) stats.tidyError = learn.tidyError;
     console.log(`[PS batch] reviewed=${stats.reviewed} aiCalls=${engine.aiCallCount} learned=${learn.learned} remaining=${stats.remaining}`);

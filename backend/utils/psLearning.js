@@ -5,8 +5,9 @@
 // mark follows the button they pressed — Reopen makes it real, Sign makes it fine
 // — and issues the AI missed are recorded as "added".
 //
-// Before each review batch, if there are calls the instructions haven't been
-// updated from, one AI call reads the recorded calls, finds the patterns, and
+// Before each review batch, once at least MIN_FRESH calls have built up that the
+// instructions haven't been updated from, one AI call reads those new calls (plus
+// a small sample of older ones), finds the patterns, and
 // makes targeted edits to the two Settings prompts themselves (main review and
 // off-site). There is no separate rules layer. Lessons are never refused for
 // length. When the instructions have grown ~15% since the last tidy-up, a
@@ -25,7 +26,13 @@ const HISTORY_KEY = 'ps_prompt_history';
 const STATE_KEY   = 'ps_learning_state';
 const HISTORY_MAX = 25;
 const LEARN_MODEL = 'claude-opus-5-5';
-const MAX_ITEMS   = 300;      // calls sent to the learner per step
+// What a learning step sends. Older calls are already reflected in the
+// instructions, so only the new ones go in full, plus a small sample of older
+// explicit calls for context — resending every call ever made grew each request
+// to ~100k tokens and was most of the feature's API spend.
+const MAX_FRESH   = 150;      // new calls sent per step (newest first, explicit first)
+const OLDER_CONTEXT = 30;     // older explicit calls sent alongside, for context
+const MIN_FRESH   = 20;       // wait for this many new calls before learning
 const EXCERPT_MAX = 1200;     // note text kept per call, for context
 const TIDY_GROWTH = 1.15;     // tidy up once the instructions grow this much
 const TIDY_SAMPLE = 20;       // decided notes the tidy-up is tested on
@@ -226,11 +233,12 @@ async function collectFeedback(since = null) {
     if (!data || data.length < PAGE) break;
   }
   items.sort((a, b) => (a.at < b.at ? 1 : -1));
-  // New calls first, then explicit ones, then implicit ones (which only
-  // followed the final button), up to the cap.
-  const rank = i => (i.new ? 0 : 2) + (i.explicit ? 0 : 1);
-  const chosen = [...items].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ITEMS);
-  return { items: chosen, total: items.length, fresh: items.filter(i => i.new).length, latest };
+  // All new calls (explicit before implicit, up to the cap), plus a few of the
+  // newest older explicit calls so the learner sees the standard so far.
+  const freshItems = items.filter(i => i.new);
+  const fresh = [...freshItems.filter(i => i.explicit), ...freshItems.filter(i => !i.explicit)].slice(0, MAX_FRESH);
+  const older = items.filter(i => !i.new && i.explicit).slice(0, OLDER_CONTEXT);
+  return { items: [...fresh, ...older], total: items.length, fresh: freshItems.length, latest };
 }
 
 const LEARN_SYSTEM = `You maintain the instructions an AI reviewer follows when it checks Peer Support progress notes at a mental health center before a supervisor co-signs them. There are two instruction documents: "core" (the main review instructions) and "offsite" (service type, location and off-site rules). You improve them from the supervisor's recorded calls on the reviewer's findings.
@@ -265,6 +273,20 @@ const TIDY_SYSTEM = `You maintain the instructions an AI reviewer follows when i
 
 Respond with ONE JSON object and nothing else: {"core":"full rewritten core document","offsite":"full rewritten offsite document","summary":"one sentence on what was tightened"}`;
 
+// Token usage of one call, for the learning state (these calls aren't stored
+// anywhere else, so this is the only record of what they cost).
+function usageOf(msg) {
+  const u = msg.usage || {};
+  return { model: msg.model || LEARN_MODEL, input_tokens: u.input_tokens || 0, output_tokens: u.output_tokens || 0,
+           cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
+           cache_read_input_tokens: u.cache_read_input_tokens || 0 };
+}
+function addUsage(total, u) {
+  for (const k of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'])
+    total[k] = (total[k] || 0) + (u?.[k] || 0);
+  return total;
+}
+
 function parseModelJson(msg) {
   if (msg.stop_reason === 'refusal') throw new Error('the model declined the request');
   if (msg.stop_reason === 'max_tokens') throw new Error('the response was cut off');
@@ -282,11 +304,14 @@ async function callModel(apiKey, system, content, maxTokens) {
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default',
     thinking: { type: 'adaptive' },
-    output_config: { effort: 'high' },
+    output_config: { effort: 'medium' },
     system,
     messages: [{ role: 'user', content }],
   }).finalMessage();
-  return parseModelJson(msg);
+  const usage = usageOf(msg);
+  console.log(`[PS learn] ${usage.model} in=${usage.input_tokens} out=${usage.output_tokens} `
+    + `cacheW=${usage.cache_creation_input_tokens} cacheR=${usage.cache_read_input_tokens}`);
+  return { data: parseModelJson(msg), usage };
 }
 
 // One learning step: edit the instructions from the calls. Lessons are never
@@ -298,24 +323,27 @@ async function learnEdits(engine, fb) {
     core: texts.core, offsite: texts.offsite,
     calls: fb.items.map(({ at, ...rest }) => rest),
   });
-  const first = await callModel(engine.anthropicKey, LEARN_SYSTEM, content, 32000);
+  const usage = {};
+  const { data: first, usage: u1 } = await callModel(engine.anthropicKey, LEARN_SYSTEM, content, 32000);
+  addUsage(usage, u1);
   let r = applyEdits(texts, first.edits);
   texts = r.texts;
   const applied = [...r.applied];
   let failed = r.failed;
   if (failed.length) {
-    const retry = await callModel(engine.anthropicKey, LEARN_SYSTEM, JSON.stringify({
+    const { data: retry, usage: u2 } = await callModel(engine.anthropicKey, LEARN_SYSTEM, JSON.stringify({
       core: texts.core, offsite: texts.offsite,
       note: 'Your other edits were applied. These could not be placed, for the reason given. '
         + 'Return corrected versions of only these edits, quoting the current text exactly.',
       failed_edits: failed,
     }), 16000);
+    addUsage(usage, u2);
     r = applyEdits(texts, retry.edits);
     texts = r.texts;
     applied.push(...r.applied);
     failed = r.failed;
   }
-  return { texts, applied, failed, summary: String(first.summary || '') };
+  return { texts, applied, failed, summary: String(first.summary || ''), usage };
 }
 
 // Did the reviewer's decision match what the supervisor did with the note?
@@ -339,7 +367,7 @@ async function decidedSample(n) {
 }
 
 // Score one version of the instructions against the supervisor's decisions.
-async function scorePrompts(texts, sample, apiKey, report, label) {
+async function scorePrompts(texts, sample, apiKey, report, label, usage = {}) {
   const { InsyncCoSignEngine } = require('./peerSupervisorEngine');
   const engine = new InsyncCoSignEngine({ anthropicKey: apiKey, coreReviewPrompt: texts.core, offsitePrompt: texts.offsite });
   let ok = 0, done = 0;
@@ -347,6 +375,7 @@ async function scorePrompts(texts, sample, apiKey, report, label) {
     const note = { ...row.note_data, eid: row.eid };
     note.visitDateObj = engine._parseDate(note.visitDatetime);
     const review = await engine.aiReview(note, row.ai_flags.machine || []).catch(() => null);
+    addUsage(usage, review?.usage);
     if (agrees(review, row.ai_flags.human_review.final)) ok++;
     done++;
     report(`Testing the tidied instructions (${label}): ${done} of ${sample.length}...`);
@@ -371,15 +400,18 @@ async function maybeTidy(engine, state, report) {
   if (sample.length < TIDY_MIN_SAMPLE) return { tidied: false, waiting: 'not enough decided notes to test a tidy-up yet' };
 
   report('Tidying up the instructions...');
-  const t = await callModel(engine.anthropicKey, TIDY_SYSTEM, JSON.stringify(texts), 64000);
+  const { data: t, usage: rewriteUsage } = await callModel(engine.anthropicKey, TIDY_SYSTEM, JSON.stringify(texts), 64000);
   if (typeof t.core !== 'string' || typeof t.offsite !== 'string' || !t.core.trim() || !t.offsite.trim())
     throw new Error('tidy-up returned no documents');
   const tidy = { core: t.core.trim(), offsite: t.offsite.trim() };
 
-  const oldScore = await scorePrompts(texts, sample, engine.anthropicKey, report, 'current');
-  const newScore = await scorePrompts(tidy, sample, engine.anthropicKey, report, 'tidied');
+  // The test reviews run on the review model, so their usage is kept apart.
+  const testUsage = {};
+  const oldScore = await scorePrompts(texts, sample, engine.anthropicKey, report, 'current', testUsage);
+  const newScore = await scorePrompts(tidy, sample, engine.anthropicKey, report, 'tidied', testUsage);
   const result = { at: new Date().toISOString(), oldScore, newScore, sample: sample.length,
-                   before_chars: size, after_chars: tidy.core.length + tidy.offsite.length };
+                   before_chars: size, after_chars: tidy.core.length + tidy.offsite.length,
+                   usage: { rewrite: rewriteUsage, test_reviews: testUsage } };
   if (newScore >= oldScore) {
     await writePrompts(texts, tidy, 'tidy-up', `${t.summary || 'Tightened wording'} (matched ${newScore}/${sample.length} vs ${oldScore})`);
     return { tidied: true, result: { ...result, kept: true }, newBaseline: result.after_chars };
@@ -397,7 +429,9 @@ async function maybeLearn(engine, { report = () => {} } = {}) {
   const state = await loadState();
   try {
     const fb = await collectFeedback(state.through || null);
-    if (fb.fresh) {
+    if (fb.fresh && fb.fresh < MIN_FRESH) {
+      out.waiting = `${fb.fresh} new call${fb.fresh === 1 ? '' : 's'}; learning waits for ${MIN_FRESH}`;
+    } else if (fb.fresh) {
       report(`Learning from your ${fb.fresh} new call${fb.fresh === 1 ? '' : 's'}...`);
       const before = { core: engine.coreReviewPrompt, offsite: engine.offsitePrompt };
       if (!state.tidy_baseline_chars) state.tidy_baseline_chars = before.core.length + before.offsite.length;
@@ -410,6 +444,7 @@ async function maybeLearn(engine, { report = () => {} } = {}) {
       }
       state.through = fb.latest;
       state.last_learn = { at: new Date().toISOString(), summary: r.summary, applied: r.applied.length,
+                           calls_sent: fb.items.length, usage: r.usage,
                            failed: r.failed.map(f => ({ reason: f.reason, edit: f.edit })) };
       if (r.failed.length) console.warn(`[PS learn] ${r.failed.length} edit(s) could not be placed`);
       console.log(`[PS learn] ${r.applied.length} edit(s) from ${fb.fresh} new calls: ${r.summary}`);
