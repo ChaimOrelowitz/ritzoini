@@ -9,6 +9,7 @@ const { postSoapNoteToZoho, syncZohoGroups, syncZohoLockStatus } = require('../u
 const { reflectZohoCancellations } = require('./sessions');
 const { alignGroupEndDates } = require('../utils/groupAlignment');
 const { getDeliveryMode } = require('../utils/soapNoteDelivery');
+const { runZohoGroupSync } = require('../utils/zohoGroupPipeline');
 
 function requireCronSecret(req, res, next) {
   const secret = process.env.CRON_SECRET;
@@ -54,13 +55,7 @@ router.post('/process-sessions', requireCronSecret, async (req, res) => {
 // reflection and end-date alignment. Same sequence as the Sync Zoho Groups button.
 router.post('/zoho-sync-groups', requireCronSecret, async (req, res) => {
   try {
-    const result = await syncZohoGroups();
-    try { result.cancellations = await reflectZohoCancellations(); }
-    catch (e) { console.error('[cron] reflect-cancellations failed:', e.message); result.cancellations = { error: e.message }; }
-    // Extend groups Zoho says run longer than the platform has sessions for.
-    try { result.alignment = await alignGroupEndDates({ apply: true }); }
-    catch (e) { console.error('[cron] end-date alignment failed:', e.message); result.alignment = { error: e.message }; }
-    res.json(result);
+    res.json(await runZohoGroupSync());
   } catch (err) {
     console.error('[cron] zoho-sync-groups error:', err.message);
     res.status(500).json({ error: err.message });

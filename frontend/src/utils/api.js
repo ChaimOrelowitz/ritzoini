@@ -78,6 +78,7 @@ export const api = {
   syncZohoGroups:   () => authFetch('/api/config/zoho-sync-groups', { method: 'POST' }),
   getZohoGroups:    () => authFetch('/api/config/zoho-groups'),
   getZohoAlignment: () => authFetch('/api/config/zoho-alignment'),
+  getZohoAutoCreatePreview: () => authFetch('/api/config/zoho-autocreate-preview'),
   getRoster:        () => authFetch('/api/config/zoho-roster'),
   linkZohoInstructor: (zoho_instructor_id, ritzoini_instructor_id) =>
     authFetch('/api/config/zoho-instructor-link', { method: 'POST', body: JSON.stringify({ zoho_instructor_id, ritzoini_instructor_id }) }),

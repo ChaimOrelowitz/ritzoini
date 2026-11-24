@@ -8,6 +8,8 @@ const { alignGroupEndDates } = require('./utils/groupAlignment');
 const { requireAuth } = require('./middleware/auth');
 const supabase = require('./db/supabase');
 const { reflectZohoCancellations } = require('./routes/sessions');
+const { runZohoGroupSync, startZohoGroupSchedule } = require('./utils/zohoGroupPipeline');
+const { autoCreateZohoGroups, autoCreateEnabled } = require('./utils/zohoAutoGroups');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -208,17 +210,22 @@ app.get('/api/config/zoho-groups', requireAuth, async (req, res) => {
 });
 
 // Pull Zoho groups + auto-align to Ritzoini groups by name (admin button).
-// Also reflects Zoho cancellations onto Ritzoini sessions (locked ones skipped).
+// Same sequence the hourly timer runs — see utils/zohoGroupPipeline.js.
 app.post('/api/config/zoho-sync-groups', requireAuth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
   try {
-    const result = await syncZohoGroups();
-    try { result.cancellations = await reflectZohoCancellations(); }
-    catch (e) { console.error('[zoho] reflect-cancellations failed:', e.message); result.cancellations = { error: e.message }; }
-    // Extend groups Zoho says run longer than the platform has sessions for.
-    try { result.alignment = await alignGroupEndDates({ apply: true }); }
-    catch (e) { console.error('[zoho] end-date alignment failed:', e.message); result.alignment = { error: e.message }; }
-    res.json(result);
+    res.json(await runZohoGroupSync());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Dry run of the auto-create step: which new Zoho groups WOULD be added, and
+// why the others are skipped. Read-only.
+app.get('/api/config/zoho-autocreate-preview', requireAuth, async (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  try {
+    res.json({ enabled: autoCreateEnabled(), ...(await autoCreateZohoGroups({ apply: false })) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -231,5 +238,7 @@ app.listen(PORT, async () => {
   // Keeps the CRM session the Chrome extension sent from going idle, and pulls
   // the CRM review queue on a timer (CRM_AUTO=off disables both).
   require('./utils/crmKeepAlive').startCrmKeepAlive();
+  // Hourly Zoho group sync, including auto-creating new groups.
+  startZohoGroupSchedule();
   console.log(`Ritzoini API running on port ${PORT} (email_enabled: ${getEmailEnabled()}, soap_note_delivery: ${getDeliveryMode()})`);
 });

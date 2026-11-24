@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../utils/api';
+import ZohoDiagnostics from '../components/admin/ZohoDiagnostics';
 
 const STATUS_FILTERS = ['active', 'completed', 'archived', 'all'];
 
@@ -53,9 +54,11 @@ export default function ZohoSyncPage() {
   const [error, setError]   = useState('');
   const [msg, setMsg]       = useState('');
 
+  const [preview, setPreview] = useState(null); // auto-create dry run
   const load = useCallback(async () => {
     try { setData(await api.getZohoAlignment()); }
     catch (err) { setError(err.message); }
+    api.getZohoAutoCreatePreview().then(setPreview).catch(() => setPreview(null));
   }, []);
   useEffect(() => { load(); }, [load]);
 
@@ -67,7 +70,10 @@ export default function ZohoSyncPage() {
       const alignMsg = a && a.sessionsAdded
         ? ` · extended ${a.extended.length} group${a.extended.length !== 1 ? 's' : ''} (+${a.sessionsAdded} session${a.sessionsAdded !== 1 ? 's' : ''})`
         : '';
-      setMsg(`Fetched ${r.fetched} Zoho groups · linked ${r.aligned} new · ${r.alreadyLinked} already · ${r.unmatched.length} still unmatched${alignMsg}`);
+      const made = r.autoCreate?.created || [];
+      const createMsg = made.length ? ` · auto-added ${made.length} new group${made.length !== 1 ? 's' : ''}: ${made.map(c => c.name).join(', ')}` : '';
+      setMsg(`Fetched ${r.fetched} Zoho groups · linked ${r.aligned} new · ${r.alreadyLinked} already · ${r.unmatched.length} still unmatched${createMsg}${alignMsg}`);
+      if (r.autoCreate?.errors?.length) setError('Auto-add failed for: ' + r.autoCreate.errors.map(e => `${e.name} (${e.error})`).join('; '));
       await load();
     } catch (err) { setError(err.message); }
     finally { setSyncing(false); }
@@ -109,6 +115,26 @@ export default function ZohoSyncPage() {
         <span style={{ color: '#B4820E' }}><strong>{unusedZoho.length}</strong> Zoho groups not used by any Ritzoini group</span>
       </div>
 
+      {preview && (
+        <div className="card" style={{ padding: '12px 16px', marginBottom: 18, fontSize: '0.84rem' }}>
+          <div style={{ fontWeight: 600, color: 'var(--navy)', marginBottom: 4 }}>
+            Auto-add new groups {preview.enabled ? '· runs every hour' : '· switched off'}
+          </div>
+          <div style={{ color: 'var(--gray-500)', marginBottom: preview.wouldCreate.length || preview.skipped.length ? 8 : 0 }}>
+            New active Zoho groups where you're the therapist are added automatically, assigned to you, with AI notes on.
+            {!preview.wouldCreate.length && ' Nothing new waiting right now.'}
+          </div>
+          {preview.wouldCreate.map(g => (
+            <div key={g.zoho_id} style={{ color: '#12855C' }}>
+              + {g.name} — starts {g.start_date} {g.start_time}, {g.sessions} sessions{!g.instructor_linked && ' (no instructor linked)'}
+            </div>
+          ))}
+          {preview.skipped.map(g => (
+            <div key={g.zoho_id} style={{ color: 'var(--gray-400)' }}>Skipped: {g.name} — {g.reason}</div>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, marginBottom: 18 }}>
         {STATUS_FILTERS.map(s => (
           <button key={s} onClick={() => setStatus(s)}
@@ -140,6 +166,8 @@ export default function ZohoSyncPage() {
             : linked.map(g => <GroupRow key={g.id} group={g} zohoGroups={data.zohoGroups} onLink={onLink} />)}
         </div>
       </section>
+
+      <ZohoDiagnostics />
     </div>
   );
 }
