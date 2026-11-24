@@ -41,6 +41,9 @@ router.get('/', requireAuth, requireAdmin, async (req, res) => {
     const { data, error } = await supabase
       .from('profiles')
       .select('id, first_name, last_name, email, phone, role, email_enabled, ps_payroll_only, ps_cosign, portal_only, created_at')
+      // Staff accounts only — UEZ applicants share the profiles table but
+      // aren't users of this app, so they don't belong on the Users page.
+      .in('role', ['admin', 'supervisor'])
       .order('last_name');
     if (error) throw error;
     res.json(data);
