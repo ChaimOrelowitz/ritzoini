@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requirePayroll } = require('../middleware/auth');
 const P = require('../utils/payroll');
 const { buildPayrollPdf } = require('../utils/payrollPdf');
 const { todayET } = require('../utils/caseloadSync');
@@ -44,7 +44,7 @@ async function reportFor(sup, periodStart) {
 }
 
 // GET /api/ps/payroll/periods — every period from first assignment to today
-router.get('/periods', requireAuth, async (req, res) => {
+router.get('/periods', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup     = req.query.supervisor_id || SUPERVISOR();
     const periods = await periodsFor(sup);
@@ -85,7 +85,7 @@ router.get('/periods', requireAuth, async (req, res) => {
 });
 
 // GET /api/ps/payroll/report?start=YYYY-MM-DD
-router.get('/report', requireAuth, async (req, res) => {
+router.get('/report', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup = req.query.supervisor_id || SUPERVISOR();
     if (!req.query.start) return res.status(400).json({ error: 'start is required' });
@@ -104,7 +104,7 @@ router.get('/report', requireAuth, async (req, res) => {
 });
 
 // POST /api/ps/payroll/finalize { start, replace? } — freeze the period
-router.post('/finalize', requireAuth, async (req, res) => {
+router.post('/finalize', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup   = SUPERVISOR();
     const start = req.body.start;
@@ -153,7 +153,7 @@ router.post('/finalize', requireAuth, async (req, res) => {
 });
 
 // PATCH /api/ps/payroll/snapshots/:id — mark sent / paid
-router.patch('/snapshots/:id', requireAuth, async (req, res) => {
+router.patch('/snapshots/:id', requireAuth, requirePayroll, async (req, res) => {
   try {
     const { paid, sent, paid_note } = req.body;
     const updates = { updated_at: new Date().toISOString() };
@@ -175,7 +175,7 @@ router.patch('/snapshots/:id', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/ps/payroll/snapshots/:id — un-finalize
-router.delete('/snapshots/:id', requireAuth, async (req, res) => {
+router.delete('/snapshots/:id', requireAuth, requirePayroll, async (req, res) => {
   try {
     const { error } = await supabase.from('ps_payroll_snapshots').delete().eq('id', req.params.id);
     if (error) throw new Error(error.message);
@@ -186,7 +186,7 @@ router.delete('/snapshots/:id', requireAuth, async (req, res) => {
 });
 
 // GET /api/ps/payroll/report.pdf?start=YYYY-MM-DD
-router.get('/report.pdf', requireAuth, async (req, res) => {
+router.get('/report.pdf', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup = req.query.supervisor_id || SUPERVISOR();
     if (!req.query.start) return res.status(400).json({ error: 'start is required' });
@@ -217,7 +217,7 @@ router.get('/report.pdf', requireAuth, async (req, res) => {
 });
 
 // GET /api/ps/payroll/report.csv?start=YYYY-MM-DD
-router.get('/report.csv', requireAuth, async (req, res) => {
+router.get('/report.csv', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup = req.query.supervisor_id || SUPERVISOR();
     if (!req.query.start) return res.status(400).json({ error: 'start is required' });
@@ -251,7 +251,7 @@ router.get('/report.csv', requireAuth, async (req, res) => {
 });
 
 // GET /api/ps/payroll/email-text?start=YYYY-MM-DD — copyable text for billing
-router.get('/email-text', requireAuth, async (req, res) => {
+router.get('/email-text', requireAuth, requirePayroll, async (req, res) => {
   try {
     const sup = req.query.supervisor_id || SUPERVISOR();
     if (!req.query.start) return res.status(400).json({ error: 'start is required' });

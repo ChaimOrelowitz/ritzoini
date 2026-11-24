@@ -9,7 +9,7 @@ function fmtLabel(dateStr) {
   return `${MONTHS[parseInt(m)-1]} ${parseInt(d)}, ${y}`;
 }
 
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('pay_periods').select('*').order('start_date', { ascending: false });

@@ -50,6 +50,7 @@ function Tag({ children, bg, fg }) {
 export default function PeerManagementPage() {
   const { profile } = useAuth();
   const payrollOnly = profile?.ps_payroll_only === true;
+  const isAdmin     = profile?.role === 'admin';
   const [tab,        setTab]        = useState('peers');
   const [caseload,   setCaseload]   = useState([]);
   const [history,    setHistory]    = useState([]);
@@ -73,7 +74,7 @@ export default function PeerManagementPage() {
       api.get('/ps/caseload').catch(() => []),
       api.get('/ps/caseload/history').catch(() => []),
       api.get('/ps/caseload/known-peers').catch(() => []),
-      api.get('/ps/payroll/periods').catch(() => []),
+      isAdmin ? api.get('/ps/payroll/periods').catch(() => []) : Promise.resolve([]),
       api.get('/ps/caseload/runs').catch(() => []),
       api.get('/ps/supervision').catch(() => ({ schedule: [], sessions: [] })),
     ]);
@@ -84,7 +85,7 @@ export default function PeerManagementPage() {
     setRuns(Array.isArray(r) ? r : []);
     setSupervision(s && s.schedule ? s : { schedule: [], sessions: [] });
     setLoading(false);
-  }, [payrollOnly]);
+  }, [payrollOnly, isAdmin]);
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { if (payrollOnly) setTab('payroll'); }, [payrollOnly]);
@@ -111,7 +112,8 @@ export default function PeerManagementPage() {
   ] : [
     ['peers',    `Peers (${caseload.length})`],
     ['dates',    `Start / End Dates (${history.length})`],
-    ['payroll',  `Payroll Report (${periods.length})`],
+    // Payroll is owner-only (the API refuses everyone else too).
+    ...(isAdmin ? [['payroll', `Payroll Report (${periods.length})`]] : []),
     ['sessions', `Supervision Sessions`],
   ];
 

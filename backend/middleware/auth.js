@@ -83,4 +83,14 @@ function requireCoSign(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin, requireCoSign };
+// Peer payroll reports: the owner (admin) plus the payroll-only accounts that
+// exist to read them. Payroll-only accounts are already held to GETs by
+// requireAuth's fence, so this grants them nothing beyond reading.
+function requirePayroll(req, res, next) {
+  if (req.user?.role !== 'admin' && req.user?.ps_payroll_only !== true) {
+    return res.status(403).json({ error: 'Payroll access required' });
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireAdmin, requireCoSign, requirePayroll };

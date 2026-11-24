@@ -6,6 +6,25 @@ const { deliverSoapNote } = require('../utils/soapNoteDelivery');
 const { setOccurrenceLock } = require('../utils/zohoCrm');
 const { generateSessionNote } = require('../utils/noteGenerator');
 
+// Payment status (`sessions.paid`) is owner-only. Several routes here return
+// whole session rows (`select('*')`), so rather than trim each select, strip
+// the field from every response for non-admins in one place. req.user is set
+// by requireAuth, which runs per-route before the handler calls res.json.
+router.use((req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body) => {
+    if (req.user?.role === 'admin') return json(body);
+    const strip = (o) => {
+      if (o && typeof o === 'object' && !Array.isArray(o) && 'paid' in o) {
+        const { paid, ...rest } = o; return rest;
+      }
+      return o;
+    };
+    return json(Array.isArray(body) ? body.map(strip) : strip(body));
+  };
+  next();
+});
+
 function addMinutesToTime(timeStr, mins) {
   if (!timeStr) return null;
   const [h, m] = timeStr.slice(0, 5).split(':').map(Number);
