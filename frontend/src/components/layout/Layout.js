@@ -2,15 +2,21 @@ import { useState } from 'react';
 import { Outlet, NavLink, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
+// `dormant` sections are out of use: hidden from the switcher, but their
+// pages, routes and data are left intact for reference. Flip the flag to
+// bring one back.
 const SECTIONS = [
   { key: 'ritzoini',   label: 'Ritzoini' },
-  { key: 'one-on-one', label: 'One-On-One' },
+  { key: 'one-on-one', label: 'One-On-One', dormant: true },
   { key: 'peer-sup',   label: 'Peer Management' },
-  { key: 'portal',     label: 'Portal POC' },
+  { key: 'portal',     label: 'Portal POC', dormant: true },
 ];
 
 function getInitialSection() {
-  return localStorage.getItem('app_section') || 'ritzoini';
+  const saved = localStorage.getItem('app_section');
+  // A section remembered from before it went dormant falls back to Ritzoini.
+  const live = SECTIONS.find(s => s.key === saved && !s.dormant);
+  return live ? live.key : 'ritzoini';
 }
 
 export default function Layout() {
@@ -55,7 +61,7 @@ export default function Layout() {
   const isAdmin = profile?.role === 'admin';
   const canCoSign = isAdmin || profile?.ps_cosign === true;
   const canPortal = isAdmin || profile?.portal_only === true;
-  const visibleSections = SECTIONS.filter(s => s.key !== 'portal' || canPortal);
+  const visibleSections = SECTIONS.filter(s => !s.dormant && (s.key !== 'portal' || canPortal));
 
   const navLinks = {
     ritzoini: (
