@@ -9,6 +9,7 @@ import InstructorsPage from './pages/InstructorsPage';
 import CalendarPage from './pages/CalendarPage';
 import SetPasswordPage from './pages/SetPasswordPage';
 import PaymentsPage from './pages/PaymentsPage';
+import Payments2Page from './pages/Payments2Page';
 import ZohoSyncPage from './pages/ZohoSyncPage';
 import RosterPage from './pages/RosterPage';
 import SessionsPage from './pages/SessionsPage';
@@ -67,6 +68,9 @@ export default function App() {
           } />
           <Route path="payments" element={
             <PrivateRoute adminOnly><PaymentsPage /></PrivateRoute>
+          } />
+          <Route path="payments2" element={
+            <PrivateRoute adminOnly><Payments2Page /></PrivateRoute>
           } />
           {/* Legacy redirect */}
           <Route path="users" element={<Navigate to="/supervisors" replace />} />

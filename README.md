@@ -219,6 +219,50 @@ Generate the credentials with `node backend/scripts/make-contact-credentials.js`
 
 ---
 
+## Payments 2.0
+
+A paydays-first view of what you've been paid and what you're still owed, at
+**Payments 2.0** in the Ritzoini menu (owner only). It sits alongside the
+original Payments page, which is unchanged.
+
+**Why paydays, not pay periods.** The office pays a session only once it's
+billed, signed and locked in eCW by the Tuesday before a payday, so about half
+of all sessions land on a payday whose printed pay period doesn't contain the
+session date. Every payday has two documents that arrive separately, in either
+order: the RTG pay stub (Pay Date, Gross) and the billing office's session list.
+A payday is **complete** when the list × rate equals the stub's gross.
+
+**Setup (once).** Run `backend/db/migrations/2026-11-25_payments2.sql` in the
+Supabase SQL editor. It adds `pay_rates` (seeded with $50 before 2026-06-09,
+$55 from then), `paydays`, `payday_items`, `group_aliases`, and a private
+`payments` storage bucket. Nothing existing is changed.
+
+**Importing.** Click **+ Add stubs or lists** and drop files (a whole folder
+works for the backfill), or paste a list. Accepted: stub PDFs, `.eml` emails
+(list in the body or attached), `.xlsx` and `.pdf` lists. Parsing is
+text-first; Claude reads a PDF only when its text yields nothing. Each list is
+placed on a payday by, in order: a date inside the file (a stub's Pay Date or
+a "Check date" line), then the email subject's date, then the email's sent
+date. Those last two only count when the list total matches a waiting stub;
+otherwise the list is held and you pick the payday. Lock reminders, "missing
+notes" emails, quoted replies and lists already imported are skipped.
+
+**Matching.** Each line is matched to a session on the same date by billing
+name or a learned alias, time (incl. "group time"), and activity words.
+Confident matches link automatically and set the session's `paid` flag; the
+rest wait on the payday's review screen, and a pick you make there is saved as
+an alias for next time.
+
+**Statuses** (derived, never stored): *Paid* · *Owed* (locked, unpaid, 7+ days
+old) · *Needs lock* (posted to Zoho, not locked) · *Probably didn't run* (no
+note, not locked, 7+ days — one click marks it cancelled) · *Duplicate* (the
+same session entered under two groups — counted once). Owed and Needs lock
+only count sessions from 2026-04-01; earlier ones show in the ledger as
+history. Test groups are excluded.
+
+Code: `backend/routes/payments2.js`, `backend/utils/pay2/`,
+`frontend/src/pages/Payments2Page.js`.
+
 ## Need Help?
 
 This codebase is well-structured and developer-friendly. Any React or Node.js developer can pick it up quickly. Key things to share with a developer:
