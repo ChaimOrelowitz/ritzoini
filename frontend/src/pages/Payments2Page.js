@@ -373,7 +373,7 @@ function AddModal({ onClose }) {
       if (held.length) {
         setProgress('Re-checking held lists…');
         for (const h of held) {
-          const r = await api.post('/payments2/import/recheck', { text: h.text, stored: h.stored, dates: h.dates });
+          const r = await api.post('/payments2/import/recheck', { text: h.text, stored: h.stored, dates: h.dates, prose: h.prose });
           if (!r.held) Object.assign(h, { outcome: r.skipped ? 'skipped_dup' : r.ok ? 'list' : 'error', pay_date: r.pay_date, how: r.how,
             auto_matched: r.auto_matched, needs_review: r.needs_review, list_cents: r.list_cents, gross_cents: r.gross_cents, message: r.reason });
           else Object.assign(h, { suggested: r.suggested || h.suggested, how: r.how || h.how });
@@ -436,7 +436,7 @@ function ImportResults({ out, setOut, onDone }) {
 
   async function confirm(h, date) {
     try {
-      const r = await api.post('/payments2/import/resolve', { pay_date: date, text: h.text, stored: h.stored });
+      const r = await api.post('/payments2/import/resolve', { pay_date: date, text: h.text, stored: h.stored, prose: h.prose });
       setOut(o => ({ ...o, results: o.results.map(x => x === h ? { ...x, outcome: r.skipped ? 'error' : 'list', pay_date: date, how: 'date you picked',
         auto_matched: r.auto_matched, needs_review: r.needs_review, list_cents: r.list_cents, message: r.reason } : x) }));
     } catch (e) { alert(e.message); }

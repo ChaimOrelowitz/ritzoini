@@ -49,8 +49,13 @@ async function read(doc) {
       list: r.listText ? { text: r.listText, check_date: r.check_date || stub?.pay_date || null } : null,
     };
   }
-  if (doc.kind === 'xlsx') { const text = P.xlsxToText(doc.buffer); return { list: { text, check_date: P.findCheckDate(text) } }; }
-  if (doc.kind === 'text') return { list: { text: doc.text, check_date: P.findCheckDate(doc.text) } };
+  if (doc.kind === 'xlsx') {
+    const x = P.readXlsx(doc.buffer);
+    if (x.ritzoiniExport) return { ignored: 'a spreadsheet exported from Ritzoini (your own claim), not an office pay list' };
+    return { list: { text: x.text, check_date: P.findCheckDate(x.text) } };
+  }
+  // Email bodies and pasted text: prose lines are dropped when parsing.
+  if (doc.kind === 'text') return { list: { text: doc.text, check_date: P.findCheckDate(doc.text), prose: true } };
   return {};
 }
 
@@ -76,9 +81,10 @@ async function importBatch(files, { text, pay_date } = {}) {
       try {
         const r = await read(doc);
         if (r.stub) { stubs.push({ file: name, doc, stub: r.stub, via: r.via }); gotStub = true; }
+        if (r.ignored) reason = r.ignored;
         if (r.list) {
-          const items = P.parseListText(r.list.text);
-          if (items.length) found.push({ file: name, doc, items, text: r.list.text, check_date: r.list.check_date });
+          const items = P.parseListText(r.list.text, { prose: r.list.prose });
+          if (items.length) found.push({ file: name, doc, items, text: r.list.text, check_date: r.list.check_date, prose: !!r.list.prose });
         }
       } catch (e) {
         results.push({ file: doc.filename !== name ? `${name} → ${doc.filename}` : name, outcome: 'error', message: e.message });
@@ -115,7 +121,7 @@ async function importBatch(files, { text, pay_date } = {}) {
       if (!resolved.pay_date) {
         const stored = upload ? { path: await S.storeFile('pending', upload.filename, upload.buffer, upload.contentType), filename: upload.filename } : null;
         results.push({ file: l.file, kind: 'list', outcome: 'needs_date', lines: l.items.length, list_cents: amount,
-          suggested: resolved.suggested, how: resolved.how, text: l.text, stored,
+          suggested: resolved.suggested, how: resolved.how, text: l.text, stored, prose: l.prose,
           dates: { check_date: l.check_date || null, subject_date: l.doc.subject_date || null, email_date: l.doc.email_date || null },
           first_date: l.items.map(i => i.session_date).sort()[0], last_date: l.items.map(i => i.session_date).sort().pop(),
           preview: l.items.slice(0, 4).map(i => i.raw_line) });
@@ -133,15 +139,15 @@ async function importBatch(files, { text, pay_date } = {}) {
 }
 
 // A list that was held for review: the person picked its payday.
-async function resolveHeld({ pay_date, text, stored }) {
-  const items = P.parseListText(text);
+async function resolveHeld({ pay_date, text, stored, prose }) {
+  const items = P.parseListText(text, { prose });
   return S.attachList({ pay_date, text, items, stored });
 }
 
 // After a batch finishes, a held list may now be certain (its stub arrived in
 // a later batch). Files it if so; otherwise reports it's still held.
-async function recheckHeld({ text, stored, dates }) {
-  const items = P.parseListText(text);
+async function recheckHeld({ text, stored, dates, prose }) {
+  const items = P.parseListText(text, { prose });
   const rates = await D.loadRates();
   const amount = items.reduce((t, i) => t + (D.rateFor(i.session_date, rates) || 0), 0);
   const r = await S.resolveListPayday({ ...(dates || {}), amount_cents: amount });

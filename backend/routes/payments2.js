@@ -36,10 +36,10 @@ router.post('/import', upload.array('files', 400), wrap(req =>
 router.post('/import/resolve', wrap(async req => {
   const pay_date = isoDate(req.body?.pay_date);
   if (!pay_date) throw new Error('pick a payday date');
-  return resolveHeld({ pay_date, text: req.body?.text || '', stored: req.body?.stored || null });
+  return resolveHeld({ pay_date, text: req.body?.text || '', stored: req.body?.stored || null, prose: !!req.body?.prose });
 }));
 
-router.post('/import/recheck', wrap(req => recheckHeld({ text: req.body?.text || '', stored: req.body?.stored || null, dates: req.body?.dates || {} })));
+router.post('/import/recheck', wrap(req => recheckHeld({ text: req.body?.text || '', stored: req.body?.stored || null, dates: req.body?.dates || {}, prose: !!req.body?.prose })));
 
 // ── Paydays ────────────────────────────────────────────────────────────────
 router.get('/paydays/:id', wrap(async req => {

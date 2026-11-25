@@ -48,30 +48,42 @@ function lineTimes(text) {
 const NOT_A_SESSION = /check\s*date|pay\s*date|pay\s*period|period\s*(start|end|begin)|invoice\s*date|hire\s*date|birth|statement|\bytd\b|year\s*to\s*date|^\s*(date|sent|from|to|subject|cc)\s*:/i;
 
 // One "<name> <M/D/YYYY>" line → { raw_line, billing_name_raw, session_date }
-// or null. The date is the LAST date on the line. Handles the run-together
-// form "Sensory Thursday 5:004/16/2026" (time 5:00, date 4/16/2026).
+// or null. The date is the LAST date on the line.
+//
+// Stubs print the time glued to the date: "Sensory Thursday 4:154/16/2026" is
+// 4:15 + 4/16/2026 (minutes are always two digits, so split right after them).
+// A name glued to the date ("Awareness Skills Group10/25/2026") needs no help.
+const GLUED_TIME_DATE = /(\d{1,2}:\d{2})(?=\d{1,2}\/\d{1,2}\/\d{2,4})/g;
+
 function parseLine(rawLine) {
-  const line = String(rawLine || '').replace(/\u00a0/g, ' ').trim();
+  const line = String(rawLine || '').replace(/\u00a0/g, ' ').replace(GLUED_TIME_DATE, '$1 ').trim();
   if (!line || NOT_A_SESSION.test(line) || /^>/.test(line)) return null;
   const all = [...line.matchAll(/(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})(?!\d)/g)];
   if (!all.length) return null;
   const last = all[all.length - 1];
-  let month = last[1];
-  let before = line.slice(0, last.index);
-  // "5:004/16/2026": the regex took "04" as the month; give the "0" back.
-  if (/\d:\d$/.test(before) && month.length === 2 && month[0] === '0') {
-    before += '0'; month = month.slice(1);
-  }
-  const session_date = toIsoDate(month, last[2], last[3]);
+  const session_date = toIsoDate(last[1], last[2], last[3]);
   if (!session_date) return null;
-  const billing_name_raw = before.replace(/[\s,;|\t-]+$/, '').trim();
+  const billing_name_raw = line.slice(0, last.index).replace(/[\s,;|\t-]+$/, '').trim();
   if (!billing_name_raw || /^group\s*name/i.test(billing_name_raw)) return null;
+  // A group name has letters. "491 04/30/2026 (10447)" (account #, pay date,
+  // voucher) and other number-only rows are not sessions.
+  if (!/[a-z]{2}/i.test(billing_name_raw)) return null;
   return { raw_line: line, billing_name_raw, session_date };
 }
 
-function parseListText(text) {
+// Email prose ("Payroll will be processed Tuesday", "Did you receive the
+// 4/2/2026 list?") can contain a date. Real list rows are short "<name> <date>".
+const PROSE = /\b(payroll|payments?|received|processed|will\s+be)\b/i;
+function isProse(line) {
+  const l = String(line || '').trim();
+  return /\?\s*$/.test(l) || PROSE.test(l) || l.split(/\s+/).length > 14;
+}
+
+// opts.prose: drop prose lines first (email bodies and pasted email text).
+function parseListText(text, opts = {}) {
   const items = [];
   for (const l of String(text || '').split(/\r?\n/)) {
+    if (opts.prose && isProse(l)) continue;
     const p = parseLine(l);
     if (p) items.push({ ...p, line_no: items.length + 1 });
   }
@@ -87,6 +99,25 @@ function findCheckDate(text) {
 // ── .xlsx ──────────────────────────────────────────────────────────────────
 // Every row becomes a text line ("cells joined", date cells as M/D/YYYY) and
 // goes through the same line parser, so all list formats share one path.
+//
+// Spreadsheets Ritzoini itself exported (the old Payments export: "Billing
+// Name" + "Internal Name" + "Status"; Payments 2.0's owed export: "Zoho note
+// id" + "Days waiting") are your own claims, not office pay lists.
+function isRitzoiniExportRow(row) {
+  const h = new Set(row.map(c => String(c ?? '').trim().toLowerCase()));
+  return (h.has('billing name') && h.has('internal name') && h.has('status'))
+    || (h.has('zoho note id') && h.has('days waiting'));
+}
+
+function readXlsx(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: true });
+    if (rows.slice(0, 10).some(isRitzoiniExportRow)) return { text: '', ritzoiniExport: true };
+  }
+  return { text: xlsxToText(buffer), ritzoiniExport: false };
+}
+
 function xlsxToText(buffer) {
   const wb = XLSX.read(buffer, { type: 'buffer' });
   const lines = [];
@@ -189,12 +220,22 @@ function parseStubText(text) {
   }
   // Current-period gross: the first amount after "Gross" (YTD comes later on the line).
   const g = /gross(?:\s*pay|\s*earnings|\s*wages)?\s*[:\-]?\s*\$?\s*([\d,]+\.\d{2})/i.exec(t);
-  const h = /(?:total\s*)?hours\s*(?:worked)?\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i.exec(t);
-  // Session lines a stub sometimes carries under "Information & Announcements".
+  // "Hours Paid 10.00" (older stubs: hours = session count).
+  const h = /hours\s*paid\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i.exec(t)
+    || /total\s*hours\s*[:\-]?\s*([\d,]+(?:\.\d+)?)/i.exec(t);
+  // Session lines a stub sometimes carries under "Information & Announcements",
+  // which ends at the "RTG ASSOCIATES" footer (account #, pay date, voucher —
+  // never sessions).
   const info = /information\s*(?:&|and)?\s*announcements?/i.exec(t);
+  let listText = '';
+  if (info) {
+    const rest = t.slice(info.index + info[0].length);
+    const footer = /RTG\s+ASSOCIATES/i.exec(rest);
+    listText = footer ? rest.slice(0, footer.index) : rest;
+  }
   return {
     stub: { pay_date, period_start, period_end, gross_cents: g ? money(g[1]) : null, stub_hours: h ? parseFloat(h[1].replace(/,/g, '')) || null : null },
-    listText: info ? t.slice(info.index + info[0].length) : '',
+    listText,
   };
 }
 
@@ -288,4 +329,4 @@ function kindOf(filename, contentType) {
   return null;
 }
 
-module.exports = { parseLine, parseListText, lineTimes, findCheckDate, xlsxToText, readPdf, readPdfWithClaude, parseStubText, pdfText, subjectDate, readEml, stripQuoted, kindOf, toIsoDate };
+module.exports = { parseLine, parseListText, isProse, readXlsx, isRitzoiniExportRow, lineTimes, findCheckDate, xlsxToText, readPdf, readPdfWithClaude, parseStubText, pdfText, subjectDate, readEml, stripQuoted, kindOf, toIsoDate };
