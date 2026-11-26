@@ -95,6 +95,13 @@ router.get('/items/:id/candidates', wrap(async req => {
   if (!item) throw new Error('line not found');
   return { item, candidates: await S.itemCandidates(item) };
 }));
+router.get('/review', wrap(() => S.reviewQueue()));
+// Set a line aside with a reason ('paid_twice' | 'not_in_ritzoini'), or clear it (reason null).
+router.post('/items/:id/set-aside', wrap(req => {
+  const reason = req.body?.reason ?? null;
+  if (reason !== null && !['paid_twice', 'not_in_ritzoini'].includes(reason)) throw new Error('unknown reason');
+  return S.setAside(req.params.id, reason);
+}));
 router.post('/items/:id/link', wrap(async req => {
   if (!req.body?.session_id) throw new Error('session_id required');
   const r = await S.linkItem(req.params.id, req.body.session_id);

@@ -192,8 +192,15 @@ async function candidatesFor(dates, exceptItemIds = []) {
   const ctx = buildContext(groups, aliases);
   const except = new Set(exceptItemIds);
   const taken = new Map(linked.filter(l => !except.has(l.id)).map(l => [l.session_id, l.id]));
+  // item id -> its payday date, so the review screen can say "already paid on Jul 9"
+  const takenPayday = new Map();
+  if (taken.size) {
+    const [its, pds] = await Promise.all([D.loadItems(), D.loadPaydays()]);
+    const pd = new Map(pds.map(p => [p.id, p.pay_date]));
+    for (const i of its) if (i.session_id) takenPayday.set(i.session_id, pd.get(i.payday_id) || null);
+  }
   const usable = sessions.filter(s => !ctx.groupById.get(s.group_id)?.is_test);
-  return { ctx, usable, taken };
+  return { ctx, usable, taken, takenPayday };
 }
 
 // Auto-link confident matches for the given items.
@@ -250,7 +257,7 @@ async function linkItem(itemId, sessionId) {
 
 // Candidates for one unlinked line (review screen).
 async function itemCandidates(item) {
-  const { ctx, usable, taken } = await candidatesFor([item.session_date], [item.id]);
+  const { ctx, usable, taken, takenPayday } = await candidatesFor([item.session_date], [item.id]);
   const line = { billing_name_raw: item.billing_name_raw, session_date: item.session_date };
   return usable.map(s => {
     const g = ctx.groupById.get(s.group_id);
@@ -259,8 +266,42 @@ async function itemCandidates(item) {
       group: g?.internal_name || g?.group_name, billing_name: g?.billing_name || null,
       time: (s.ecw_time || s.start_time || s.scheduled_time || '').slice(0, 5),
       status: s.status, locked: s.locked, taken: taken.has(s.id),
+      paid_on: taken.has(s.id) ? takenPayday.get(s.id) || null : null,
     };
-  }).sort((a, b) => b.score - a.score);
+  }).filter(c => c.score > -0.25 || c.taken).sort((a, b) => b.score - a.score);
+}
+
+// ── Lines set aside on the review screen ───────────────────────────────────
+// A list line that has no Ritzoini session to link (the office listed a
+// session twice, or it isn't in Ritzoini) can be set aside with a reason so it
+// stops asking. Stored in app_config so no schema change is needed.
+const SET_ASIDE_KEY = 'pay2_set_aside_items';
+async function getSetAside() {
+  const { data } = await supabase.from('app_config').select('value').eq('key', SET_ASIDE_KEY).maybeSingle();
+  try { const v = JSON.parse(data?.value || '{}'); return v && typeof v === 'object' ? v : {}; } catch { return {}; }
+}
+async function setAside(itemId, reason) {
+  const all = await getSetAside();
+  if (reason) all[itemId] = { reason, at: new Date().toISOString() }; else delete all[itemId];
+  const { error } = await supabase.from('app_config').upsert({ key: SET_ASIDE_KEY, value: JSON.stringify(all) }, { onConflict: 'key' });
+  if (error) throw new Error(error.message);
+  return { ok: true };
+}
+
+// Every line still waiting for a pick, with its candidates, in one list.
+async function reviewQueue() {
+  const [{ data: items }, aside, paydays] = await Promise.all([
+    supabase.from('payday_items').select('*').is('session_id', null).order('session_date'),
+    getSetAside(), D.loadPaydays(),
+  ]);
+  const pd = new Map(paydays.map(p => [p.id, p.pay_date]));
+  const out = [];
+  for (const it of items || []) {
+    if (aside[it.id]) continue;
+    out.push({ id: it.id, line: it.billing_name_raw, raw_line: it.raw_line, session_date: it.session_date,
+      amount_cents: it.amount_cents, pay_date: pd.get(it.payday_id) || null, candidates: await itemCandidates(it) });
+  }
+  return out;
 }
 
 // ── Ledger ─────────────────────────────────────────────────────────────────
@@ -336,9 +377,11 @@ async function buildLedger() {
   return { rows, paydays, rates, today };
 }
 
+// The next payday we don't have yet: two weeks after the newest one on file,
+// stepped forward to today or later.
 function nextPayday(paydays, today) {
   if (!paydays.length) return null;
-  let p = paydays[0].pay_date;                    // newest known payday
+  let p = addDays(paydays[0].pay_date, 14);       // paydays are newest-first
   while (p < today) p = addDays(p, 14);
   return p;
 }
@@ -354,8 +397,9 @@ async function summary() {
   for (const i of items) listCents.set(i.payday_id, (listCents.get(i.payday_id) || 0) + (i.amount_cents || 0));
   const itemCount = new Map();
   for (const i of items) itemCount.set(i.payday_id, (itemCount.get(i.payday_id) || 0) + 1);
+  const aside = await getSetAside();
   const unmatchedByPayday = new Map();
-  for (const i of items) if (!i.session_id) unmatchedByPayday.set(i.payday_id, (unmatchedByPayday.get(i.payday_id) || 0) + 1);
+  for (const i of items) if (!i.session_id && !aside[i.id]) unmatchedByPayday.set(i.payday_id, (unmatchedByPayday.get(i.payday_id) || 0) + 1);
 
   const paidThisYear = paydays.filter(p => p.pay_date.startsWith(year))
     .reduce((t, p) => t + (p.gross_cents ?? listCents.get(p.id) ?? 0), 0);
@@ -388,6 +432,9 @@ async function summary() {
       waiting_for_stub: paydayCards.filter(p => p.status === 'list_only'),
       unmatched_lines: paydayCards.filter(p => p.unmatched > 0).map(p => ({ id: p.id, pay_date: p.pay_date, unmatched: p.unmatched })),
       needs_action: count('needs_action'),
+      unmatched_total: [...unmatchedByPayday.values()].reduce((t, n) => t + n, 0),
+      needs_action_rows: rows.filter(r => r.status === 'needs_action').sort((a, b) => a.date.localeCompare(b.date)),
+      not_run_rows: rows.filter(r => r.status === 'not_run').sort((a, b) => a.date.localeCompare(b.date)),
       not_run: count('not_run'),
       duplicates: count('duplicate'),
     },
@@ -407,5 +454,5 @@ async function markCancelled(sessionId) {
 
 module.exports = {
   storeFile, signedUrl, attachStub, attachList, resolveListPayday, recomputePayday, rematchPayday,
-  linkItem, itemCandidates, alreadyImported, buildLedger, summary, markCancelled, getPaydayByDate, OWED_FROM,
+  linkItem, itemCandidates, alreadyImported, reviewQueue, setAside, buildLedger, summary, markCancelled, getPaydayByDate, OWED_FROM,
 };
