@@ -14,6 +14,7 @@ const { requireAuth, requireAdmin } = require('../middleware/auth');
 const S = require('../utils/pay2/service');
 const { importBatch, resolveHeld, recheckHeld } = require('../utils/pay2/importer');
 const { supabase } = require('../utils/pay2/data');
+const ECW = require('../utils/pay2/ecw');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 400 } });
 router.use(requireAuth, requireAdmin);
@@ -40,6 +41,15 @@ router.post('/import/resolve', wrap(async req => {
 }));
 
 router.post('/import/recheck', wrap(req => recheckHeld({ text: req.body?.text || '', stored: req.body?.stored || null, dates: req.body?.dates || {}, prose: !!req.body?.prose })));
+
+// ── eCW encounter export ───────────────────────────────────────────────────
+router.post('/ecw/import', upload.single('file'), wrap(req => {
+  if (!req.file) throw new Error('choose the eCW export file');
+  return ECW.importExport(req.file.buffer, req.file.originalname);
+}));
+router.get('/ecw/sessions', wrap(() => ECW.sessionView()));
+router.get('/ecw/changes', wrap(() => ECW.openChanges()));
+router.post('/ecw/changes/acknowledge', wrap(req => ECW.acknowledge({ ids: req.body?.ids, kind: req.body?.kind })));
 
 // ── Paydays ────────────────────────────────────────────────────────────────
 router.get('/paydays/:id', wrap(async req => {

@@ -260,7 +260,25 @@ same session entered under two groups — counted once). Owed and Needs lock
 only count sessions from 2026-04-01; earlier ones show in the ledger as
 history. Test groups are excluded.
 
-Code: `backend/routes/payments2.js`, `backend/utils/pay2/`,
+**eCW check** (tab). Upload the eCW encounter export (one row per patient per
+group session; CSV or Excel) to see every locked session and whether it was
+paid — eCW, not Ritzoini's Zoho-synced flag, is the source of truth here.
+Setup: run `backend/db/migrations/2026-11-26_ecw_encounters.sql` once (adds
+`ecw_imports`, `ecw_encounters`, `ecw_changes`; nothing existing changes, and
+nothing here writes to `sessions`). Rows are keyed on eCW's encounter id, so
+uploading overlapping exports never counts anything twice; a row that comes
+back different is updated and each differing field is listed under *Changed
+in eCW* until marked seen (blanks filled in and no→yes on locked/billed are
+listed separately as normal updates; rows missing from a later export that
+covers their date are flagged). Encounters roll up to one session per eCW
+group id. A session is expected on the first payday whose payroll run (payday
+− 2 days) is on/after the day it was locked — or billed, when eCW shows a
+re-lock after billing; checked against 408 paid sessions, this predicts 364.
+Each eCW session is paired with the Ritzoini session on the same date within
+45 minutes to read whether it was paid. Flags for the office: a patient billed
+twice in one session, a session entered twice, AM start times that should be PM.
+
+Code: `backend/routes/payments2.js`, `backend/utils/pay2/` (eCW: `ecw.js`),
 `frontend/src/pages/Payments2Page.js`.
 
 ## Need Help?

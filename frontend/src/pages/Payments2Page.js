@@ -70,7 +70,7 @@ export default function Payments2Page() {
       </div>
 
       <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--gray-200)', marginBottom: 22, overflowX: 'auto' }}>
-        {[['overview', 'Overview'], ['paydays', 'Paydays'], ['sessions', 'All sessions'], ['settings', 'Settings']].map(([k, l]) => (
+        {[['overview', 'Overview'], ['paydays', 'Paydays'], ['sessions', 'All sessions'], ['ecw', 'eCW check'], ['settings', 'Settings']].map(([k, l]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: '9px 16px', fontSize: '0.9rem', fontWeight: 700, whiteSpace: 'nowrap',
             color: tab === k ? 'var(--navy)' : 'var(--gray-400)', marginBottom: -1,
@@ -84,6 +84,7 @@ export default function Payments2Page() {
       {tab === 'overview' && (data ? <Overview data={data} reload={load} goPayday={goPayday} goLedger={goLedger} /> : !error && <Spinner />)}
       {tab === 'paydays' && (data ? <Paydays paydays={data.paydays} open={openPayday} setOpen={setOpenPayday} reload={load} /> : <Spinner />)}
       {tab === 'sessions' && <Ledger filter={ledgerFilter} setFilter={setLedgerFilter} onChanged={load} />}
+      {tab === 'ecw' && <EcwCheck />}
       {tab === 'settings' && <Settings paydays={data?.paydays || []} onChanged={load} />}
 
       {showAdd && <AddModal onClose={() => { setShowAdd(false); load(); }} />}
@@ -746,5 +747,257 @@ function Settings({ paydays, onChanged }) {
         </div>
       </section>
     </div>
+  );
+}
+
+// ── eCW check ──────────────────────────────────────────────────────────────
+// Upload the eCW encounter export; see every locked session and whether it
+// was paid. Same rows uploaded twice are counted once; rows that come back
+// different are listed under "Changed in eCW" until you mark them seen.
+const ECW_STATUS = {
+  owed:          { label: 'Should have been paid', bg: '#fef2f2', fg: '#b91c1c' },
+  maybe_paid:    { label: 'Maybe paid as…',        bg: '#f5f3ff', fg: '#6d28d9' },
+  awaiting_list: { label: 'Payday list missing',   bg: '#fffbeb', fg: '#b45309' },
+  unmatched:     { label: 'No Ritzoini session',   bg: '#fffbeb', fg: '#b45309' },
+  due:           { label: 'Due',                   bg: '#eff6ff', fg: '#1d4ed8' },
+  not_billed:    { label: 'Locked, not billed',    bg: '#fffbeb', fg: '#b45309' },
+  not_locked:    { label: 'Not locked in eCW',     bg: '#f3f4f6', fg: '#4b5563' },
+  paid:          { label: 'Paid',                  bg: '#ecfdf5', fg: '#047857' },
+  cancelled:     { label: 'Cancelled',             bg: '#f9fafb', fg: '#9ca3af' },
+  history:       { label: 'Before Apr 2026',       bg: '#f9fafb', fg: '#9ca3af' },
+};
+const ECW_FILTERS = ['all', 'owed', 'maybe_paid', 'awaiting_list', 'unmatched', 'due', 'not_billed', 'not_locked', 'flagged', 'paid', 'cancelled', 'history'];
+const FIELD_LABEL = { locked_at: 'Locked at', signed_at: 'Signed at', billed_at: 'Billed at', locked: 'Locked', signed: 'Signed', billed: 'Billed',
+  visit_status: 'Visit status', claim_number: 'Claim #', claim_voided: 'Claim voided', cpt: 'CPT', start_time: 'Start', end_time: 'End',
+  visit_date: 'Date', group_name: 'Group name', ecw_group_id: 'eCW group id', patient_id: 'Patient id', provider: 'Provider', visit_type: 'Visit type', present: 'In export' };
+
+function EPill({ s }) {
+  const m = ECW_STATUS[s] || { label: s, bg: '#f3f4f6', fg: '#374151' };
+  return <span style={{ background: m.bg, color: m.fg, fontSize: '0.72rem', fontWeight: 700, padding: '3px 9px', borderRadius: 999, whiteSpace: 'nowrap' }}>{m.label}</span>;
+}
+function Flag({ children, tone = '#6d28d9' }) {
+  return <span style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.68rem', fontWeight: 700, color: tone, border: `1px solid ${tone}55`, borderRadius: 6, padding: '1px 6px' }}>{children}</span>;
+}
+const isFlagged = s => s.double_billed || s.entered_twice || s.twin || s.am_typo || s.open_changes || s.missing_from_export || s.paid_late;
+
+function EcwCheck() {
+  const [v, setV] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [q, setQ] = useState('');
+  const fileRef = useRef(null);
+
+  const load = useCallback(async () => {
+    try { setV(await api.get('/payments2/ecw/sessions')); setErr(''); } catch (e) { setErr(e.message); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function upload(file) {
+    if (!file) return;
+    setBusy(true); setResult(null);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      setResult(await api.postForm('/payments2/ecw/import', fd));
+      await load();
+    } catch (e) { setResult({ error: e.message }); }
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  const counts = useMemo(() => {
+    const c = { all: v?.sessions.length || 0, flagged: 0 };
+    (v?.sessions || []).forEach(s => { c[s.status] = (c[s.status] || 0) + 1; if (isFlagged(s)) c.flagged++; });
+    return c;
+  }, [v]);
+  const shown = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return (v?.sessions || []).filter(s => (filter === 'all' || (filter === 'flagged' ? isFlagged(s) : s.status === filter))
+      && (!needle || [s.group, s.ritzoini?.group, dayDate(s.date)].some(x => String(x || '').toLowerCase().includes(needle))));
+  }, [v, filter, q]);
+  const withMonths = useMemo(() => {
+    const out = []; let last = null;
+    for (const s of shown.slice(0, 600)) {
+      const m = toDate(s.date).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      if (m !== last) { out.push({ month: m }); last = m; }
+      out.push(s);
+    }
+    return out;
+  }, [shown]);
+
+  const t = v?.totals || {};
+  const waiting = (t.not_locked?.count || 0) + (t.not_billed?.count || 0);
+
+  return (
+    <div style={{ display: 'grid', gap: 22 }}>
+      <section style={{ ...card, padding: 18 }}>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ fontWeight: 700, color: 'var(--navy)' }}>Upload an eCW export</div>
+            <div style={{ fontSize: '0.84rem', ...muted, marginTop: 2 }}>
+              The encounter CSV from the extension. Upload as often as you like — rows already here are counted once, and anything that comes back different is listed below for you to look at.
+            </div>
+          </div>
+          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={e => upload(e.target.files[0])} />
+          <button className="btn btn-gold" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? 'Reading…' : 'Choose file'}</button>
+        </div>
+        {result && <ImportSummary r={result} />}
+        {v?.imports?.length > 0 && (
+          <div style={{ fontSize: '0.78rem', ...muted, marginTop: 12 }}>
+            Last upload {new Date(v.imports[0].uploaded_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {v.imports[0].filename}
+            {v.covered && <> · eCW data covers {shortDate(v.covered[0])} – {dayDate(v.covered[1])}</>}
+          </div>
+        )}
+      </section>
+
+      {err && <div className="alert alert-error">{err}</div>}
+      {!v && !err && <Spinner />}
+
+      {v && (
+        <>
+          <EcwChanges flags={v.flags} onChanged={load} />
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
+            <div style={{ ...card, padding: 14 }}><Fact label="Should have been paid" value={money(t.owed?.cents)} sub={`${plural(t.owed?.count || 0, 'locked session')} past their payday`} /></div>
+            <div style={{ ...card, padding: 14 }}><Fact label="Maybe paid under another entry" value={plural(t.maybe_paid?.count || 0, 'session')} sub="check and confirm" /></div>
+            <div style={{ ...card, padding: 14 }}><Fact label="Waiting on eCW" value={plural(waiting, 'session')} sub="not locked or not billed yet" /></div>
+            <div style={{ ...card, padding: 14 }}><Fact label="Paid" value={money(t.paid?.cents)} sub={plural(t.paid?.count || 0, 'session')} /></div>
+          </div>
+
+          {(v.flags.double_billed > 0 || v.flags.entered_twice > 0 || v.flags.am_typo > 0) && (
+            <div style={{ ...card, padding: '12px 16px', fontSize: '0.86rem', display: 'grid', gap: 4 }}>
+              <strong style={{ color: 'var(--navy)' }}>For the office</strong>
+              {v.flags.double_billed > 0 && <span>{plural(v.flags.double_billed, 'session')} with the same patient billed twice — possible double billing.</span>}
+              {v.flags.entered_twice > 0 && <span>{plural(v.flags.entered_twice, 'session')} entered twice in eCW (counted once here).</span>}
+              {v.flags.am_typo > 0 && <span>{plural(v.flags.am_typo, 'session')} with an AM start time that should be PM.</span>}
+              <button style={{ ...linkBtn, justifySelf: 'start', marginTop: 2 }} onClick={() => setFilter('flagged')}>Show them</button>
+            </div>
+          )}
+
+          {v.paid_no_ecw.length > 0 && (
+            <details style={{ ...card, padding: '12px 16px' }}>
+              <summary style={{ cursor: 'pointer', fontWeight: 700, color: 'var(--navy)', fontSize: '0.9rem' }}>
+                {plural(v.paid_no_ecw.length, 'payday line')} paid with no eCW session behind it
+              </summary>
+              <div style={{ fontSize: '0.84rem', marginTop: 8, display: 'grid', gap: 4 }}>
+                {v.paid_no_ecw.map(r => (
+                  <div key={r.id}>{dayDate(r.date)} {r.time && fmt12(r.time)} · <Link to={`/groups/${r.group_id}`} style={{ color: 'var(--navy)' }}>{r.group}</Link> · paid {shortDate(r.payday)}
+                    {r.maybe_for && <span style={muted}> — probably eCW {shortDate(r.maybe_for.date)} {fmt12(r.maybe_for.time)} {r.maybe_for.group}</span>}</div>
+                ))}
+              </div>
+            </details>
+          )}
+
+          <div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+              {ECW_FILTERS.filter(f => f === 'all' || counts[f]).map(f => (
+                <button key={f} onClick={() => setFilter(f)} className={`btn btn-sm ${filter === f ? 'btn-primary' : 'btn-outline'}`}>
+                  {f === 'all' ? 'All' : f === 'flagged' ? 'Flagged' : ECW_STATUS[f].label} <span style={{ opacity: 0.6, marginLeft: 4 }}>{counts[f] || 0}</span>
+                </button>
+              ))}
+            </div>
+            <input className="form-input" placeholder="Search by group or date (e.g. “Nov 9”)" value={q} onChange={e => setQ(e.target.value)} style={{ maxWidth: 420, marginBottom: 14 }} />
+            <div style={{ ...card, overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={th}>Session</th><th style={th}>eCW group</th><th style={th}>Status</th><th style={th} className="p2-wide">Ritzoini</th><th style={{ ...th, textAlign: 'right' }}>Amount</th></tr></thead>
+                <tbody>
+                  {withMonths.map((s, i) => s.month
+                    ? <tr key={`m${i}`}><td colSpan={5} style={{ ...td, background: 'var(--gray-50)', fontWeight: 700, color: 'var(--navy)', fontSize: '0.8rem', padding: '7px 14px' }}>{s.month}</td></tr>
+                    : <EcwRow key={s.ecw_group_id} s={s} />)}
+                  {!shown.length && <tr><td colSpan={5} style={{ ...td, textAlign: 'center', color: 'var(--gray-400)', padding: 30 }}>{v.sessions.length ? 'Nothing here.' : 'No eCW data yet — upload an export above.'}</td></tr>}
+                </tbody>
+              </table>
+              {shown.length > 600 && <div style={{ padding: 10, fontSize: '0.8rem', color: 'var(--gray-400)' }}>Showing the newest 600 of {shown.length}. Search or pick a filter to narrow it down.</div>}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function EcwRow({ s }) {
+  let detail = null;
+  if (s.status === 'paid') detail = s.paid_on ? <>on {shortDate(s.paid_on)}{s.paid_late && <span style={{ color: '#b45309' }}> · expected {shortDate(s.expected_payday)}</span>}</> : 'marked paid earlier';
+  else if (s.status === 'owed') detail = <>expected {dayDate(s.expected_payday)} · locked {shortDate(s.ready_date)}</>;
+  else if (s.status === 'awaiting_list') detail = <>expected {dayDate(s.expected_payday)} — that payday's list isn't uploaded</>;
+  else if (s.status === 'due') detail = s.expected_payday ? <>{dayDate(s.expected_payday)}</> : null;
+  else if (s.status === 'maybe_paid') detail = <>{s.maybe_paid_as.group} {s.maybe_paid_as.time && fmt12(s.maybe_paid_as.time)} on {shortDate(s.maybe_paid_as.date)}, paid {shortDate(s.maybe_paid_as.payday)}</>;
+  else if (s.status === 'not_billed' || s.status === 'not_locked') detail = <>{s.locked}/{s.encounters} locked · {s.billed} billed</>;
+  return (
+    <tr>
+      <td style={{ ...td, whiteSpace: 'nowrap' }}>{dayDate(s.date)}{s.time && <span style={{ ...muted, marginLeft: 6 }}>{fmt12(s.time)}</span>}</td>
+      <td style={td}>
+        <span style={{ fontWeight: 600, color: 'var(--navy)' }}>{s.group || '—'}</span>
+        <span style={{ fontSize: '0.74rem', ...muted, marginLeft: 6 }}>{plural(s.attended, 'patient')}</span>
+        {s.double_billed > 0 && <Flag tone="#b91c1c">billed twice</Flag>}
+        {(s.entered_twice > 0 || s.twin) && <Flag>entered twice</Flag>}
+        {s.am_typo && <Flag tone="#b45309">{fmt12(s.time_raw)} in eCW</Flag>}
+        {s.open_changes > 0 && <Flag tone="#b45309">changed in eCW</Flag>}
+        {s.missing_from_export && <Flag tone="#b45309">rows gone from eCW</Flag>}
+      </td>
+      <td style={td}><EPill s={s.status} />{detail && <div style={{ fontSize: '0.74rem', ...muted, marginTop: 3 }}>{detail}</div>}</td>
+      <td style={td} className="p2-wide">{s.ritzoini ? <Link to={`/groups/${s.ritzoini.group_id}`} style={{ color: 'var(--navy)' }}>{s.ritzoini.group}</Link> : <span style={muted}>—</span>}</td>
+      <td style={{ ...td, textAlign: 'right' }}>{money(s.amount_cents)}</td>
+    </tr>
+  );
+}
+
+function ImportSummary({ r }) {
+  if (r.error) return <div className="alert alert-error" style={{ marginTop: 12 }}>{r.error}</div>;
+  const bits = [`${plural(r.new_count, 'new row')}`, `${r.unchanged_count} already here (not counted again)`];
+  if (r.changed_count) bits.push(`${plural(r.changed_count, 'row')} came back different`);
+  if (r.missing_count) bits.push(`${plural(r.missing_count, 'row')} no longer in eCW`);
+  return (
+    <div className="alert alert-success" style={{ marginTop: 12, fontSize: '0.86rem' }}>
+      Read {plural(r.rows, 'encounter')} ({shortDate(r.date_from)} – {dayDate(r.date_to)}): {bits.join(' · ')}.
+      {r.changed_encounters > 0 && <> {plural(r.changed_encounters, 'change')} to look at below.</>}
+      {r.duplicate_rows_in_file > 0 && <> {plural(r.duplicate_rows_in_file, 'repeated row')} in the file counted once{r.in_file_conflicts ? ` (${r.in_file_conflicts} with different values — the first copy was kept)` : ''}.</>}
+      {r.problems?.length > 0 && <div style={{ marginTop: 4 }}>Skipped: {r.problems.join('; ')}</div>}
+    </div>
+  );
+}
+
+function EcwChanges({ flags, onChanged }) {
+  const [list, setList] = useState(null);
+  const [showProgress, setShowProgress] = useState(false);
+  const load = useCallback(async () => { try { setList(await api.get('/payments2/ecw/changes')); } catch { setList([]); } }, []);
+  useEffect(() => { if (flags.open_changes || flags.open_progress) load(); else setList([]); }, [flags.open_changes, flags.open_progress, load]);
+  if (!list || (!flags.open_changes && !flags.open_progress)) return null;
+
+  async function ack(body) {
+    try { await api.post('/payments2/ecw/changes/acknowledge', body); await load(); onChanged(); } catch (e) { alert(e.message); }
+  }
+  const important = list.filter(c => c.kind !== 'filled');
+  const progress = list.filter(c => c.kind === 'filled');
+  const val = (f, x) => (x == null ? <span style={muted}>blank</span> : f === 'start_time' || f === 'end_time' ? fmt12(x) : x);
+  const Row = ({ c }) => (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 16px', borderTop: '1px solid var(--gray-100)', fontSize: '0.84rem', flexWrap: 'wrap' }}>
+      <span style={{ minWidth: 190 }}>{dayDate(c.visit_date)} {c.start_time && fmt12(c.start_time)}<div style={{ fontSize: '0.74rem', ...muted }}>{c.group} · patient {c.patient_id}</div></span>
+      <span style={{ flex: 1 }}><strong>{FIELD_LABEL[c.field] || c.field}:</strong> {val(c.field, c.old_value)} → {val(c.field, c.new_value)}</span>
+      <button className="btn btn-outline btn-xs" onClick={() => ack({ ids: [c.id] })}>Seen</button>
+    </div>
+  );
+  return (
+    <section style={card}>
+      {important.length > 0 && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: 10 }}>
+            <strong style={{ flex: 1, color: '#b45309' }}>Changed in eCW since an earlier upload · {important.length}</strong>
+            <button className="btn btn-outline btn-xs" onClick={() => ack({ ids: important.map(c => c.id) })}>Mark all seen</button>
+          </div>
+          {important.slice(0, 200).map(c => <Row key={c.id} c={c} />)}
+        </>
+      )}
+      {progress.length > 0 && (
+        <div style={{ padding: '10px 16px', borderTop: important.length ? '1px solid var(--gray-200)' : 'none', fontSize: '0.84rem', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ flex: 1, ...muted }}>{plural(progress.length, 'normal update')} — blanks filled in, sessions locked or billed since the last upload.</span>
+          <button style={linkBtn} onClick={() => setShowProgress(x => !x)}>{showProgress ? 'Hide' : 'Show'}</button>
+          <button className="btn btn-outline btn-xs" onClick={() => ack({ kind: 'filled' })}>Mark seen</button>
+        </div>
+      )}
+      {showProgress && progress.slice(0, 300).map(c => <Row key={c.id} c={c} />)}
+    </section>
   );
 }
