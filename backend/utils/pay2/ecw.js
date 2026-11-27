@@ -302,6 +302,10 @@ function rollup(encs) {
   // Checked in (the office has put the note in eCW) but not locked — waiting on you to lock.
   const toLock = use.filter(e => !e.locked && e.visit_status && !['CANC', 'PEN'].includes(e.visit_status) && !/^CANC|^N\/S|^R\/S/.test(e.visit_status));
   const pendingCheckin = use.filter(e => !e.locked && e.visit_status === 'PEN');
+  // Times for the session log (eCW side). Locked = when the last visit was signed;
+  // billed = the first claim.
+  const lockTimes = attended.filter(e => e.locked && e.locked_at).map(e => e.locked_at).sort();
+  const billTimes = payable.map(e => e.billed_at).filter(Boolean).sort();
   // Locked on = the lock date, or the billed date when eCW shows a re-lock
   // after billing (locked_at is the latest lock). Shown for reference only.
   const readyDates = payable.map(e => {
@@ -319,6 +323,9 @@ function rollup(encs) {
     group: cleanName(first.group_name), encounters: use.length, patients: byPatient.size || use.length,
     attended: attended.length, locked: use.filter(e => e.locked).length, billed: payable.length,
     to_lock: toLock.length, pending_checkin: pendingCheckin.length,
+    ecw_locked_at: attended.length && lockTimes.length === attended.filter(e => e.locked).length && !toLock.length && !pendingCheckin.length ? lockTimes[lockTimes.length - 1] : null,
+    ecw_billed_at: billTimes[0] || null,
+    _encs: use.map(e => ({ id: e.encounter_id, first_seen_at: e.first_seen_at, status: e.visit_status, locked: e.locked, locked_at: e.locked_at })),
     all_cancelled: !attended.length, ready_date: readyDates[0] || null,
     double_billed: doubleBilled, entered_twice: repeats.length - doubleBilled,
     am_typo: !!(times[0] && times[0] < '08:00'), missing_from_export: live.length < encs.length,
@@ -370,12 +377,58 @@ async function sessionView() {
     S.buildLedger(),
     D.all(() => supabase.from('ecw_changes').select('encounter_id, kind').is('acknowledged_at', null).order('id')),
   ]).catch(e => { throw friendly(e); });
-  const view = computeView(encs, ledgerData, openChanges);
+  // PEN → checked in, as seen between two pulls: when the office moved the note into eCW.
+  const checkins = await D.all(() => supabase.from('ecw_changes').select('encounter_id, detected_at, import_id')
+    .eq('field', 'visit_status').eq('old_value', 'PEN').order('id')).catch(() => []);
+  const view = computeView(encs, ledgerData, openChanges, checkins);
   const { data: imports } = await supabase.from('ecw_imports').select('*').order('uploaded_at', { ascending: false }).limit(20);
   return { ...view, imports: imports || [] };
 }
 
-function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges) {
+const hours = (a, b) => (a && b ? Math.round((Date.parse(String(b).replace(' ', 'T')) - Date.parse(String(a).replace(' ', 'T'))) / 36e5 * 10) / 10 : null);
+// eCW times are New York local ('YYYY-MM-DD HH:MM'); app times are UTC ISO.
+const nyOffset = (date) => {
+  const d = new Date(`${date}T12:00:00Z`);
+  const ny = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const off = Math.round((ny - new Date(d.toLocaleString('en-US', { timeZone: 'UTC' }))) / 36e5);
+  return `${off < 0 ? '-' : '+'}${pad(Math.abs(off))}:00`;
+};
+const nyIso = (date, time) => new Date(`${date}T${time}:00${nyOffset(date)}`).toISOString();
+const ecwIso = t => (t ? nyIso(String(t).slice(0, 10), String(t).slice(11, 16) || '00:00') : null);
+
+// One session's log. checkin: { at, how } — 'seen' when we watched it go PEN →
+// checked in between pulls; 'by' when it first appeared already checked in but
+// still unlocked (so it happened before that pull); null when we can't tell
+// (it was already locked the first time we saw it).
+function timeline(s, r, checkinByEnc) {
+  const sessionStart = s.time ? nyIso(s.date, s.time) : null;
+  const seen = s._encs.map(e => checkinByEnc.get(e.id)).filter(Boolean).sort();
+  let checkin = null;
+  if (seen.length) checkin = { at: seen[0], how: 'seen' };
+  else {
+    const firstOpen = s._encs.filter(e => e.status && e.status !== 'PEN' && e.status !== 'CANC' && (!e.locked || (e.locked_at && ecwIso(e.locked_at) > e.first_seen_at)))
+      .map(e => e.first_seen_at).sort()[0];
+    if (firstOpen) checkin = { at: firstOpen, how: 'by' };
+  }
+  const note = r?.zoho_posted_at || null;
+  const flagged = r?.ready_to_lock_at || null;
+  const locked = ecwIso(s.ecw_locked_at);
+  const marked = r?.locked && r?.locked_at ? r.locked_at : null;
+  const billed = ecwIso(s.ecw_billed_at);
+  return {
+    session_start: sessionStart, note_sent: note, in_ecw: checkin?.at || null, in_ecw_how: checkin?.how || null,
+    flagged, ecw_locked: locked, marked_locked: marked, billed, paid_on: s.paid_on || null,
+    h: {                                            // hours between steps; owner in the key
+      you_note: hours(sessionStart, note), office_transfer: checkin ? hours(note, checkin.at) : null,
+      office_flag: checkin ? hours(checkin.at, flagged) : null, office_flag_from_note: hours(note, flagged),
+      you_lock: hours(flagged, locked), you_mark: hours(locked, marked), office_bill: hours(locked, billed),
+    },
+  };
+}
+
+function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges, checkins = []) {
+  const checkinByEnc = new Map();
+  for (const c of checkins) if (!checkinByEnc.has(c.encounter_id)) checkinByEnc.set(c.encounter_id, c.detected_at);
   const groups = new Map();
   for (const e of encs) (groups.get(e.ecw_group_id) || groups.set(e.ecw_group_id, []).get(e.ecw_group_id)).push(e);
   const sessions = [...groups.values()].map(rollup);
@@ -404,6 +457,8 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
     s.amount_cents = rateFor(s.date, rates);
     s.twin = (twinCount.get(twinKey(s)) || 0) > 1;
     s.open_changes = s.encounter_ids.reduce((t, id) => t + (changedEnc.get(id) || 0), 0);
+    s.log = timeline(s, r, checkinByEnc);
+    delete s._encs;
     delete s.encounter_ids;
 
     let st;
@@ -448,11 +503,18 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
     h.s.maybe_paid_as = h.r; h.s.status = 'maybe_paid'; h.r.maybe_for = { date: h.s.date, time: h.s.time, group: h.s.group };
   }
 
+  const median = xs => { const v = xs.filter(x => x != null && x >= 0).sort((a, b) => a - b); return v.length ? v[Math.floor(v.length / 2)] : null; };
+  // Medians over the last 8 weeks — older timestamps include bulk backfills.
+  const recent = sessions.filter(s => s.date >= addDays(today, -56) && !s.all_cancelled);
+  const stepStats = ['you_note', 'office_transfer', 'office_flag', 'office_flag_from_note', 'you_lock', 'you_mark', 'office_bill']
+    .map(k => ({ key: k, median_h: median(recent.map(s => s.log.h[k])), n: recent.filter(s => s.log.h[k] != null && s.log.h[k] >= 0).length }));
+
   const sum = st => sessions.filter(s => s.status === st);
   const total = list => list.reduce((t, s) => t + (s.amount_cents || 0), 0);
   return {
     today, covered, sessions, paid_no_ecw: paidNoEcw,
     missing_reports: covered ? missingReports(paydays, covered[0], today) : [],
+    step_stats: stepStats,
     totals: Object.fromEntries(['unpaid', 'maybe_paid', 'to_lock', 'not_checked_in', 'not_billed', 'not_locked', 'unmatched', 'paid', 'cancelled', 'history']
       .map(st => [st, { count: sum(st).length, cents: total(sum(st)) }])),
     flags: {

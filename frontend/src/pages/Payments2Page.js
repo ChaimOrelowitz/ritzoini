@@ -945,6 +945,8 @@ function EcwCheck() {
         <>
           <LockPanel sessions={v.sessions} />
 
+          <TimingStrip stats={v.step_stats} />
+
           <EcwChanges flags={v.flags} onChanged={load} />
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
@@ -1009,6 +1011,7 @@ function EcwCheck() {
 }
 
 function EcwRow({ s }) {
+  const [open, setOpen] = useState(false);
   let detail = null;
   if (s.status === 'paid') detail = s.paid_on ? <>on {shortDate(s.paid_on)}</> : 'marked paid earlier (no pay report on file)';
   else if (s.status === 'unpaid') detail = <>locked {shortDate(s.ready_date)} · {plural(s.days_since_lock, 'day')} ago · on no pay report</>;
@@ -1017,8 +1020,9 @@ function EcwRow({ s }) {
   else if (s.status === 'to_lock') detail = <>{s.to_lock} visit{s.to_lock === 1 ? '' : 's'} to lock{s.office_flagged ? '' : <span style={{ color: '#b91c1c' }}> · office never flagged it in Zoho</span>}</>;
   else if (s.status === 'not_checked_in') detail = <>{s.ritzoini?.note_sent ? 'note sent · ' : ''}waiting on the office to check it in</>;
   return (
-    <tr>
-      <td style={{ ...td, whiteSpace: 'nowrap' }}>{dayDate(s.date)}{s.time && <span style={{ ...muted, marginLeft: 6 }}>{fmt12(s.time)}</span>}</td>
+    <>
+    <tr onClick={() => setOpen(o => !o)} style={{ cursor: 'pointer', background: open ? 'var(--gray-50)' : undefined }}>
+      <td style={{ ...td, whiteSpace: 'nowrap' }}><span style={{ color: 'var(--gray-400)', fontSize: '0.65rem', marginRight: 6 }}>{open ? '▼' : '▶'}</span>{dayDate(s.date)}{s.time && <span style={{ ...muted, marginLeft: 6 }}>{fmt12(s.time)}</span>}</td>
       <td style={td}>
         <span style={{ fontWeight: 600, color: 'var(--navy)' }}>{s.group || '—'}</span>
         <span style={{ fontSize: '0.74rem', ...muted, marginLeft: 6 }}>{plural(s.attended, 'patient')}</span>
@@ -1032,6 +1036,67 @@ function EcwRow({ s }) {
       <td style={td} className="p2-wide">{s.ritzoini ? <Link to={`/groups/${s.ritzoini.group_id}`} style={{ color: 'var(--navy)' }}>{s.ritzoini.group}</Link> : <span style={muted}>—</span>}</td>
       <td style={{ ...td, textAlign: 'right' }}>{money(s.amount_cents)}</td>
     </tr>
+    {open && <tr><td colSpan={5} style={{ ...td, background: 'var(--gray-50)', padding: '6px 14px 14px 34px' }}><SessionLog log={s.log} /></td></tr>}
+    </>
+  );
+}
+
+// ── session log: each step, when it happened, and how long it took ─────────
+const ago = h => (h == null ? '' : h < 0 ? 'before' : h < 1 ? `${Math.round(h * 60)} min` : h < 48 ? `${Math.round(h)} h` : `${Math.round(h / 24 * 10) / 10} days`);
+const stamp = iso => (iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null);
+const STEP_LABEL = {
+  you_note: ['You', 'note sent (session start → sent)'],
+  office_transfer: ['Office', 'note moved into eCW (sent → checked in)'],
+  office_flag: ['Office', 'flagged ready to lock (in eCW → flagged)'],
+  office_flag_from_note: ['Office', 'flagged ready to lock (note sent → flagged)'],
+  you_lock: ['You', 'locked in eCW (flagged → locked)'],
+  you_mark: ['You', 'marked locked in Ritzoini (eCW lock → marked)'],
+  office_bill: ['Office', 'billed (locked → billed)'],
+};
+
+function SessionLog({ log }) {
+  if (!log) return null;
+  const steps = [
+    ['Session started', log.session_start, null, null],
+    ['Note sent by you → received by Zoho', log.note_sent, log.h.you_note, 'You'],
+    [log.in_ecw_how === 'by' ? 'Note in eCW (checked in) — first seen' : 'Note moved into eCW (checked in)', log.in_ecw, log.h.office_transfer, 'Office'],
+    ['Reported ready to lock (Zoho)', log.flagged, log.in_ecw ? log.h.office_flag : log.h.office_flag_from_note, 'Office'],
+    ['Locked in eCW', log.ecw_locked, log.h.you_lock, 'You'],
+    ['Marked locked in Ritzoini', log.marked_locked, log.h.you_mark, 'You'],
+    ['Billed', log.billed, log.h.office_bill, 'Office'],
+    ['On a pay report', log.paid_on ? `${log.paid_on}T12:00:00` : null, null, 'Payroll'],
+  ];
+  return (
+    <div style={{ display: 'grid', gap: 3, fontSize: '0.8rem' }}>
+      {steps.map(([label, at, h, who], i) => (
+        <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+          <span style={{ width: 14, color: at ? '#047857' : 'var(--gray-300)' }}>{at ? '●' : '○'}</span>
+          <span style={{ minWidth: 260, color: at ? 'var(--gray-700)' : 'var(--gray-400)' }}>{label}</span>
+          <span style={{ minWidth: 130 }}>{at ? (label === 'On a pay report' ? dayDate(log.paid_on) : stamp(at)) : label.startsWith('Note moved') || label.startsWith('Note in eCW') ? <span style={muted}>not seen yet</span> : '—'}</span>
+          {h != null && <span style={muted}>{who} · {ago(h)}{h < 0 ? '' : ' after the step before'}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TimingStrip({ stats }) {
+  if (!stats?.length) return null;
+  const show = stats.filter(x => x.n > 0 && x.key !== (stats.find(y => y.key === 'office_flag')?.n ? 'office_flag_from_note' : 'office_flag'));
+  return (
+    <section style={{ ...card, padding: '12px 16px' }}>
+      <div style={{ fontWeight: 700, color: 'var(--navy)', marginBottom: 6 }}>How long each step takes <span style={{ fontWeight: 400, fontSize: '0.8rem', ...muted }}>· median, last 8 weeks · click any session below for its log</span></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 10 }}>
+        {show.map(x => (
+          <div key={x.key}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em', color: STEP_LABEL[x.key][0] === 'Office' ? '#b45309' : 'var(--navy)' }}>{STEP_LABEL[x.key][0]}</div>
+            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--navy)' }}>{ago(x.median_h)}</div>
+            <div style={{ fontSize: '0.74rem', ...muted }}>{STEP_LABEL[x.key][1]} · {x.n} sessions</div>
+          </div>
+        ))}
+      </div>
+      {!stats.find(x => x.key === 'office_transfer')?.n && <div style={{ fontSize: '0.76rem', ...muted, marginTop: 6 }}>When the office moves a note into eCW isn't timed yet — it fills in as the extension's hourly pulls catch sessions going from pending to checked in.</div>}
+    </section>
   );
 }
 

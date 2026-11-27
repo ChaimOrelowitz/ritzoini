@@ -336,7 +336,7 @@ async function buildLedger() {
       id: s.id, date, group_id: g.id,
       group: g.internal_name || g.group_name, group_name: g.group_name, billing_name: g.billing_name || null,
       time: (s.ecw_time || s.start_time || s.scheduled_time || '').slice(0, 5) || null,
-      session_status: s.status, locked: !!s.locked, locked_at: s.locked_at,
+      session_status: s.status, locked: !!s.locked, locked_at: s.locked_at, zoho_posted_at: s.zoho_posted_at || null,
       zoho_posted: !!(s.zoho_posted || s.zoho_note_id), zoho_note_id: s.zoho_note_id,
       ready_to_lock: !!s.ready_to_lock, ready_to_lock_at: s.ready_to_lock_at || null,
       paid, paid_legacy_only: paid && !item,
