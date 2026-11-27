@@ -421,7 +421,17 @@ function DocSlot({ kind, sl, reload }) {
   const has = kind === 'stub' ? sl.has_stub : sl.has_list;
   const title = kind === 'stub' ? 'Pay stub' : 'Session list';
   async function openFile() {
-    try { const { url } = await api.get(`/payments2/paydays/${sl.payday_id}/file/${kind}`); window.open(url, '_blank', 'noopener'); }
+    try {
+      const { url, text } = await api.get(`/payments2/paydays/${sl.payday_id}/file/${kind}`);
+      if (url) return window.open(url, '_blank', 'noopener');
+      const w = window.open('', '_blank');
+      if (!w) return alert(text);
+      w.document.title = `Session list — ${sl.pay_date}`;
+      const pre = w.document.createElement('pre');
+      pre.style.cssText = 'font: 14px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; padding: 20px;';
+      pre.textContent = text;
+      w.document.body.appendChild(pre);
+    }
     catch (e) { alert(e.message); }
   }
   async function send(fileList) {

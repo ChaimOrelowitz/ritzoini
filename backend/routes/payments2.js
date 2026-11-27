@@ -111,8 +111,10 @@ router.delete('/paydays/:id', wrap(async req => {
 router.post('/paydays/:id/rematch', wrap(req => S.rematchPayday(req.params.id)));
 
 router.get('/paydays/:id/file/:which', wrap(async req => {
-  const { data: p } = await supabase.from('paydays').select('stub_file, list_file').eq('id', req.params.id).single();
+  const { data: p } = await supabase.from('paydays').select('stub_file, list_file, list_raw').eq('id', req.params.id).single();
   const path = req.params.which === 'stub' ? p?.stub_file : p?.list_file;
+  // A list that came in as email or pasted text has no file — show its text.
+  if (!path && req.params.which === 'list' && p?.list_raw) return { text: p.list_raw };
   if (!path) throw new Error('no file stored');
   return { url: await S.signedUrl(path) };
 }));
