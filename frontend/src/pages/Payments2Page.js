@@ -1014,7 +1014,11 @@ function EcwRow({ s }) {
   const [open, setOpen] = useState(false);
   let detail = null;
   if (s.status === 'paid') detail = s.paid_on ? <>on {shortDate(s.paid_on)}</> : 'marked paid earlier (no pay report on file)';
-  else if (s.status === 'unpaid') detail = <>locked {shortDate(s.ready_date)} · {plural(s.days_since_lock, 'day')} ago · on no pay report</>;
+  else if (s.status === 'unpaid') {
+    const billed = s.ecw_billed_at ? s.ecw_billed_at.slice(0, 10) : null;
+    const days = billed ? Math.round((Date.now() - toDate(billed).getTime()) / 864e5) : null;
+    detail = <>eCW locked ✓ · {billed ? <>billed {shortDate(billed)} · {plural(days, 'day')} ago</> : 'billed (no date)'} · on no pay report</>;
+  }
   else if (s.status === 'maybe_paid') detail = <>{s.maybe_paid_as.group} {s.maybe_paid_as.time && fmt12(s.maybe_paid_as.time)} on {shortDate(s.maybe_paid_as.date)}, paid {shortDate(s.maybe_paid_as.payday)}</>;
   else if (s.status === 'not_billed' || s.status === 'not_locked') detail = <>{s.locked}/{s.encounters} locked · {s.billed} billed</>;
   else if (s.status === 'to_lock') detail = <>{s.to_lock} visit{s.to_lock === 1 ? '' : 's'} to lock{s.office_flagged ? '' : <span style={{ color: '#b91c1c' }}> · office never flagged it in Zoho</span>}</>;
