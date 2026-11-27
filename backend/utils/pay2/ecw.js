@@ -258,31 +258,39 @@ const fixedTime = t => (t && t < '08:00' ? `${pad(Number(t.slice(0, 2)) + 12)}${
 // what's on file: a stub, a session list, or both missing.
 // This only finds gaps in the paperwork — it never decides which payday a
 // session belongs on; the reports do that.
-function missingReports(paydays, fromDate, today) {
+// Every payday slot from fromDate through today (+ the next one), each with
+// what's on file. Slots skipped by the office (a stub's printed period already
+// covers them) are left out.
+function paydaySlots(paydays, fromDate, today) {
   const actual = paydays.slice().sort((a, b) => a.pay_date.localeCompare(b.pay_date));
   const anchor = actual.map(p => p.pay_date).filter(d => new Date(d + 'T12:00:00Z').getUTCDay() === 4).pop();
-  if (!anchor || !fromDate) return [];
+  if (!anchor) return [];
+  const from = fromDate && fromDate < actual[0].pay_date ? fromDate : actual[0].pay_date;
   const out = [];
-  let k = Math.floor(daysBetween(anchor, fromDate) / 14);
+  let k = Math.floor(daysBetween(anchor, from) / 14);
   for (;; k++) {
     const thu = addDays(anchor, 14 * k);
-    if (thu > today) break;
-    if (addDays(thu, -3) < fromDate) continue;          // period ends before our first session
+    if (thu > addDays(today, 14)) break;
+    if (addDays(thu, -3) < from) continue;
     const p = actual.find(x => Math.abs(daysBetween(thu, x.pay_date)) <= 3);
-    // A stub whose printed period already spans this slot's period means the
-    // office skipped this payday (3/19/2026 covered four weeks), not that a report is missing.
     if (!p && actual.some(x => x.period_start && x.period_end && x.period_start <= addDays(thu, -16) && x.period_end >= addDays(thu, -3))) continue;
-    const pay_date = p?.pay_date || thu;
     const has_stub = p?.gross_cents != null, has_list = p?.list_raw != null;
-    if (has_stub && has_list) continue;
     out.push({
-      pay_date, on_file: !!p, has_stub, has_list,
+      pay_date: p?.pay_date || thu, payday_id: p?.id || null, future: thu > today, has_stub, has_list,
       period_start: p?.period_start || addDays(thu, -16), period_end: p?.period_end || addDays(thu, -3),
-      missing: !p ? 'stub and session list' : !has_stub ? 'pay stub' : 'session list',
+      missing: has_stub && has_list ? null : !p ? 'stub and session list' : !has_stub ? 'pay stub' : 'session list',
       gross_cents: p?.gross_cents ?? null, stub_sessions: p?.stub_hours ?? null,
     });
   }
   return out;
+}
+// Pay reports we should have but don't — what to ask the office for.
+const missingReports = (paydays, fromDate, today) => paydaySlots(paydays, fromDate, today).filter(x => x.missing && !x.future && x.pay_date >= addDays(fromDate, 3));
+
+// Earliest eCW session on file (null before the eCW tables exist).
+async function firstEcwDate() {
+  const { data, error } = await supabase.from('ecw_encounters').select('visit_date').order('visit_date').limit(1);
+  return error ? null : (data?.[0]?.visit_date ? String(data[0].visit_date).slice(0, 10) : null);
 }
 
 function rollup(encs) {
@@ -462,4 +470,4 @@ async function acknowledge({ ids, kind }) {
   return { ok: true };
 }
 
-module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, _test: { keepStored, computeView, diff, kindOf, missingReports, rollup, normDate, normTime, normTs } };
+module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, paydaySlots, firstEcwDate, _test: { keepStored, computeView, diff, kindOf, missingReports, rollup, normDate, normTime, normTs } };

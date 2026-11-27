@@ -418,8 +418,13 @@ async function summary() {
   }));
 
   const count = st => rows.filter(r => r.status === st).length;
+  // Every payday slot (including ones with nothing on file) for the Paydays tab.
+  const E = require('./ecw');
+  const byId = new Map(paydayCards.map(p => [p.id, p]));
+  const slots = E.paydaySlots(paydays, await E.firstEcwDate(), today)
+    .map(sl => ({ ...sl, card: sl.payday_id ? byId.get(sl.payday_id) : null })).reverse();
   return {
-    today,
+    today, slots,
     cards: {
       owed_cents: sum(owed), owed_count: owed.length, owed_oldest: owed[0]?.date || null,
       paid_this_year_cents: paidThisYear, year,

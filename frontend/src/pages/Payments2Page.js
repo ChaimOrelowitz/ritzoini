@@ -82,7 +82,7 @@ export default function Payments2Page() {
       {error && <div className="alert alert-error">{error}</div>}
 
       {tab === 'overview' && (data ? <Overview data={data} reload={load} goPayday={goPayday} goLedger={goLedger} /> : !error && <Spinner />)}
-      {tab === 'paydays' && (data ? <Paydays paydays={data.paydays} open={openPayday} setOpen={setOpenPayday} reload={load} /> : <Spinner />)}
+      {tab === 'paydays' && (data ? <Paydays slots={data.slots} paydays={data.paydays} open={openPayday} setOpen={setOpenPayday} reload={load} /> : <Spinner />)}
       {tab === 'sessions' && <Ledger filter={ledgerFilter} setFilter={setLedgerFilter} onChanged={load} />}
       {tab === 'ecw' && <EcwCheck />}
       {tab === 'settings' && <Settings paydays={data?.paydays || []} onChanged={load} />}
@@ -362,30 +362,104 @@ function ReviewItem({ item, onDone }) {
 }
 
 // ── paydays ────────────────────────────────────────────────────────────────
-function Paydays({ paydays, open, setOpen, reload }) {
-  if (!paydays.length) return <div style={card}><Empty>No paydays yet. Use <strong>+ Add a pay stub or list</strong> to bring them in.</Empty></div>;
+// Every payday in order — including ones with nothing on file — each with a
+// place for its pay stub and its session list.
+function Paydays({ slots, paydays, open, setOpen, reload }) {
+  const rows = slots?.length ? slots : paydays.map(p => ({ pay_date: p.pay_date, payday_id: p.id, card: p, has_stub: p.has_stub, has_list: p.has_list,
+    period_start: p.period_start, period_end: p.period_end, missing: p.has_stub && p.has_list ? null : !p.has_stub ? 'pay stub' : 'session list' }));
+  if (!rows.length) return <div style={card}><Empty>No paydays yet. Use <strong>+ Add a pay stub or list</strong> to bring them in.</Empty></div>;
   return (
     <div style={card}>
-      {paydays.map((p, i) => {
-        const adds = p.has_stub && p.has_list ? (p.list_cents || 0) - (p.gross_cents || 0) : null;
-        const status = !p.has_list ? { t: 'No session list', c: 'var(--gray-400)' }
-          : !p.has_stub ? { t: 'Waiting for the stub', c: '#b45309' }
+      {rows.map((sl, i) => {
+        const p = sl.card;
+        const adds = p && p.has_stub && p.has_list ? (p.list_cents || 0) - (p.gross_cents || 0) : null;
+        const status = sl.future ? { t: 'Upcoming', c: 'var(--gray-400)' }
+          : !sl.has_stub && !sl.has_list ? { t: 'Missing stub + list', c: '#b91c1c' }
+          : !sl.has_list ? { t: 'Missing session list', c: '#b45309' }
+          : !sl.has_stub ? { t: 'Missing pay stub', c: '#b45309' }
           : adds === 0 ? { t: '✓ Adds up', c: '#047857' }
           : { t: adds < 0 ? `Paid ${money(-adds)} more than listed` : `Paid ${money(adds)} less than listed`, c: '#b91c1c' };
-        const isOpen = open === p.id;
+        const key = sl.payday_id || sl.pay_date;
+        const isOpen = open === key;
         return (
-          <div key={p.id} style={{ borderTop: i ? '1px solid var(--gray-100)' : 'none' }}>
-            <button onClick={() => setOpen(isOpen ? null : p.id)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '13px 18px', background: isOpen ? 'var(--gray-50)' : 'none', border: 'none', cursor: 'pointer', textAlign: 'left', font: 'inherit', flexWrap: 'wrap' }}>
+          <div key={key} style={{ borderTop: i ? '1px solid var(--gray-100)' : 'none' }}>
+            <button onClick={() => setOpen(isOpen ? null : key)} style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 14, padding: '13px 18px', background: isOpen ? 'var(--gray-50)' : 'none', border: 'none', cursor: 'pointer', textAlign: 'left', font: 'inherit', flexWrap: 'wrap' }}>
               <span style={{ color: 'var(--gray-400)', fontSize: '0.7rem', width: 10 }}>{isOpen ? '▼' : '▶'}</span>
-              <span style={{ fontWeight: 700, color: 'var(--navy)', minWidth: 170 }}>{dayDate(p.pay_date)}</span>
-              <span style={{ minWidth: 90, fontWeight: 600 }}>{money(p.gross_cents)}</span>
-              <span style={{ flex: 1, minWidth: 120, ...muted, fontSize: '0.86rem' }}>{p.has_list ? plural(p.sessions, 'session') : ''}{p.unmatched ? ` · ${p.unmatched} to match` : ''}</span>
-              <span style={{ color: status.c, fontWeight: 600, fontSize: '0.84rem' }}>{status.t}</span>
+              <span style={{ fontWeight: 700, color: sl.payday_id ? 'var(--navy)' : 'var(--gray-500)', minWidth: 170 }}>{dayDate(sl.pay_date)}</span>
+              <span style={{ minWidth: 90, fontWeight: 600 }}>{p ? money(p.gross_cents) : '—'}</span>
+              <span style={{ flex: 1, minWidth: 120, ...muted, fontSize: '0.86rem' }}>
+                {shortDate(sl.period_start)} – {shortDate(sl.period_end)}{p?.has_list ? ` · ${plural(p.sessions, 'session')}` : ''}{p?.unmatched ? ` · ${p.unmatched} to match` : ''}
+              </span>
+              <span style={{ display: 'flex', gap: 6 }}><DocDot ok={sl.has_stub} label="Stub" /><DocDot ok={sl.has_list} label="List" /></span>
+              <span style={{ color: status.c, fontWeight: 600, fontSize: '0.84rem', minWidth: 150, textAlign: 'right' }}>{status.t}</span>
             </button>
-            {isOpen && <PaydayDetail id={p.id} reload={reload} />}
+            {isOpen && (
+              <div style={{ padding: '4px 18px 6px 42px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+                <DocSlot kind="stub" sl={sl} reload={reload} />
+                <DocSlot kind="list" sl={sl} reload={reload} />
+              </div>
+            )}
+            {isOpen && sl.payday_id && <PaydayDetail id={sl.payday_id} reload={reload} />}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function DocDot({ ok, label }) {
+  return <span style={{ fontSize: '0.7rem', fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: ok ? '#ecfdf5' : '#f3f4f6', color: ok ? '#047857' : '#9ca3af' }}>{ok ? '✓' : '○'} {label}</span>;
+}
+
+// One document box: what's on file, or a place to drop it. Lists are put on
+// this payday; a stub goes to the Pay Date printed on it.
+function DocSlot({ kind, sl, reload }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const [over, setOver] = useState(false);
+  const ref = useRef(null);
+  const has = kind === 'stub' ? sl.has_stub : sl.has_list;
+  const title = kind === 'stub' ? 'Pay stub' : 'Session list';
+  async function openFile() {
+    try { const { url } = await api.get(`/payments2/paydays/${sl.payday_id}/file/${kind}`); window.open(url, '_blank', 'noopener'); }
+    catch (e) { alert(e.message); }
+  }
+  async function send(fileList) {
+    const files = [...(fileList || [])];
+    if (!files.length) return;
+    setBusy(true); setMsg(null);
+    try {
+      const fd = new FormData();
+      files.forEach(f => fd.append('files', f));
+      fd.append('pay_date', sl.pay_date);
+      const r = await api.postForm('/payments2/import', fd);
+      const res = [...(r.results || []), ...(r.skipped || []).map(x => ({ outcome: 'skipped', message: x.reason, file: x.file }))];
+      const lines = res.map(x => {
+        if (x.outcome === 'stub') return x.pay_date && x.pay_date !== sl.pay_date
+          ? { err: true, t: `Stub read: its Pay Date is ${dayDate(x.pay_date)}, so it went on that payday instead.` }
+          : { t: `Stub added — ${money(x.gross_cents)}.` };
+        if (x.outcome === 'list') return { t: `List added — ${plural(x.lines || 0, 'line')}${x.auto_matched != null ? `, ${x.auto_matched} matched` : ''}${x.needs_review ? `, ${x.needs_review} to match by hand` : ''}.` };
+        if (x.outcome === 'skipped' || x.outcome === 'skipped_dup') return { t: `${x.file}: ${x.message || 'already on file'}` };
+        return { err: true, t: `${x.file}: ${x.message || x.outcome}` };
+      });
+      setMsg(lines.length ? lines : [{ err: true, t: 'Nothing readable in that file.' }]);
+      reload();
+    } catch (e) { setMsg([{ err: true, t: e.message }]); }
+    setBusy(false);
+    if (ref.current) ref.current.value = '';
+  }
+  return (
+    <div onDragOver={e => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
+      onDrop={e => { e.preventDefault(); setOver(false); send(e.dataTransfer.files); }}
+      style={{ border: `1px ${has ? 'solid' : 'dashed'} ${over ? 'var(--gold)' : has ? '#a7f3d0' : 'var(--gray-300)'}`, background: has ? '#f0fdf4' : over ? '#fffbeb' : 'var(--white)', borderRadius: 10, padding: '10px 12px', fontSize: '0.84rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <strong style={{ flex: 1, color: 'var(--navy)' }}>{has ? '✓ ' : ''}{title}</strong>
+        {has && sl.payday_id && <button style={linkBtn} onClick={openFile}>Open</button>}
+        <input ref={ref} type="file" multiple style={{ display: 'none' }} accept=".pdf,.eml,.xlsx,.xls,.csv,.txt" onChange={e => send(e.target.files)} />
+        <button className="btn btn-outline btn-xs" disabled={busy} onClick={() => ref.current?.click()}>{busy ? 'Reading…' : has ? 'Add another' : 'Upload'}</button>
+      </div>
+      {!has && !msg && <div style={{ ...muted, marginTop: 4 }}>Drop the {kind === 'stub' ? 'stub PDF' : 'list (email, Excel or PDF)'} here.</div>}
+      {msg && msg.map((m, i) => <div key={i} style={{ marginTop: 4, color: m.err ? '#b45309' : '#047857' }}>{m.t}</div>)}
     </div>
   );
 }
@@ -404,8 +478,6 @@ function PaydayDetail({ id, reload }) {
     <div style={{ padding: '4px 18px 18px 42px', display: 'grid', gap: 12 }}>
       <div style={{ fontSize: '0.84rem', ...muted, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         {p.period_start && <span>Stub's printed period: {shortDate(p.period_start)} – {shortDate(p.period_end)}</span>}
-        {p.stub_file && <button style={linkBtn} onClick={() => openFile('stub')}>Open the stub</button>}
-        {p.list_file && <button style={linkBtn} onClick={() => openFile('list')}>Open the list</button>}
       </div>
       {d.items.length === 0 ? <div style={{ fontSize: '0.86rem', ...muted }}>No session list for this payday.</div> : (
         <div style={{ border: '1px solid var(--gray-200)', borderRadius: 10, overflow: 'hidden' }}>
