@@ -17,6 +17,24 @@ const { supabase } = require('../utils/pay2/data');
 const ECW = require('../utils/pay2/ecw');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 400 } });
+// The eCW extension posts exports here directly. It authenticates with a
+// shared key (ECW_INGEST_KEY, set on Render and pasted into the extension's
+// settings) instead of a login, the same way cron jobs use x-cron-secret.
+const crypto = require('crypto');
+router.post('/ecw/ingest', async (req, res) => {
+  const key = process.env.ECW_INGEST_KEY;
+  if (!key) return res.status(503).json({ error: 'ECW_INGEST_KEY is not set on the server' });
+  const given = String(req.headers['x-ecw-key'] || '');
+  const ok = given.length === key.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(key));
+  if (!ok) return res.status(401).json({ error: 'wrong extension key' });
+  try {
+    const { csv, filename, missing_days } = req.body || {};
+    if (!csv || typeof csv !== 'string') throw new Error('no csv in the request');
+    res.json(await ECW.importExport(Buffer.from(csv, 'utf8'), String(filename || 'ecw-extension.csv'), {
+      skipMissingDates: Array.isArray(missing_days) ? missing_days : [] }));
+  } catch (err) { console.error('[payments2/ecw/ingest]', err); res.status(500).json({ error: err.message }); }
+});
+
 router.use(requireAuth, requireAdmin);
 
 const wrap = fn => async (req, res) => {

@@ -165,7 +165,25 @@ async function insertChunks(table, rows, opts) {
 }
 
 // Import one export. Returns counts and the 'changed' differences found.
-async function importExport(buffer, filename) {
+// A blank in a new export never erases a value we already have — exports can
+// come back incomplete (a big pull once lost a third of its claim numbers).
+// The exception is a date whose flag went false (billed yes→no clears billed_at).
+const KEEP_IF_BLANK = ['start_time', 'end_time', 'group_name', 'locked_at', 'signed_at', 'billed_at', 'patient_id', 'provider', 'visit_type', 'cpt', 'visit_status', 'claim_number'];
+const CLEARED_BY = { locked_at: 'locked', signed_at: 'signed', billed_at: 'billed' };
+function keepStored(old, r) {
+  const out = { ...r };
+  for (const f of KEEP_IF_BLANK) {
+    if (out[f] != null && out[f] !== '') continue;
+    if (old[f] == null || old[f] === '') continue;
+    if (CLEARED_BY[f] && !out[CLEARED_BY[f]]) continue;
+    out[f] = old[f];
+  }
+  return out;
+}
+
+// opts.skipMissingDates: days the export says it couldn't load — rows on those
+// days aren't flagged as gone from eCW.
+async function importExport(buffer, filename, opts = {}) {
   const { rows: parsed, problems } = parseExport(buffer, filename);
   if (!parsed.length) throw new Error('no encounter rows found in the file');
 
@@ -191,10 +209,11 @@ async function importExport(buffer, filename) {
   for (const r of rows) {
     const old = existing.get(r.encounter_id);
     if (!old) { fresh.push({ ...r, first_import_id: import_id, last_import_id: import_id }); continue; }
-    const d = diff(old, r);
+    const merged = keepStored(old, r);
+    const d = diff(old, merged);
     if (old.absent_import_id) d.push({ field: 'present', old_value: 'not in an earlier export', new_value: 'back in this export', kind: 'changed' });
     if (!d.length) { unchanged.push(r.encounter_id); continue; }
-    updated.push({ ...r, last_import_id: import_id, absent_import_id: null, updated_at: now });
+    updated.push({ ...merged, last_import_id: import_id, absent_import_id: null, updated_at: now });
     for (const c of d) changes.push({ ...c, encounter_id: r.encounter_id, import_id });
   }
 
@@ -206,9 +225,10 @@ async function importExport(buffer, filename) {
 
   // Encounters on file for dates this export covers, but missing from it.
   const inFile = new Set(rows.map(r => r.encounter_id));
-  const onFile = await D.all(() => supabase.from('ecw_encounters').select('encounter_id, absent_import_id')
+  const onFile = await D.all(() => supabase.from('ecw_encounters').select('encounter_id, absent_import_id, visit_date')
     .gte('visit_date', date_from).lte('visit_date', date_to).order('encounter_id'));
-  const gone = onFile.filter(e => !inFile.has(e.encounter_id) && !e.absent_import_id).map(e => e.encounter_id);
+  const skip = new Set(opts.skipMissingDates || []);
+  const gone = onFile.filter(e => !inFile.has(e.encounter_id) && !e.absent_import_id && !skip.has(String(e.visit_date).slice(0, 10))).map(e => e.encounter_id);
   for (let i = 0; i < gone.length; i += 300) {
     await supabase.from('ecw_encounters').update({ absent_import_id: import_id }).in('encounter_id', gone.slice(i, i + 300));
   }
@@ -439,4 +459,4 @@ async function acknowledge({ ids, kind }) {
   return { ok: true };
 }
 
-module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, _test: { computeView, diff, kindOf, paydayCalendar, rollup, normDate, normTime, normTs } };
+module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, _test: { keepStored, computeView, diff, kindOf, paydayCalendar, rollup, normDate, normTime, normTs } };

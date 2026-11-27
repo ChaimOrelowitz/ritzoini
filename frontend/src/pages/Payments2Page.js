@@ -794,14 +794,19 @@ function EcwCheck() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  async function upload(file) {
-    if (!file) return;
+  // Files go up one at a time, oldest month first, so a later export's values win.
+  async function upload(fileList) {
+    const files = [...(fileList || [])].sort((a, b) => a.name.localeCompare(b.name));
+    if (!files.length) return;
     setBusy(true); setResult(null);
-    try {
-      const fd = new FormData(); fd.append('file', file);
-      setResult(await api.postForm('/payments2/ecw/import', fd));
-      await load();
-    } catch (e) { setResult({ error: e.message }); }
+    const out = [];
+    for (let i = 0; i < files.length; i++) {
+      setBusy(`Reading ${i + 1} of ${files.length}…`);
+      try { const fd = new FormData(); fd.append('file', files[i]); out.push(await api.postForm('/payments2/ecw/import', fd)); }
+      catch (e) { out.push({ error: `${files[i].name}: ${e.message}` }); }
+      setResult([...out]);
+    }
+    await load();
     setBusy(false);
     if (fileRef.current) fileRef.current.value = '';
   }
@@ -836,13 +841,13 @@ function EcwCheck() {
           <div style={{ flex: 1, minWidth: 240 }}>
             <div style={{ fontWeight: 700, color: 'var(--navy)' }}>Upload an eCW export</div>
             <div style={{ fontSize: '0.84rem', ...muted, marginTop: 2 }}>
-              The encounter CSV from the extension. Upload as often as you like — rows already here are counted once, and anything that comes back different is listed below for you to look at.
+              The encounter CSVs from the extension — pick several at once (one per month is fine). Rows already here are counted once, and anything that comes back different is listed below. With the extension connected, pulls arrive here on their own.
             </div>
           </div>
-          <input ref={fileRef} type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={e => upload(e.target.files[0])} />
-          <button className="btn btn-gold" disabled={busy} onClick={() => fileRef.current?.click()}>{busy ? 'Reading…' : 'Choose file'}</button>
+          <input ref={fileRef} type="file" multiple accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={e => upload(e.target.files)} />
+          <button className="btn btn-gold" disabled={!!busy} onClick={() => fileRef.current?.click()}>{busy ? (busy === true ? 'Reading…' : busy) : 'Choose files'}</button>
         </div>
-        {result && <ImportSummary r={result} />}
+        {result && result.map((r, i) => <ImportSummary key={i} r={r} />)}
         {v?.imports?.length > 0 && (
           <div style={{ fontSize: '0.78rem', ...muted, marginTop: 12 }}>
             Last upload {new Date(v.imports[0].uploaded_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {v.imports[0].filename}
@@ -970,6 +975,9 @@ function EcwChanges({ flags, onChanged }) {
     try { await api.post('/payments2/ecw/changes/acknowledge', body); await load(); onChanged(); } catch (e) { alert(e.message); }
   }
   const important = list.filter(c => c.kind !== 'filled');
+  // One block per group session (you're paid per group); its client lines underneath.
+  const bySession = [];
+  { const m = new Map(); for (const c of important) { const k = c.ecw_group_id || c.encounter_id; if (!m.has(k)) { m.set(k, []); bySession.push(m.get(k)); } m.get(k).push(c); } }
   const progress = list.filter(c => c.kind === 'filled');
   const val = (f, x) => (x == null ? <span style={muted}>blank</span> : f === 'start_time' || f === 'end_time' ? fmt12(x) : x);
   const Row = ({ c }) => (
@@ -984,10 +992,24 @@ function EcwChanges({ flags, onChanged }) {
       {important.length > 0 && (
         <>
           <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: 10 }}>
-            <strong style={{ flex: 1, color: '#b45309' }}>Changed in eCW since an earlier upload · {important.length}</strong>
+            <strong style={{ flex: 1, color: '#b45309' }}>Changed in eCW since an earlier upload · {plural(bySession.length, 'session')}</strong>
             <button className="btn btn-outline btn-xs" onClick={() => ack({ ids: important.map(c => c.id) })}>Mark all seen</button>
           </div>
-          {important.slice(0, 200).map(c => <Row key={c.id} c={c} />)}
+          {bySession.slice(0, 100).map(cs => {
+            const c0 = cs[0];
+            const kinds = [...new Set(cs.map(c => `${FIELD_LABEL[c.field] || c.field}: ${c.old_value ?? 'blank'} → ${c.new_value ?? 'blank'}`))];
+            const clients = new Set(cs.map(c => c.patient_id)).size;
+            return (
+              <details key={c0.ecw_group_id || c0.id} style={{ borderTop: '1px solid var(--gray-100)' }}>
+                <summary style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '9px 16px', fontSize: '0.86rem', cursor: 'pointer', flexWrap: 'wrap' }}>
+                  <span style={{ minWidth: 190, fontWeight: 600, color: 'var(--navy)' }}>{dayDate(c0.visit_date)} {c0.start_time && fmt12(c0.start_time)}<div style={{ fontSize: '0.74rem', fontWeight: 400, ...muted }}>{c0.group}</div></span>
+                  <span style={{ flex: 1 }}>{kinds.length === 1 ? kinds[0] : plural(cs.length, 'change')}<span style={muted}> · {plural(clients, 'client')}</span></span>
+                  <button className="btn btn-outline btn-xs" onClick={e => { e.preventDefault(); ack({ ids: cs.map(c => c.id) }); }}>Seen</button>
+                </summary>
+                {cs.map(c => <Row key={c.id} c={c} />)}
+              </details>
+            );
+          })}
         </>
       )}
       {progress.length > 0 && (
