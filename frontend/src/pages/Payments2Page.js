@@ -943,7 +943,7 @@ function EcwCheck() {
 
       {v && (
         <>
-          <LockPanel sessions={v.sessions} />
+          <LockPanel sessions={v.sessions} falseStarts={v.false_starts || []} />
 
           <TimingStrip stats={v.step_stats} />
 
@@ -1203,13 +1203,13 @@ function MissingReports({ list }) {
 
 // Locking: what's waiting on you in eCW, what's waiting on the office, and
 // where your Ritzoini "Locked" click (which tells Zoho) disagrees with eCW.
-function LockPanel({ sessions }) {
+function LockPanel({ sessions, falseStarts = [] }) {
   const [copied, setCopied] = useState(false);
   const toLock = sessions.filter(s => s.status === 'to_lock');
   const office = sessions.filter(s => s.status === 'not_checked_in');
   const notMarked = sessions.filter(s => s.lock_not_marked);
   const markedOpen = sessions.filter(s => s.lock_marked_not_done);
-  if (!toLock.length && !office.length && !notMarked.length && !markedOpen.length) return null;
+  if (!toLock.length && !office.length && !notMarked.length && !markedOpen.length && !falseStarts.length) return null;
   const officeMiss = [...toLock.filter(s => !s.office_flagged), ...office];
   const when = s => `${dayDate(s.date)}${s.time ? ` ${fmt12(s.time)}` : ''}`;
   const text = 'Hi, these group sessions have notes sent but were not marked ready to lock in Zoho:\n\n'
@@ -1242,6 +1242,22 @@ function LockPanel({ sessions }) {
         right={() => <span style={muted}>locked in eCW ✓</span>} />
       <Block title="Marked locked, still open in eCW (you)" tone="#b91c1c" rows={markedOpen} note="Ritzoini (and Zoho) say locked, but eCW doesn't."
         right={s => <span style={{ color: '#b91c1c' }}>{s.to_lock + s.pending_checkin} open in eCW</span>} />
+      {falseStarts.length > 0 && (
+        <div style={{ borderTop: '1px solid var(--gray-100)' }}>
+          <div style={{ padding: '10px 16px 4px', fontWeight: 700, color: '#b45309', fontSize: '0.88rem' }}>False starts (you) · {falseStarts.length}</div>
+          <div style={{ padding: '0 16px 6px', fontSize: '0.78rem', ...muted }}>A note was posted to Zoho for a session that then didn't happen. Notes posted 2+ days after the session were part of a later batch and may have gone out after it was cancelled.</div>
+          {falseStarts.map(f => {
+            const late = f.note_posted_at && (Date.parse(f.note_posted_at) - Date.parse(`${f.date}T23:59:00`)) / 864e5 >= 2;
+            return (
+              <div key={f.id} style={{ display: 'flex', gap: 12, padding: '6px 16px', fontSize: '0.85rem', flexWrap: 'wrap' }}>
+                <span style={{ minWidth: 200, color: 'var(--navy)', fontWeight: 600 }}>{dayDate(f.date)}{f.time ? ` ${fmt12(f.time)}` : ''}</span>
+                <span style={{ flex: 1 }}><Link to={`/groups/${f.group_id}`} style={{ color: 'var(--navy)' }}>{f.group}</Link> <span style={muted}>· cancelled in {f.where.join(' + ')}</span></span>
+                <span style={{ fontSize: '0.78rem', color: late ? 'var(--gray-500)' : '#b45309' }}>note posted {stamp(f.note_posted_at)}{late ? ' · later batch' : ''}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
 }

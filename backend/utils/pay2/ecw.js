@@ -381,6 +381,7 @@ async function sessionView() {
   const checkins = await D.all(() => supabase.from('ecw_changes').select('encounter_id, detected_at, import_id')
     .eq('field', 'visit_status').eq('old_value', 'PEN').order('id')).catch(() => []);
   const view = computeView(encs, ledgerData, openChanges, checkins);
+  view.false_starts = await falseStarts(view.sessions, ledgerData.rows);
   const { data: imports } = await supabase.from('ecw_imports').select('*').order('uploaded_at', { ascending: false }).limit(20);
   return { ...view, imports: imports || [] };
 }
@@ -530,6 +531,34 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges,
       open_progress: openChanges.filter(c => c.kind === 'filled').length,
     },
   };
+}
+
+// False starts: a note posted to Zoho for a session that then didn't happen —
+// cancelled in Ritzoini (which is where Zoho cancellations land too), or every
+// patient cancelled in eCW. Ritzoini only posts notes for scheduled sessions and
+// a cancel moves only the note text, so a cancelled row that still has its Zoho
+// post was posted first and cancelled after.
+async function falseStarts(sessions, ledger) {
+  const [zg, groups] = await Promise.all([
+    supabase.from('zoho_groups').select('id, cancelled_dates').then(r => r.data || []),
+    D.loadGroups(),
+  ]);
+  const zCancel = new Map(zg.map(z => [String(z.id), new Set((z.cancelled_dates || []).map(d => String(d).slice(0, 10)))]));
+  const zohoOf = new Map(groups.map(g => [g.id, g.zoho_session_id != null ? String(g.zoho_session_id) : null]));
+  const ecwByRitz = new Map(sessions.filter(x => x.ritzoini).map(x => [x.ritzoini.id, x]));
+  const out = [];
+  for (const r of ledger) {
+    if (r.date < OWED_FROM || !r.zoho_posted) continue;
+    const e = ecwByRitz.get(r.id);
+    const ritzCancelled = ['cancelled', 'skipped'].includes(r.session_status);
+    const ecwCancelled = !!e?.all_cancelled;
+    if (!ritzCancelled && !ecwCancelled) continue;
+    const inZoho = zCancel.get(zohoOf.get(r.group_id))?.has(r.date) || false;
+    out.push({ id: r.id, date: r.date, time: r.time, group: r.group, group_id: r.group_id, note_posted_at: r.zoho_posted_at,
+      where: [inZoho && 'Zoho', ritzCancelled && 'Ritzoini', ecwCancelled && 'eCW'].filter(Boolean),
+      sent_before_cancel_known: true });
+  }
+  return out.sort((a, b) => b.date.localeCompare(a.date));
 }
 
 // Unacknowledged differences, with enough context to read them.
