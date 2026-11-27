@@ -755,18 +755,16 @@ function Settings({ paydays, onChanged }) {
 // was paid. Same rows uploaded twice are counted once; rows that come back
 // different are listed under "Changed in eCW" until you mark them seen.
 const ECW_STATUS = {
-  owed:          { label: 'Should have been paid', bg: '#fef2f2', fg: '#b91c1c' },
+  unpaid:        { label: 'Not paid yet',          bg: '#fef2f2', fg: '#b91c1c' },
   maybe_paid:    { label: 'Maybe paid as…',        bg: '#f5f3ff', fg: '#6d28d9' },
-  awaiting_list: { label: 'Payday list missing',   bg: '#fffbeb', fg: '#b45309' },
   unmatched:     { label: 'No Ritzoini session',   bg: '#fffbeb', fg: '#b45309' },
-  due:           { label: 'Due',                   bg: '#eff6ff', fg: '#1d4ed8' },
   not_billed:    { label: 'Locked, not billed',    bg: '#fffbeb', fg: '#b45309' },
   not_locked:    { label: 'Not locked in eCW',     bg: '#f3f4f6', fg: '#4b5563' },
   paid:          { label: 'Paid',                  bg: '#ecfdf5', fg: '#047857' },
   cancelled:     { label: 'Cancelled',             bg: '#f9fafb', fg: '#9ca3af' },
   history:       { label: 'Before Apr 2026',       bg: '#f9fafb', fg: '#9ca3af' },
 };
-const ECW_FILTERS = ['all', 'owed', 'maybe_paid', 'awaiting_list', 'unmatched', 'due', 'not_billed', 'not_locked', 'flagged', 'paid', 'cancelled', 'history'];
+const ECW_FILTERS = ['all', 'unpaid', 'maybe_paid', 'unmatched', 'not_billed', 'not_locked', 'flagged', 'paid', 'cancelled', 'history'];
 const FIELD_LABEL = { locked_at: 'Locked at', signed_at: 'Signed at', billed_at: 'Billed at', locked: 'Locked', signed: 'Signed', billed: 'Billed',
   visit_status: 'Visit status', claim_number: 'Claim #', claim_voided: 'Claim voided', cpt: 'CPT', start_time: 'Start', end_time: 'End',
   visit_date: 'Date', group_name: 'Group name', ecw_group_id: 'eCW group id', patient_id: 'Patient id', provider: 'Provider', visit_type: 'Visit type', present: 'In export' };
@@ -778,7 +776,7 @@ function EPill({ s }) {
 function Flag({ children, tone = '#6d28d9' }) {
   return <span style={{ display: 'inline-block', marginLeft: 6, fontSize: '0.68rem', fontWeight: 700, color: tone, border: `1px solid ${tone}55`, borderRadius: 6, padding: '1px 6px' }}>{children}</span>;
 }
-const isFlagged = s => s.double_billed || s.entered_twice || s.twin || s.am_typo || s.open_changes || s.missing_from_export || s.paid_late;
+const isFlagged = s => s.double_billed || s.entered_twice || s.twin || s.am_typo || s.open_changes || s.missing_from_export;
 
 function EcwCheck() {
   const [v, setV] = useState(null);
@@ -864,7 +862,7 @@ function EcwCheck() {
           <EcwChanges flags={v.flags} onChanged={load} />
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
-            <div style={{ ...card, padding: 14 }}><Fact label="Should have been paid" value={money(t.owed?.cents)} sub={`${plural(t.owed?.count || 0, 'locked session')} past their payday`} /></div>
+            <div style={{ ...card, padding: 14 }}><Fact label="Not paid yet" value={money(t.unpaid?.cents)} sub={`${plural(t.unpaid?.count || 0, 'session')} locked + billed, on no pay report`} /></div>
             <div style={{ ...card, padding: 14 }}><Fact label="Maybe paid under another entry" value={plural(t.maybe_paid?.count || 0, 'session')} sub="check and confirm" /></div>
             <div style={{ ...card, padding: 14 }}><Fact label="Waiting on eCW" value={plural(waiting, 'session')} sub="not locked or not billed yet" /></div>
             <div style={{ ...card, padding: 14 }}><Fact label="Paid" value={money(t.paid?.cents)} sub={plural(t.paid?.count || 0, 'session')} /></div>
@@ -879,6 +877,8 @@ function EcwCheck() {
               <button style={{ ...linkBtn, justifySelf: 'start', marginTop: 2 }} onClick={() => setFilter('flagged')}>Show them</button>
             </div>
           )}
+
+          <MissingReports list={v.missing_reports} />
 
           {v.paid_no_ecw.length > 0 && (
             <details style={{ ...card, padding: '12px 16px' }}>
@@ -924,10 +924,8 @@ function EcwCheck() {
 
 function EcwRow({ s }) {
   let detail = null;
-  if (s.status === 'paid') detail = s.paid_on ? <>on {shortDate(s.paid_on)}{s.paid_late && <span style={{ color: '#b45309' }}> · expected {shortDate(s.expected_payday)}</span>}</> : 'marked paid earlier';
-  else if (s.status === 'owed') detail = <>expected {dayDate(s.expected_payday)} · locked {shortDate(s.ready_date)}</>;
-  else if (s.status === 'awaiting_list') detail = <>expected {dayDate(s.expected_payday)} — that payday's list isn't uploaded</>;
-  else if (s.status === 'due') detail = s.expected_payday ? <>{dayDate(s.expected_payday)}</> : null;
+  if (s.status === 'paid') detail = s.paid_on ? <>on {shortDate(s.paid_on)}</> : 'marked paid earlier (no pay report on file)';
+  else if (s.status === 'unpaid') detail = <>locked {shortDate(s.ready_date)} · {plural(s.days_since_lock, 'day')} ago · on no pay report</>;
   else if (s.status === 'maybe_paid') detail = <>{s.maybe_paid_as.group} {s.maybe_paid_as.time && fmt12(s.maybe_paid_as.time)} on {shortDate(s.maybe_paid_as.date)}, paid {shortDate(s.maybe_paid_as.payday)}</>;
   else if (s.status === 'not_billed' || s.status === 'not_locked') detail = <>{s.locked}/{s.encounters} locked · {s.billed} billed</>;
   return (
@@ -1020,6 +1018,32 @@ function EcwChanges({ flags, onChanged }) {
         </div>
       )}
       {showProgress && progress.slice(0, 300).map(c => <Row key={c.id} c={c} />)}
+    </section>
+  );
+}
+
+// Pay periods with no stub and/or no session list on file — what to ask the office for.
+function MissingReports({ list }) {
+  const [copied, setCopied] = useState(false);
+  if (!list?.length) return null;
+  const range = m => `${shortDate(m.period_start)} – ${dayDate(m.period_end)}`;
+  const text = 'Hi, could you please send me the payroll reports (pay stub and session list) for these pay periods:\n\n'
+    + list.map(m => `• Payday ${dayDate(m.pay_date)} (pay period ${range(m)}): ${m.missing}`).join('\n') + '\n\nThank you!';
+  async function copy() { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { window.prompt('Copy this:', text); } }
+  return (
+    <section style={card}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: 10 }}>
+        <strong style={{ flex: 1, color: 'var(--navy)' }}>Missing pay reports · {list.length}</strong>
+        <button className="btn btn-outline btn-xs" onClick={copy}>{copied ? 'Copied ✓' : 'Copy request for the office'}</button>
+      </div>
+      <div style={{ padding: '0 16px 6px', fontSize: '0.8rem', ...muted }}>Sessions in these periods can't be confirmed paid until the report is uploaded.</div>
+      {list.map(m => (
+        <div key={m.pay_date} style={{ display: 'flex', gap: 12, padding: '8px 16px', borderTop: '1px solid var(--gray-100)', fontSize: '0.86rem', flexWrap: 'wrap' }}>
+          <span style={{ minWidth: 170, fontWeight: 600, color: 'var(--navy)' }}>Payday {dayDate(m.pay_date)}</span>
+          <span style={{ flex: 1 }}>Pay period {range(m)}</span>
+          <span style={{ color: '#b45309' }}>Missing {m.missing}{m.gross_cents != null && <span style={muted}> · stub {money(m.gross_cents)}</span>}</span>
+        </div>
+      ))}
     </section>
   );
 }

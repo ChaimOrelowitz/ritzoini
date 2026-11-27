@@ -270,11 +270,15 @@ uploading overlapping exports never counts anything twice; a row that comes
 back different is updated and each differing field is listed under *Changed
 in eCW* until marked seen (blanks filled in and no→yes on locked/billed are
 listed separately as normal updates; rows missing from a later export that
-covers their date are flagged). Encounters roll up to one session per eCW
-group id. A session is expected on the first payday whose payroll run (payday
-− 2 days) is on/after the day it was locked — or billed, when eCW shows a
-re-lock after billing; checked against 408 paid sessions, this predicts 364.
-Each eCW session is paired with the Ritzoini session on the same date within
+covers their date are flagged; a blank never erases a stored value).
+Encounters roll up to one session per eCW group id. A session that's locked
+and billed in eCW is either on a pay report (paid) or not (*Not paid yet*) —
+the stubs and session lists alone decide which payday a session was paid on;
+nothing is predicted. *Missing pay reports* lists each biweekly pay period
+since the first eCW session that has no stub and/or no list on file, with a
+copyable request for the office. The eCW extension can post straight to
+`POST /api/payments2/ecw/ingest` with the `ECW_INGEST_KEY` (header
+`x-ecw-key`); it pulls one month at a time. Each eCW session is paired with the Ritzoini session on the same date within
 45 minutes to read whether it was paid. Flags for the office: a patient billed
 twice in one session, a session entered twice, AM start times that should be PM.
 

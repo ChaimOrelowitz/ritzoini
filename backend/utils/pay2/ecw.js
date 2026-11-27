@@ -11,10 +11,9 @@
 //     one group session). A session counts once no matter how many patients
 //     or duplicate entries it has.
 //   • A session is payable once at least one encounter is locked + billed
-//     (and the claim not voided). Per the billing office, it is paid on the
-//     first payday whose Tuesday payroll run (payday − 2 days) is on or after
-//     the day it was locked. eCW's locked_at is the latest re-lock, so when it
-//     falls after the billed date, the billed date stands in for it.
+//     (and the claim not voided). Whether it was paid is read only from the
+//     pay reports: it's paid if its Ritzoini session is on a payday's list.
+//     Nothing predicts which payday it should have landed on.
 //   • Nothing here writes to sessions or any existing table.
 
 const XLSX = require('xlsx');
@@ -252,26 +251,38 @@ const cleanName = n => String(n || '').replace(/^\s*(ecw name|group name)\s*:\s*
 // A start time before 8 AM is an AM/PM typo (6/14 2:30 entered as 02:30).
 const fixedTime = t => (t && t < '08:00' ? `${pad(Number(t.slice(0, 2)) + 12)}${t.slice(2)}` : t);
 
-// Paydays are biweekly Thursdays, sometimes moved a day for a holiday (the
-// Wednesday paydays). The calendar is the biweekly Thursday sequence with
-// each slot replaced by the actual payday on file when there is one within
-// 3 days; slots with nothing on file stay as the Thursday (onFile: false).
-// expected(readyDate) = the first slot whose payroll run (payday − 2 days)
-// is on or after readyDate.
-function paydayCalendar(paydays) {
-  const actual = paydays.map(p => p.pay_date).sort();
-  const anchor = actual.filter(d => new Date(d + 'T12:00:00Z').getUTCDay() === 4).pop();
-  if (!anchor) return null;
-  const actualNear = thu => actual.find(d => Math.abs(daysBetween(thu, d)) <= 3) || null;
-  const slotFor = k => { const thu = addDays(anchor, 14 * k); const a = actualNear(thu); return { date: a || thu, onFile: !!a }; };
-  return readyDate => {
-    let k = Math.ceil(daysBetween(anchor, addDays(readyDate, 2)) / 14) - 1;
-    for (let i = 0; i < 3; i++, k++) {
-      const s = slotFor(k);
-      if (addDays(s.date, -2) >= readyDate) return s;
-    }
-    return slotFor(k);
-  };
+// Pay reports we should have but don't. Paydays are biweekly Thursdays
+// (sometimes moved a day for a holiday); each pays the period that runs from
+// 16 days before it to 3 days before it, as printed on the stubs. Every
+// biweekly slot from the first eCW session through today is checked against
+// what's on file: a stub, a session list, or both missing.
+// This only finds gaps in the paperwork — it never decides which payday a
+// session belongs on; the reports do that.
+function missingReports(paydays, fromDate, today) {
+  const actual = paydays.slice().sort((a, b) => a.pay_date.localeCompare(b.pay_date));
+  const anchor = actual.map(p => p.pay_date).filter(d => new Date(d + 'T12:00:00Z').getUTCDay() === 4).pop();
+  if (!anchor || !fromDate) return [];
+  const out = [];
+  let k = Math.floor(daysBetween(anchor, fromDate) / 14);
+  for (;; k++) {
+    const thu = addDays(anchor, 14 * k);
+    if (thu > today) break;
+    if (addDays(thu, -3) < fromDate) continue;          // period ends before our first session
+    const p = actual.find(x => Math.abs(daysBetween(thu, x.pay_date)) <= 3);
+    // A stub whose printed period already spans this slot's period means the
+    // office skipped this payday (3/19/2026 covered four weeks), not that a report is missing.
+    if (!p && actual.some(x => x.period_start && x.period_end && x.period_start <= addDays(thu, -16) && x.period_end >= addDays(thu, -3))) continue;
+    const pay_date = p?.pay_date || thu;
+    const has_stub = p?.gross_cents != null, has_list = p?.list_raw != null;
+    if (has_stub && has_list) continue;
+    out.push({
+      pay_date, on_file: !!p, has_stub, has_list,
+      period_start: p?.period_start || addDays(thu, -16), period_end: p?.period_end || addDays(thu, -3),
+      missing: !p ? 'stub and session list' : !has_stub ? 'pay stub' : 'session list',
+      gross_cents: p?.gross_cents ?? null, stub_sessions: p?.stub_hours ?? null,
+    });
+  }
+  return out;
 }
 
 function rollup(encs) {
@@ -280,9 +291,8 @@ function rollup(encs) {
   const first = use[0];
   const payable = use.filter(e => e.billed && e.locked && !e.claim_voided);
   const attended = use.filter(e => e.visit_status !== 'CANC');
-  // Ready = the lock date, or the billed date when eCW shows a re-lock after
-  // billing (locked_at is the latest lock). Checked against 408 paid sessions:
-  // this predicts the actual payday for 364; billed date alone only 292.
+  // Locked on = the lock date, or the billed date when eCW shows a re-lock
+  // after billing (locked_at is the latest lock). Shown for reference only.
   const readyDates = payable.map(e => {
     const l = (e.locked_at || '').slice(0, 10), b = (e.billed_at || '').slice(0, 10);
     return b && l && b < l ? b : (l || b);
@@ -331,10 +341,8 @@ function pairWithRitzoini(sessions, ledgerRows) {
 }
 
 // status:
-//   paid           matched Ritzoini session is on a payday (or marked paid)
-//   owed           payable, expected payday passed and that payday's list is on file, not on it
-//   awaiting_list  payable, expected payday passed, but that payday's list isn't uploaded yet
-//   due            payable, expected payday still ahead
+//   paid           matched Ritzoini session is on a payday's list (or marked paid)
+//   unpaid         locked + billed in eCW, on no payday's list
 //   not_billed     locked in eCW but no billed encounter
 //   not_locked     not locked yet
 //   cancelled      every patient cancelled
@@ -358,8 +366,6 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
   for (const e of encs) (groups.get(e.ecw_group_id) || groups.set(e.ecw_group_id, []).get(e.ecw_group_id)).push(e);
   const sessions = [...groups.values()].map(rollup);
 
-  const expectedFor = paydayCalendar(paydays);
-  const listOn = new Map(paydays.map(p => [p.pay_date, p.list_raw != null]));
   const { byEcw, usedRitz } = pairWithRitzoini(sessions, ledger);
   const changedEnc = new Map();
   for (const c of openChanges) if (c.kind !== 'filled') changedEnc.set(c.encounter_id, (changedEnc.get(c.encounter_id) || 0) + 1);
@@ -374,9 +380,6 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
     s.ritzoini = r ? { id: r.id, group_id: r.group_id, group: r.group, time: r.time, status: r.status } : null;
     s.paid_on = r?.payday || null;
     s.paid = !!(r && (r.payday || r.paid));
-    const slot = s.ready_date && expectedFor ? expectedFor(s.ready_date) : null;
-    s.expected_payday = slot?.date || null;
-    s.expected_list_on_file = !!(slot?.onFile && listOn.get(slot.date));
     s.amount_cents = rateFor(s.date, rates);
     s.twin = (twinCount.get(twinKey(s)) || 0) > 1;
     s.open_changes = s.encounter_ids.reduce((t, id) => t + (changedEnc.get(id) || 0), 0);
@@ -388,12 +391,11 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
     else if (!s.locked) st = 'not_locked';
     else if (!s.billed) st = 'not_billed';
     else if (!r) st = 'unmatched';
-    else if (!s.expected_payday || s.expected_payday >= today) st = 'due';
-    else st = s.expected_list_on_file ? 'owed' : 'awaiting_list';
-    if (['owed', 'awaiting_list', 'not_billed', 'not_locked', 'unmatched'].includes(st) && s.date < OWED_FROM) st = 'history';
+    else st = 'unpaid';
+    if (['unpaid', 'not_billed', 'not_locked', 'unmatched'].includes(st) && s.date < OWED_FROM) st = 'history';
     s.status = st;
-    // Late only when that payday's list is on file and the session isn't on it.
-    if (st === 'paid' && s.paid_on && s.expected_list_on_file) s.paid_late = s.paid_on > s.expected_payday;
+    s.days_since_lock = s.ready_date ? daysBetween(s.ready_date, today) : null;
+    s.paid_legacy_only = st === 'paid' && !s.paid_on;
   }
   sessions.sort((a, b) => b.date.localeCompare(a.date) || String(a.time).localeCompare(String(b.time)));
 
@@ -406,7 +408,7 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
   // An unpaid eCW session with a paid, unpaired Ritzoini session within a day
   // of it was most likely paid under that entry (Ritzoini has the wrong time
   // or date). Shown as 'maybe_paid' and kept out of the owed total.
-  const open = sessions.filter(s => ['owed', 'awaiting_list', 'unmatched'].includes(s.status) && s.time);
+  const open = sessions.filter(s => ['unpaid', 'unmatched'].includes(s.status) && s.time);
   const hints = [];
   for (const r of paidNoEcw) for (const s of open) {
     const dd = Math.abs(daysBetween(r.date, s.date));
@@ -425,8 +427,9 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
   const sum = st => sessions.filter(s => s.status === st);
   const total = list => list.reduce((t, s) => t + (s.amount_cents || 0), 0);
   return {
-    today, covered, sessions, paid_no_ecw: paidNoEcw, has_calendar: !!expectedFor,
-    totals: Object.fromEntries(['owed', 'awaiting_list', 'maybe_paid', 'due', 'not_billed', 'not_locked', 'unmatched', 'paid', 'cancelled', 'history']
+    today, covered, sessions, paid_no_ecw: paidNoEcw,
+    missing_reports: covered ? missingReports(paydays, covered[0], today) : [],
+    totals: Object.fromEntries(['unpaid', 'maybe_paid', 'not_billed', 'not_locked', 'unmatched', 'paid', 'cancelled', 'history']
       .map(st => [st, { count: sum(st).length, cents: total(sum(st)) }])),
     flags: {
       double_billed: sessions.filter(s => s.double_billed).length,
@@ -459,4 +462,4 @@ async function acknowledge({ ids, kind }) {
   return { ok: true };
 }
 
-module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, _test: { keepStored, computeView, diff, kindOf, paydayCalendar, rollup, normDate, normTime, normTs } };
+module.exports = { parseExport, importExport, sessionView, openChanges, acknowledge, _test: { keepStored, computeView, diff, kindOf, missingReports, rollup, normDate, normTime, normTs } };
