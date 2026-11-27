@@ -299,6 +299,9 @@ function rollup(encs) {
   const first = use[0];
   const payable = use.filter(e => e.billed && e.locked && !e.claim_voided);
   const attended = use.filter(e => e.visit_status !== 'CANC');
+  // Checked in (the office has put the note in eCW) but not locked — waiting on you to lock.
+  const toLock = use.filter(e => !e.locked && e.visit_status && !['CANC', 'PEN'].includes(e.visit_status) && !/^CANC|^N\/S|^R\/S/.test(e.visit_status));
+  const pendingCheckin = use.filter(e => !e.locked && e.visit_status === 'PEN');
   // Locked on = the lock date, or the billed date when eCW shows a re-lock
   // after billing (locked_at is the latest lock). Shown for reference only.
   const readyDates = payable.map(e => {
@@ -315,6 +318,7 @@ function rollup(encs) {
     time: fixedTime(times[0] || null), time_raw: times[0] || null, end_time: use.map(e => e.end_time).filter(Boolean).sort().pop() || null,
     group: cleanName(first.group_name), encounters: use.length, patients: byPatient.size || use.length,
     attended: attended.length, locked: use.filter(e => e.locked).length, billed: payable.length,
+    to_lock: toLock.length, pending_checkin: pendingCheckin.length,
     all_cancelled: !attended.length, ready_date: readyDates[0] || null,
     double_billed: doubleBilled, entered_twice: repeats.length - doubleBilled,
     am_typo: !!(times[0] && times[0] < '08:00'), missing_from_export: live.length < encs.length,
@@ -351,6 +355,8 @@ function pairWithRitzoini(sessions, ledgerRows) {
 // status:
 //   paid           matched Ritzoini session is on a payday's list (or marked paid)
 //   unpaid         locked + billed in eCW, on no payday's list
+//   to_lock        checked in to eCW (note is there) but not locked — yours to lock
+//   not_checked_in in eCW but every open visit is still PEN (the office hasn't checked it in)
 //   not_billed     locked in eCW but no billed encounter
 //   not_locked     not locked yet
 //   cancelled      every patient cancelled
@@ -385,7 +391,14 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
 
   for (const s of sessions) {
     const r = byEcw.get(s.ecw_group_id);
-    s.ritzoini = r ? { id: r.id, group_id: r.group_id, group: r.group, time: r.time, status: r.status } : null;
+    s.ritzoini = r ? { id: r.id, group_id: r.group_id, group: r.group, time: r.time, status: r.status, note_sent: r.zoho_posted } : null;
+    // Lock in eCW: the office checked it in but hasn't told you through Zoho (ready to lock) → their miss.
+    s.office_flagged = !!r?.ready_to_lock;
+    // Your Ritzoini "Locked" click (which tells Zoho) vs. the real lock in eCW.
+    const ecwLocked = s.locked > 0 && !s.to_lock && !s.pending_checkin;
+    s.ritz_locked = !!r?.locked;
+    s.lock_not_marked = !!r && ecwLocked && !r.locked;            // locked in eCW, not marked in Ritzoini
+    s.lock_marked_not_done = !!r && r.locked && (s.to_lock > 0 || s.pending_checkin > 0);   // marked in Ritzoini, still open in eCW
     s.paid_on = r?.payday || null;
     s.paid = !!(r && (r.payday || r.paid));
     s.amount_cents = rateFor(s.date, rates);
@@ -396,11 +409,14 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
     let st;
     if (s.all_cancelled) st = 'cancelled';
     else if (s.paid) st = 'paid';
+    else if (s.to_lock) st = 'to_lock';
+    else if (s.pending_checkin) st = 'not_checked_in';
     else if (!s.locked) st = 'not_locked';
     else if (!s.billed) st = 'not_billed';
     else if (!r) st = 'unmatched';
     else st = 'unpaid';
-    if (['unpaid', 'not_billed', 'not_locked', 'unmatched'].includes(st) && s.date < OWED_FROM) st = 'history';
+    if (['unpaid', 'to_lock', 'not_checked_in', 'not_billed', 'not_locked', 'unmatched'].includes(st) && s.date < OWED_FROM) st = 'history';
+    if (s.date < OWED_FROM) { s.lock_not_marked = false; s.lock_marked_not_done = false; }
     s.status = st;
     s.days_since_lock = s.ready_date ? daysBetween(s.ready_date, today) : null;
     s.paid_legacy_only = st === 'paid' && !s.paid_on;
@@ -437,12 +453,17 @@ function computeView(encs, { rows: ledger, paydays, rates, today }, openChanges)
   return {
     today, covered, sessions, paid_no_ecw: paidNoEcw,
     missing_reports: covered ? missingReports(paydays, covered[0], today) : [],
-    totals: Object.fromEntries(['unpaid', 'maybe_paid', 'not_billed', 'not_locked', 'unmatched', 'paid', 'cancelled', 'history']
+    totals: Object.fromEntries(['unpaid', 'maybe_paid', 'to_lock', 'not_checked_in', 'not_billed', 'not_locked', 'unmatched', 'paid', 'cancelled', 'history']
       .map(st => [st, { count: sum(st).length, cents: total(sum(st)) }])),
     flags: {
       double_billed: sessions.filter(s => s.double_billed).length,
       entered_twice: sessions.filter(s => s.entered_twice || s.twin).length,
       am_typo: sessions.filter(s => s.am_typo).length,
+      to_lock: sessions.filter(s => s.status === 'to_lock').length,
+      to_lock_not_flagged: sessions.filter(s => s.status === 'to_lock' && !s.office_flagged).length,
+      not_checked_in: sessions.filter(s => s.status === 'not_checked_in').length,
+      lock_not_marked: sessions.filter(s => s.lock_not_marked).length,
+      lock_marked_not_done: sessions.filter(s => s.lock_marked_not_done).length,
       open_changes: openChanges.filter(c => c.kind !== 'filled').length,
       open_progress: openChanges.filter(c => c.kind === 'filled').length,
     },

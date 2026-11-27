@@ -338,6 +338,7 @@ async function buildLedger() {
       time: (s.ecw_time || s.start_time || s.scheduled_time || '').slice(0, 5) || null,
       session_status: s.status, locked: !!s.locked, locked_at: s.locked_at,
       zoho_posted: !!(s.zoho_posted || s.zoho_note_id), zoho_note_id: s.zoho_note_id,
+      ready_to_lock: !!s.ready_to_lock, ready_to_lock_at: s.ready_to_lock_at || null,
       paid, paid_legacy_only: paid && !item,
       payday: item ? paydayById.get(item.payday_id)?.pay_date || null : null,
       amount_cents: rateFor(date, rates),

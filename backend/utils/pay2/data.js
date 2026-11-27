@@ -32,7 +32,7 @@ function rateFor(date, rates) {
   return r ? r.amount_cents : null;
 }
 
-const SESSION_COLS = 'id, group_id, session_number, session_date, scheduled_date, scheduled_time, start_time, ecw_time, status, locked, locked_at, zoho_posted, zoho_posted_at, zoho_note_id, paid';
+const SESSION_COLS = 'id, group_id, session_number, session_date, scheduled_date, scheduled_time, start_time, ecw_time, status, locked, locked_at, ready_to_lock, ready_to_lock_at, zoho_posted, zoho_posted_at, zoho_note_id, paid';
 const GROUP_COLS   = 'id, internal_name, group_name, name, billing_name, zoho_session_id, instructor_id, status';
 
 async function loadGroups() {

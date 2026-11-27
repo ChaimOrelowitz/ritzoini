@@ -840,13 +840,15 @@ const ECW_STATUS = {
   unpaid:        { label: 'Not paid yet',          bg: '#fef2f2', fg: '#b91c1c' },
   maybe_paid:    { label: 'Maybe paid as…',        bg: '#f5f3ff', fg: '#6d28d9' },
   unmatched:     { label: 'No Ritzoini session',   bg: '#fffbeb', fg: '#b45309' },
+  to_lock:       { label: 'Lock in eCW',           bg: '#fef2f2', fg: '#b91c1c' },
+  not_checked_in:{ label: 'In eCW, not checked in', bg: '#fffbeb', fg: '#b45309' },
   not_billed:    { label: 'Locked, not billed',    bg: '#fffbeb', fg: '#b45309' },
   not_locked:    { label: 'Not locked in eCW',     bg: '#f3f4f6', fg: '#4b5563' },
   paid:          { label: 'Paid',                  bg: '#ecfdf5', fg: '#047857' },
   cancelled:     { label: 'Cancelled',             bg: '#f9fafb', fg: '#9ca3af' },
   history:       { label: 'Before Apr 2026',       bg: '#f9fafb', fg: '#9ca3af' },
 };
-const ECW_FILTERS = ['all', 'unpaid', 'maybe_paid', 'unmatched', 'not_billed', 'not_locked', 'flagged', 'paid', 'cancelled', 'history'];
+const ECW_FILTERS = ['all', 'to_lock', 'not_checked_in', 'unpaid', 'maybe_paid', 'unmatched', 'not_billed', 'not_locked', 'flagged', 'paid', 'cancelled', 'history'];
 const FIELD_LABEL = { locked_at: 'Locked at', signed_at: 'Signed at', billed_at: 'Billed at', locked: 'Locked', signed: 'Signed', billed: 'Billed',
   visit_status: 'Visit status', claim_number: 'Claim #', claim_voided: 'Claim voided', cpt: 'CPT', start_time: 'Start', end_time: 'End',
   visit_date: 'Date', group_name: 'Group name', ecw_group_id: 'eCW group id', patient_id: 'Patient id', provider: 'Provider', visit_type: 'Visit type', present: 'In export' };
@@ -941,6 +943,8 @@ function EcwCheck() {
 
       {v && (
         <>
+          <LockPanel sessions={v.sessions} />
+
           <EcwChanges flags={v.flags} onChanged={load} />
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12 }}>
@@ -1010,6 +1014,8 @@ function EcwRow({ s }) {
   else if (s.status === 'unpaid') detail = <>locked {shortDate(s.ready_date)} · {plural(s.days_since_lock, 'day')} ago · on no pay report</>;
   else if (s.status === 'maybe_paid') detail = <>{s.maybe_paid_as.group} {s.maybe_paid_as.time && fmt12(s.maybe_paid_as.time)} on {shortDate(s.maybe_paid_as.date)}, paid {shortDate(s.maybe_paid_as.payday)}</>;
   else if (s.status === 'not_billed' || s.status === 'not_locked') detail = <>{s.locked}/{s.encounters} locked · {s.billed} billed</>;
+  else if (s.status === 'to_lock') detail = <>{s.to_lock} visit{s.to_lock === 1 ? '' : 's'} to lock{s.office_flagged ? '' : <span style={{ color: '#b91c1c' }}> · office never flagged it in Zoho</span>}</>;
+  else if (s.status === 'not_checked_in') detail = <>{s.ritzoini?.note_sent ? 'note sent · ' : ''}waiting on the office to check it in</>;
   return (
     <tr>
       <td style={{ ...td, whiteSpace: 'nowrap' }}>{dayDate(s.date)}{s.time && <span style={{ ...muted, marginLeft: 6 }}>{fmt12(s.time)}</span>}</td>
@@ -1126,6 +1132,51 @@ function MissingReports({ list }) {
           <span style={{ color: '#b45309' }}>Missing {m.missing}{m.gross_cents != null && <span style={muted}> · stub {money(m.gross_cents)}</span>}</span>
         </div>
       ))}
+    </section>
+  );
+}
+
+// Locking: what's waiting on you in eCW, what's waiting on the office, and
+// where your Ritzoini "Locked" click (which tells Zoho) disagrees with eCW.
+function LockPanel({ sessions }) {
+  const [copied, setCopied] = useState(false);
+  const toLock = sessions.filter(s => s.status === 'to_lock');
+  const office = sessions.filter(s => s.status === 'not_checked_in');
+  const notMarked = sessions.filter(s => s.lock_not_marked);
+  const markedOpen = sessions.filter(s => s.lock_marked_not_done);
+  if (!toLock.length && !office.length && !notMarked.length && !markedOpen.length) return null;
+  const officeMiss = [...toLock.filter(s => !s.office_flagged), ...office];
+  const when = s => `${dayDate(s.date)}${s.time ? ` ${fmt12(s.time)}` : ''}`;
+  const text = 'Hi, these group sessions have notes sent but were not marked ready to lock in Zoho:\n\n'
+    + officeMiss.map(s => `• ${when(s)} — ${s.group}${s.status === 'not_checked_in' ? ' (in eCW, visits not checked in yet)' : ' (in eCW, ready to lock)'}`).join('\n') + '\n\nThank you!';
+  async function copy() { try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch { window.prompt('Copy this:', text); } }
+  const Block = ({ title, tone, note, rows, right }) => rows.length ? (
+    <div style={{ borderTop: '1px solid var(--gray-100)' }}>
+      <div style={{ padding: '10px 16px 4px', fontWeight: 700, color: tone, fontSize: '0.88rem' }}>{title} · {rows.length}</div>
+      {note && <div style={{ padding: '0 16px 6px', fontSize: '0.78rem', ...muted }}>{note}</div>}
+      {rows.map(s => (
+        <div key={s.ecw_group_id} style={{ display: 'flex', gap: 12, padding: '6px 16px', fontSize: '0.85rem', flexWrap: 'wrap' }}>
+          <span style={{ minWidth: 200, color: 'var(--navy)', fontWeight: 600 }}>{when(s)}</span>
+          <span style={{ flex: 1 }}>{s.group}{s.ritzoini && <> · <Link to={`/groups/${s.ritzoini.group_id}`} style={{ color: 'var(--navy)' }}>{s.ritzoini.group}</Link></>}</span>
+          <span style={{ fontSize: '0.78rem' }}>{right(s)}</span>
+        </div>
+      ))}
+    </div>
+  ) : null;
+  return (
+    <section style={card}>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 16px', gap: 10 }}>
+        <strong style={{ flex: 1, color: 'var(--navy)' }}>Locking</strong>
+        {officeMiss.length > 0 && <button className="btn btn-outline btn-xs" onClick={copy}>{copied ? 'Copied ✓' : `Copy note for the office (${officeMiss.length})`}</button>}
+      </div>
+      <Block title="Lock these in eCW (you)" tone="#b91c1c" rows={toLock} note="Checked in to eCW with the note, not locked. After you lock, mark it locked in Ritzoini."
+        right={s => s.office_flagged ? <span style={muted}>office flagged it ✓</span> : <span style={{ color: '#b91c1c', fontWeight: 600 }}>office never flagged it in Zoho</span>} />
+      <Block title="Waiting on the office" tone="#b45309" rows={office} note="In eCW but not checked in yet, and not flagged ready to lock in Zoho."
+        right={s => s.ritzoini?.note_sent ? <span style={muted}>your note was sent</span> : <span style={muted}>no note sent from Ritzoini</span>} />
+      <Block title="Mark locked in Ritzoini (you)" tone="#b45309" rows={notMarked} note="Locked in eCW, but not marked locked in Ritzoini — so Zoho doesn't show it locked."
+        right={() => <span style={muted}>locked in eCW ✓</span>} />
+      <Block title="Marked locked, still open in eCW (you)" tone="#b91c1c" rows={markedOpen} note="Ritzoini (and Zoho) say locked, but eCW doesn't."
+        right={s => <span style={{ color: '#b91c1c' }}>{s.to_lock + s.pending_checkin} open in eCW</span>} />
     </section>
   );
 }
