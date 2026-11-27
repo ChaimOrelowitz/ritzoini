@@ -1,3 +1,4 @@
+const { easternToUtc } = require('../utils/easternTime');
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
@@ -67,11 +68,8 @@ async function autoCompleteSessions(groupId) {
     const dateStr = s.session_date || s.scheduled_date;
     const ecwEnd = s.ecw_end_time || computeEcwEnd(s.ecw_time, s.duration);
     if (!dateStr || !ecwEnd) return false;
-    const [h, m] = ecwEnd.slice(0, 5).split(':').map(Number);
-    const [y, mo, d] = dateStr.split('-').map(Number);
-    const easternOffset = (mo >= 3 && mo <= 11) ? 4 : 5; // EDT=4, EST=5
-    const endDT = new Date(Date.UTC(y, mo - 1, d, h + easternOffset, m, 0));
-    return now > new Date(endDT.getTime() + 5 * 60 * 1000);
+    // End time is New York local; easternToUtc handles daylight saving on every date.
+    return now > easternToUtc(dateStr, ecwEnd, 5);
   });
 
   if (!toComplete.length) return;
@@ -267,10 +265,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       const effectiveDate = updates.session_date || session.session_date || session.scheduled_date;
       const effectiveTime = updates.start_time || session.start_time || session.scheduled_time;
       if (effectiveDate && effectiveTime) {
-        const [h, m] = effectiveTime.slice(0, 5).split(':').map(Number);
-        const [y, mo, d] = effectiveDate.split('-').map(Number);
-        const easternOffset = (mo >= 3 && mo <= 11) ? 4 : 5;
-        const sessionDT = new Date(Date.UTC(y, mo - 1, d, h + easternOffset, m, 0));
+        const sessionDT = easternToUtc(effectiveDate, effectiveTime);
         updates.status = sessionDT > new Date() ? 'scheduled' : 'completed';
         updates.status_manual_override = false;
       }

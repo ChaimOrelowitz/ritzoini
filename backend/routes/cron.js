@@ -1,3 +1,4 @@
+const { easternToUtc } = require('../utils/easternTime');
 const express = require('express');
 const router = express.Router();
 const supabase = require('../db/supabase');
@@ -140,10 +141,8 @@ router.post('/send-oo-notes', requireCronSecret, async (req, res) => {
   let sent = 0, alerted = 0, skipped = 0;
 
   for (const appt of (appts || [])) {
-    // Calculate send time = date + time + duration + 5 min
-    const [h, m] = appt.time.split(':').map(Number);
-    const sendTime = new Date(`${appt.date}T00:00:00Z`);
-    sendTime.setUTCHours(h, m + appt.duration + 5, 0, 0);
+    // Send time = appointment start (New York local) + duration + 5 min.
+    const sendTime = easternToUtc(appt.date, appt.time, Number(appt.duration || 0) + 5);
 
     if (now < sendTime) { skipped++; continue; }
 
